@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Local runtime artifacts and logs
+*.log
+.DS_Store
+Thumbs.db
+
+# Untracked local implementation plans
+/docs/plans/
+
+# Private credentials and secrets
+*.token
+*.key
+secrets.*
+.env
+.env.*
+!.env.example
+
+
+# Managed credentials and private databases
+auth/
+*.info
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+# Runtime logs may contain sensitive request data
+converter.log*
+
+# IDE
+.idea/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+node_modules/
+bower_components/
+jspm_packages/
+site-packages/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

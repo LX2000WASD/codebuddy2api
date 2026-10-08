@@ -180,6 +180,17 @@ class AuditStore:
             # Exception messages may include SQL or user data; retain only type.
             self.last_error = type(exc).__name__
 
+
+    def _heal(self, _result=None):
+        """A committed record write proves the store recovered; clear the sticky fault count.
+
+        A single transient fault (e.g. one lock timeout under concurrency) must not keep
+        the dashboard degraded forever while statistics are in fact complete. Cumulative
+        dropped_records and the diagnostic last_error are preserved.
+        """
+        with self._health_lock:
+            self.failure_count = 0
+
     def note_failure(self, code="ObservationError"):
         self._fault(RuntimeError(), dropped=True)
 
@@ -326,7 +337,8 @@ class AuditStore:
                     self._db.execute("INSERT INTO attempts VALUES(?,?,?)", (data["id"], i, json.dumps(attempt)))
             self._prune()
             return {"ok": True, "recorded": True, "details": bool(keep and self._db.execute("SELECT 1 FROM requests WHERE id=?", (data["id"],)).fetchone())}
-        return self._run(commit, {"ok": False, "recorded": False, "reason": "storage_failure"}, write=True, dropped=True)
+        return self._run(commit, {"ok": False, "recorded": False, "reason": "storage_failure"}, write=True, dropped=True,
+                         on_commit=self._heal)
 
     def _oldest(self, cutoff=None):
         # Each branch walks its time index, never sorts/scans the full union.
@@ -413,7 +425,8 @@ class AuditStore:
             self._db.execute("INSERT INTO events VALUES(?,?,?,?,?,?)", (event_id, data["started_at"], kind, data["action"], payload, len(payload.encode()) + 128))
             self._prune()
             return {"ok": True, "recorded": True, "id": event_id}
-        return self._run(commit, {"ok": False, "recorded": False}, write=True, dropped=True)
+        return self._run(commit, {"ok": False, "recorded": False}, write=True, dropped=True,
+                         on_commit=self._heal)
 
     def list_records(self, kind="request", limit=50, cursor=None, **filters):
         if kind not in ("request", "runtime", "admin"):

@@ -22,6 +22,18 @@ class UpstreamResponseError(Exception):
         super().__init__(f"upstream HTTP {status}")
 
 
+class UpstreamProtocolError(httpx.RemoteProtocolError):
+    """Upstream SSE content is malformed or incomplete; replaying it cannot help."""
+
+
+class UpstreamTimeout(httpx.ReadTimeout):
+    """Upstream sent nothing within the TTFB window or the stream went idle.
+
+    Subclasses httpx.ReadTimeout so existing ``except httpx.HTTPError`` handlers
+    keep working; callers opt into failover by matching this type explicitly.
+    """
+
+
 class UpstreamHTTPError(UpstreamResponseError):
     """Distinguish actual upstream HTTP errors from failures synthesized while collecting a response."""
 
@@ -210,15 +222,15 @@ class ChatSSEAccumulator:
         try:
             chunk = json.loads(data)
         except ValueError:
-            raise httpx.RemoteProtocolError("Invalid JSON in upstream SSE") from None
+            raise UpstreamProtocolError("Invalid JSON in upstream SSE") from None
         if not isinstance(chunk, dict):
-            raise httpx.RemoteProtocolError("Invalid upstream SSE object")
+            raise UpstreamProtocolError("Invalid upstream SSE object")
         if chunk.get("error") is not None:
             raise UpstreamResponseError(502, json.dumps(chunk).encode("utf-8"))
         try:
             self._consume_chunk(chunk)
         except (AttributeError, TypeError, ValueError):
-            raise httpx.RemoteProtocolError("Invalid upstream SSE fields") from None
+            raise UpstreamProtocolError("Invalid upstream SSE fields") from None
 
     def _consume_chunk(self, chunk):
         usage = chunk.get("usage")
@@ -372,6 +384,124 @@ BODY_NOT_ACCEPTED = (httpx.ConnectError, httpx.ConnectTimeout)
 WRITE_TIMEOUT = (httpx.WriteTimeout,)
 
 
+_PENDING = object()
+_EOF = object()
+
+
+class BoundedStream:
+    """Timed view over one upstream response: TTFB for the first line, idle for the rest.
+
+    The upstream speaks SSE, so "first data line" is the TTFB boundary: before it
+    only ``ttfb_timeout`` applies, after it each subsequent read is bounded by
+    ``idle_timeout``. A stalled upstream fails fast instead of parking on the
+    transport read timeout, and the raised :class:`UpstreamTimeout` lets callers
+    fail over to another credential while the client has seen no bytes.
+    Passing ``None`` disables either bound (restoring unbounded behaviour).
+    """
+
+    def __init__(self, response, *, ttfb_timeout=None, started=None, idle_timeout=None, clock=time.monotonic):
+        self._response = response
+        self._ttfb_timeout = ttfb_timeout
+        self._idle_timeout = idle_timeout
+        self._clock = clock
+        deadline = None
+        if ttfb_timeout is not None:
+            deadline = (time.monotonic() if started is None else started) + ttfb_timeout
+        self._ttfb_deadline = deadline
+        self._lines = None
+        self._bytes = None
+        self._first = _PENDING
+        self._content = None
+
+    def __getattr__(self, name):
+        # status_code / headers / url and friends pass through to the real response.
+        response = self.__dict__.get("_response")
+        if response is None:  # Avoid recursion during interrupted construction.
+            raise AttributeError(name)
+        return getattr(response, name)
+
+    @property
+    def response(self):
+        return self._response
+
+    @property
+    def ttfb_timeout(self):
+        return self._ttfb_timeout
+
+    def _line_iterator(self):
+        if self._lines is None:
+            self._lines = self._response.aiter_lines()
+        return self._lines
+
+    async def _next_line(self, timeout, label):
+        """Read the next SSE line; _EOF marks stream end, timeouts raise UpstreamTimeout."""
+        iterator = self._line_iterator()
+        try:
+            if timeout is None:
+                return await iterator.__anext__()
+            return await asyncio.wait_for(iterator.__anext__(), max(0.0, timeout))
+        except StopAsyncIteration:
+            return _EOF
+        except (asyncio.TimeoutError, TimeoutError):
+            raise UpstreamTimeout(label()) from None
+
+    async def read_first_line(self):
+        """Read the first SSE line under the TTFB bound; None for an empty stream."""
+        if self._first is _PENDING:
+            budget = None
+            if self._ttfb_deadline is not None:
+                budget = self._ttfb_deadline - self._clock()
+                if budget <= 0:
+                    raise UpstreamTimeout(f"上游 {self._ttfb_timeout:g}s 内未返回任何数据")
+            line = await self._next_line(budget, lambda: f"上游 {self._ttfb_timeout:g}s 内未返回任何数据")
+            self._first = None if line is _EOF else line
+        return self._first
+
+    async def aiter_lines(self):
+        """Yield lines: the TTFB-read first line first, then idle-bounded reads."""
+        first = await self.read_first_line()
+        if first is not None:
+            yield first
+        while True:
+            line = await self._next_line(self._idle_timeout, lambda: f"上游流空闲超过 {self._idle_timeout:g}s")
+            if line is _EOF:
+                return
+            yield line
+
+    async def _next_bytes(self, timeout, label):
+        iterator = self._bytes
+        if iterator is None:
+            iterator = self._bytes = self._response.aiter_bytes()
+        try:
+            if timeout is None:
+                return await iterator.__anext__()
+            return await asyncio.wait_for(iterator.__anext__(), max(0.0, timeout))
+        except StopAsyncIteration:
+            return _EOF
+        except (asyncio.TimeoutError, TimeoutError):
+            raise UpstreamTimeout(label()) from None
+
+    async def aiter_bytes(self):
+        """Idle-bounded byte iteration for bounded error-body reads."""
+        while True:
+            chunk = await self._next_bytes(self._idle_timeout, lambda: f"上游响应体读取超过 {self._idle_timeout:g}s")
+            if chunk is _EOF:
+                return
+            yield chunk
+
+    async def aread(self):
+        """Read the whole body (non-200 error bodies) under the idle bound."""
+        if self._content is None:
+            try:
+                if self._idle_timeout is None:
+                    self._content = await self._response.aread()
+                else:
+                    self._content = await asyncio.wait_for(self._response.aread(), self._idle_timeout)
+            except (asyncio.TimeoutError, TimeoutError):
+                raise UpstreamTimeout(f"上游响应体读取超过 {self._idle_timeout:g}s") from None
+        return self._content
+
+
 @asynccontextmanager
 async def _attempt_client(url, timeout, clients):
     client = clients.get(url) if clients is not None else None
@@ -384,19 +514,26 @@ async def _attempt_client(url, timeout, clients):
 
 @asynccontextmanager
 async def open_backend_stream(url, headers, body, *, read_timeout=300, on_retry=None,
-                              retry_write_timeout=False, clients=None, headers_for_attempt=None):
+                              retry_write_timeout=False, clients=None, headers_for_attempt=None,
+                              ttfb_timeout=None, idle_timeout=None):
     """Retry connection failures once on a fresh client; write timeouts require explicit opt-in.
-    Never replay after the upstream response opens.
+    Never replay after the upstream response opens. When either timeout bound is set the
+    yielded response is a :class:`BoundedStream` that fails fast on TTFB or idle stalls.
     """
     retryable = BODY_NOT_ACCEPTED + (WRITE_TIMEOUT if retry_write_timeout else ())
     timeout = httpx.Timeout(read_timeout, connect=15, write=60, pool=15)
+    bounded = ttfb_timeout is not None or idle_timeout is not None
     for attempt in range(2):
         opened = False
         try:
             async with _attempt_client(url, timeout, clients if attempt == 0 else None) as client:
                 attempt_headers = headers_for_attempt() if headers_for_attempt is not None else headers
+                started = time.monotonic()
                 async with client.stream("POST", url, headers=attempt_headers, json=body, timeout=timeout) as response:
                     opened = True
+                    if bounded:
+                        response = BoundedStream(response, ttfb_timeout=ttfb_timeout, started=started,
+                                                 idle_timeout=idle_timeout)
                     yield response
                     return
         except retryable as error:

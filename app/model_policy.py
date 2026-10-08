@@ -23,7 +23,11 @@ class PolicyScopeMiddleware:
 
 def snapshot(config):
     store = config.get("control_store")
-    return store.snapshot() if store is not None else {"models": {}, "credentials": {}, "revision": 0}
+    if store is None:
+        return {"models": {}, "credentials": {}, "revision": 0}
+    # 热路径优先用零拷贝 view;测试替身/旧实现只有 snapshot 时回退。
+    reader = getattr(store, "view", None)
+    return reader() if reader is not None else store.snapshot()
 
 
 def credential_enabled(config, entry):

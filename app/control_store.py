@@ -170,6 +170,15 @@ class ControlStore:
         # Published dictionaries are never mutated; SQLite writer locks cannot stall routing.
         return copy.deepcopy(self._snapshot)
 
+    def view(self):
+        """Return the published state itself, for read-only hot paths.
+
+        The state is replaced wholesale on every write (never mutated in place).
+        Routing checks booleans here ~50x per request, where the per-call deepcopy
+        dominated; callers must treat the result as frozen and never mutate it.
+        """
+        return self._snapshot
+
     def _update(self, revision, change):
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")

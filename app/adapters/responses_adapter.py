@@ -553,6 +553,7 @@ class ResponsesStreamConverter:
         self._usage: dict | None = None
         self._content_filter = False
         self._seq = 0  # Monotonic emitted-event sequence
+
     # Public methods
 
     def feed_line(self, line: str) -> str:
@@ -589,28 +590,28 @@ class ResponsesStreamConverter:
         # Close reasoning items.
         if self._emitted_reasoning_item:
             events.append(self._evt("response.reasoning_summary_text.done", {
-                "output_index": 0, "summary_index": 0, "text": self._reasoning,
+                "output_index": self._reasoning_output_idx, "summary_index": 0, "text": self._reasoning,
                 "item_id": self._reasoning_item_id
             }))
             events.append(self._evt("response.output_item.done", {
-                "output_index": 0, "item": self._reasoning_item(status)
+                "output_index": self._reasoning_output_idx, "item": self._reasoning_item(status)
             }))
 
         # Close text content.
         if self._emitted_content_part:
             events.append(self._evt("response.output_text.done", {
-                "output_index": self._msg_idx(), "content_index": 0, "text": self._content,
+                "output_index": self._message_output_idx, "content_index": 0, "text": self._content,
                 "item_id": self.msg_id
             }))
             events.append(self._evt("response.content_part.done", {
-                "output_index": self._msg_idx(), "content_index": 0,
+                "output_index": self._message_output_idx, "content_index": 0,
                 "part": {"type": "output_text", "text": self._content, "annotations": []},
                 "item_id": self.msg_id
             }))
 
         if self._emitted_msg_item:
             events.append(self._evt("response.output_item.done", {
-                "output_index": self._msg_idx(),
+                "output_index": self._message_output_idx,
                 "item": self._msg_item(status)
             }))
 
@@ -768,7 +769,7 @@ class ResponsesStreamConverter:
 
                 if not self._emitted_content_part:
                     events.append(self._evt("response.content_part.added", {
-                        "output_index": self._msg_idx(), "content_index": 0,
+                        "output_index": self._message_output_idx, "content_index": 0,
                         "part": {"type": "output_text", "text": "", "annotations": []},
                         "item_id": self.msg_id
                     }))
@@ -777,7 +778,7 @@ class ResponsesStreamConverter:
                 self._budget.charge_text(content)
                 self._content += content
                 events.append(self._evt("response.output_text.delta", {
-                    "output_index": self._msg_idx(), "content_index": 0, "delta": content,
+                    "output_index": self._message_output_idx, "content_index": 0, "delta": content,
                     "item_id": self.msg_id
                 }))
 
@@ -835,18 +836,25 @@ class ResponsesStreamConverter:
         payload = {"type": event_type, **data, "sequence_number": self._seq}
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+    def _alloc_output_index(self) -> int:
+        """Allocate the next output_index (in item first-emission order).
+
+        本地移植的交错索引修复：output_index 按实际发射顺序单调分配（谁先发射谁先拿号）。
+        此前非 realtime 路径按"槽位推算"编号——一旦上游交错输出（content 先于
+        reasoning 到达），两个 item 会同占 output_index，客户端按索引归槽时
+        轻则丢字重则错序。常规发射顺序（reasoning → message → tools）
+        下与固定槽位编号一致，行为不变。
+        """
+        index = self._next_output_idx
+        self._next_output_idx += 1
+        return index
+
     def _claim_output(self, kind: str, index: int | None = None) -> int:
+        # realtime 模式额外记录发射顺序，供 finish/_response_obj 按序回放。
+        output_index = self._alloc_output_index()
         if self._realtime:
-            output_index = self._next_output_idx
-            self._next_output_idx += 1
             self._output_order.append((kind, index))
-            return output_index
-        if kind == "reasoning":
-            return 0
-        if kind == "message":
-            return 1 if self._emitted_reasoning_item else 0
-        return ((1 if self._emitted_reasoning_item else 0)
-                + (1 if self._emitted_msg_item else 0) + len(self._tool_calls))
+        return output_index
 
     def _sync_tool_state(self, index: int, tool: dict) -> dict:
         state = ((self._tool_states or {}).get(index)
@@ -975,14 +983,22 @@ class ResponsesStreamConverter:
                 elif kind == "tool" and self._tool_calls[index].get("emitted"):
                     output.append(self._fc_item(self._tool_calls[index], status))
         else:
+            # output 数组按 item 实际发射（output_index 分配）顺序排列，与流式事件一致
+            # （本地移植的交错索引修复）；常规发射顺序（reasoning → text → tools）
+            # 下与上游固定顺序相同。
+            items: list[tuple[int, dict]] = []
             if self._emitted_reasoning_item:
-                output.append(self._reasoning_item(status))
+                items.append((self._reasoning_output_idx, self._reasoning_item(status)))
             if self._emitted_msg_item or self._content:
-                output.append(self._msg_item(status))
+                # content 非空必然已发射 msg item；兜底取下一个未分配号，避免 None 参与排序
+                items.append((self._message_output_idx
+                              if self._message_output_idx is not None else self._next_output_idx,
+                              self._msg_item(status)))
             for idx in sorted(self._tool_calls):
                 tc = self._tool_calls[idx]
                 if tc.get("emitted"):
-                    output.append(self._fc_item(tc, status))
+                    items.append((tc["output_idx"], self._fc_item(tc, status)))
+            output = [item for _, item in sorted(items, key=lambda pair: pair[0])]
 
         usage = None
         if self._usage:

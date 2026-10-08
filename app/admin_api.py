@@ -61,12 +61,17 @@ def _public_credential(item):
               "auto_checkin", "auto_travel", "travel_supported", "checkin", "travel",
               "trial_supported", "trial",
               "daily_chat_supported", "auto_daily_chat", "daily_chat",
-              "token_expired", "token_expires_at", "last_refresh_time", "sessions", "sticky_sessions", "last_error_code"}
+              "token_expired", "token_expires_at", "last_refresh_time", "sessions", "sticky_sessions", "last_error_code",
+              # Legacy companions consumed by non-WebUI clients (cpa-plugin status page).
+              "healthy", "enterpriseName", "auth_file"}
     result = {key: value for key, value in item.items() if key in fields}
     identity = item.get("account_key") or item.get("id")
     if identity and ("/" in str(identity) or "\\" in str(identity)):
         identity = item.get("account_key")
     result["id"] = identity
+    # gateway_management pops auth_file for its own bookkeeping; restore the filename
+    # alias so legacy clients keep working.
+    result.setdefault("auth_file", item.get("name") or item.get("filename"))
     for field in ("name", "filename"):
         if field in result:
             result[field] = Path(str(result[field])).name

@@ -61,8 +61,8 @@ from app.observability import (AuditMiddleware, observe_recovery, observe_route,
 from app.credential_io import (CredentialFileError, read_import_file, atomic_write_credential,
                                credential_file_lock)
 from app.upstream_io import (ChatSSEAccumulator, StreamOutputBudget, UpstreamHTTPError,
-                             UpstreamResponseError, open_backend_stream, parse_retry_after,
-                             read_bounded_error)
+                             UpstreamProtocolError, UpstreamResponseError, UpstreamTimeout,
+                             open_backend_stream, parse_retry_after, read_bounded_error)
 from app.inference_resources import (AccountCapacity, InferenceResourcesMiddleware, inference_lifespan,
                                      request_resources, release_credential)
 from app.request_context import SessionIdentifierError, current_context
@@ -116,7 +116,9 @@ def _snapshot_stream_policy(protocol: str, body: dict) -> _StreamRequestPolicy:
     mode = CONFIG.get("stream_mode", "compatible")
     if mode not in _STREAM_MODES:
         raise ValueError("invalid stream mode")
-    compatible_aggregate = protocol == "responses" or bool(body.get("tools"))
+    # stream_tools 移植开关：带 tools 的请求也逐字节流式转发（放弃聚合重试）。
+    compatible_aggregate = ((protocol == "responses" or bool(body.get("tools")))
+                            and not CONFIG.get("stream_tools"))
     return _StreamRequestPolicy(mode, mode == "compatible" and compatible_aggregate,
                                 max(0, int(CONFIG.get("max_collect_bytes", 0) or 0)))
 
@@ -247,6 +249,10 @@ class CredentialManager:
         self._cached: dict | None = None
         self._mtime = None
         self._generation = 0
+        # 摘要缓存:静态字段按 generation 记忆化,token_expired 保持实时。
+        # 选路热路径每请求要读几十次 summary(),不缓存则每次都是 stat+两次 JWT 解码。
+        self._summary_cache: dict | None = None
+        self._summary_cache_gen = -1
 
     def _read_raw(self) -> dict:
         with open(self.path, "r", encoding="utf-8") as f:
@@ -358,10 +364,15 @@ class CredentialManager:
     def summary(self) -> dict:
         with self._lock:
             s = self._session()
+            if self._summary_cache is not None and self._summary_cache_gen == self._generation:
+                out = dict(self._summary_cache)
+                expires = out.get("token_expires_at") or 0
+                out["token_expired"] = time.time() * 1000 >= (expires - 60_000)
+                return out
             auth = s.get("auth") or {}
             acct = _credential_account(s)
             profile = profile_for_auth(auth)
-            return {
+            result = {
                 "uid": str(acct.get("uid") or "") or None,
                 "account_key": _credential_identity(s),
                 "site": profile_site(profile),
@@ -372,6 +383,10 @@ class CredentialManager:
                 "token_expired": self._is_expired(),
                 "last_refresh_time": auth.get("lastRefreshTime") or 0,
             }
+            self._summary_cache = {key: value for key, value in result.items()
+                                   if key != "token_expired"}
+            self._summary_cache_gen = self._generation
+            return result
 
 
 STORAGE_WARN_INTERVAL = 300  # Rate limit for persistence-failure warnings
@@ -424,21 +439,49 @@ def session_key(payload: dict) -> str | None:
     return hashlib.sha256((system + "\x00" + first_user).encode("utf-8", "replace")).hexdigest()[:32]
 
 
+_RESET_DATETIME_RE = re.compile(
+    r"(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}:\d{2})\s*(?:UTC\s*([+-]?\d{1,2}))?",
+    re.IGNORECASE,
+)
+_RESET_DATE_TIME_JOIN_RE = re.compile(r"(\d{4}-\d{2}-\d{2})(\d{1,2}:\d{2}:\d{2})")
+# 文案未标时区时按东八区解释（中文形态来自国内站，实测不带 UTC 标记）。
+_RESET_DEFAULT_UTC_OFFSET = 8
+# 解析结果可信区间：已过期超过 1 分钟、或超过 30 天，都视为不可信并退回兜底冷却。
+_RESET_MIN_AHEAD_SECONDS = -60
+_RESET_MAX_AHEAD_SECONDS = 30 * 86400
+
+
 def _parse_reset_time(raw: bytes) -> float | None:
-    """Parse a quota reset timestamp from a 429 response and return epoch seconds."""
+    """Parse a quota reset timestamp from a 429 body and return epoch seconds.
+
+    Handles both observed upstream wordings: the English form ("... will reset at
+    2026-09-13 17:11:34 UTC+8 ...") and the Chinese form (可在2026-09-1322:05:37重置 —
+    full-width colons, no space between date and time, no timezone marker). Returns
+    None when nothing parses so callers fall back to the model cooldown default.
+    """
     try:
         text = raw.decode("utf-8", "replace")
     except Exception:
         return None
-    m = re.search(r"(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s*UTC\s*([+-]?\d+)", text)
+    # Normalize: full-width colons/minus -> half-width; restore missing date-time space.
+    text = text.replace("：", ":").replace("－", "-")
+    text = _RESET_DATE_TIME_JOIN_RE.sub(r"\1 \2", text)
+    m = _RESET_DATETIME_RE.search(text)
     if not m:
         return None
     try:
-        dt = datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S")
-        tz = timezone(timedelta(hours=int(m.group(3))))
-        return dt.replace(tzinfo=tz).timestamp()
-    except ValueError:
+        hour, minute, second = (int(part) for part in m.group(2).split(":"))
+        dt = datetime.strptime(
+            f"{m.group(1)} {hour:02d}:{minute:02d}:{second:02d}", "%Y-%m-%d %H:%M:%S"
+        )
+        offset = int(m.group(3)) if m.group(3) else _RESET_DEFAULT_UTC_OFFSET
+        stamp = dt.replace(tzinfo=timezone(timedelta(hours=offset))).timestamp()
+    except (ValueError, OverflowError):
         return None
+    delta = stamp - time.time()
+    if delta < _RESET_MIN_AHEAD_SECONDS or delta > _RESET_MAX_AHEAD_SECONDS:
+        return None
+    return stamp
 
 
 
@@ -531,6 +574,7 @@ class CredentialPool:
         self._sync_event = threading.Event()
         self._sync_retry: dict[str, float] = {}
         self._sync_attempts: dict[str, int] = {}
+        self._rescan_dir_key: tuple | None = None  # 上次重扫时的目录发现键
         self.reload(paths or [])
         if self._scan:
             self._rescan()             # Discover credentials at startup.
@@ -906,11 +950,32 @@ class CredentialPool:
         """Order by earliest credit expiry, placing unknown balances last."""
         exp = self._ledger.soonest_expiry_of(e["id"]) if self._ledger else None
         return (exp is None, exp or 0.0)
+    def _dir_scan_key(self):
+        """目录发现键:auth 目录的 (mtime_ns, inode),一次 stat 即得。"""
+        try:
+            st = managed_auth_dir().stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_ino)
+
     def _rescan(self):
+        key = self._dir_scan_key() if self._scan else None
         self.prune()
         # Explicit mode retries configured paths, including rejected or evicted ones.
         paths = find_auth_files() if self._scan else [Path(cid) for cid in self._configured]
         self.reload(paths, reset=False)
+        # 记录扫描开始前的目录键:扫描期间若有写入,键已过旧,下一次 pick 会再扫
+        # (宁可多扫一次,不可漏发现新增/删除的凭证)。
+        self._rescan_dir_key = key
+
+    def _maybe_rescan(self):
+        """选路热路径的重扫门控:目录 mtime 未变则跳过全量扫描。
+
+        显式 _rescan()(管理操作、guard)不受影响;scan=False 模式没有目录发现
+        语义且成本低,维持全量。文件增删必然改变目录 mtime,导入后立即可路由。
+        """
+        if not self._scan or self._dir_scan_key() != self._rescan_dir_key:
+            self._rescan()
 
     def _healthy(self, e: dict) -> bool:
         return model_policy.credential_enabled(CONFIG, e) and time.time() >= e["fail_until"]
@@ -1066,7 +1131,7 @@ class CredentialPool:
     def pick(self, skey: str | None, model: str | None = None, *, region=None,
              tried=(), with_capacity=False, requirements=None) -> CredentialManager | None:
         """Select a healthy sticky or round-robin credential, preferring eligible zero-rate accounts."""
-        self._rescan()  # Reload and prune acquire their own locks.
+        self._maybe_rescan()  # Reload and prune acquire their own locks.
         with self._lock:
             self._evict_sticky()
             candidates = self._candidates(model, region=region, tried=tried)
@@ -1171,6 +1236,7 @@ class CredentialPool:
                     e["last_failure_at"] = time.time()
                     self._remember_credential(e, e["last_error"])
         _log(f"[cred] 凭证熔断 {CRED_COOLDOWN}s: {Path(cm.path).name} {reason}")
+
 
     def note_status(self, cm: CredentialManager | None, status: int,
                     model: str | None = None, raw: bytes = b"", *, generation=None, retry_after=None):
@@ -1845,7 +1911,15 @@ PASSTHROUGH_BODY_KEYS = {
     "stream_options", "stop", "presence_penalty", "frequency_penalty",
     "n", "response_format", "seed", "user", "reasoning_effort", "prompt_cache_key",
     "verbosity", "reasoning_summary", "parallel_tool_calls",
+    # DeepSeek/GLM 系的显式思考开关（{"type": "enabled"|"disabled"}）：客户端显式
+    # 给出时必须原样透传，不能只靠 reasoning_effort 单独生效（上游对后者并非总开思考）。
+    "thinking",
 }
+
+# 对模型名命中这些子串的请求，把"客户端要求推理"钉死成显式 thinking 开关。
+# 上游在超长会话下会间歇性忽略 reasoning_effort，导致思考整段漏进 content 通道
+# （表现为思维链混入正文）；显式 thinking 字段是厂商稳定的思考开关。
+THINKING_PIN_MODELS = ("deepseek",)
 
 # ---------------------------------------------------------------------------
 # FastAPI application
@@ -1912,6 +1986,12 @@ CONFIG: dict = {"api_key": "", "cred": None, "log_path": None, "ledger": None,
                 "usage_daily_accounts": None,  # Independent per-account usage snapshots
                 "usage_snapshots": None,  # On-disk cache of the per-account snapshots
                 "credit_price_cny": None, "credit_price_usd": None, "usd_rate": None,
+                "read_timeout": 300,     # Bounded upstream read timeout (adjacent bytes)
+                "ttfb_timeout": 45.0,    # Upstream first-byte timeout; 0 disables
+                "stream_idle_timeout": 60.0,  # Max gap between upstream SSE lines; 0 disables
+                "stream_tools": False,   # Stream tool-bearing requests byte-by-byte (no aggregate retry)
+                "coalesce_reasoning": True,  # Merge reasoning into one client block (upstream v1.3.2); False streams it live
+                "thinking_pin_models": ",".join(THINKING_PIN_MODELS),  # Reasoning→thinking pin substrings
                 "desensitize": False, "no_compact": False, "keep_tool_metadata": False}  # None prices use module defaults.
 
 # In-memory OAuth sessions do not survive restarts.
@@ -2195,6 +2275,50 @@ def admin_del_credential(name: str,
             # Sweep any rebind that raced the removal from outside the shared lock.
             management.admin_unbind_credential(identity)
     return {"removed": os.path.basename(name)}
+
+
+@app.post("/admin/credentials/{name}/enabled")
+async def admin_credential_enabled_compat(name: str, request: Request,
+                                          enabled: Optional[str] = None,
+                                          authorization: Optional[str] = Header(default=None),
+                                          x_api_key: Optional[str] = Header(default=None, alias="X-Api-Key")):
+    """兼容路由：按凭证文件名启停账号（cpa-plugin 的 POST {name}/enabled?enabled=bool 契约）。
+
+    必须注册在通用的 /admin/credentials/{identity}/{action} 之前，否则 "enabled"
+    会被当作不支持的 action 拒绝。body {"enabled": bool} 与查询参数两种形态都接受。
+    """
+    _check_admin_auth(authorization, x_api_key)
+    value: bool | None = None
+    if enabled is not None and enabled != "":
+        value = enabled.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        if isinstance(body, dict) and type(body.get("enabled")) is bool:
+            value = body["enabled"]
+    if value is None:
+        raise HTTPException(status_code=400, detail={"error": {
+            "message": "enabled 必须为布尔值（查询参数或 JSON body）", "type": "invalid_request_error"}})
+    management = CONFIG.get("management")
+    pool = CONFIG.get("cred_pool")
+    if management is None or pool is None:
+        raise HTTPException(status_code=503, detail={"error": {
+            "message": "凭证池未就绪", "type": "management_locked"}})
+    pool._rescan()
+    base = os.path.basename(name)
+    identity = None
+    with pool._lock:
+        for entry in pool.entries():
+            if Path(entry["id"]).name == base:
+                identity = entry.get("account_key") or entry["id"]
+                break
+    if identity is None:
+        raise HTTPException(status_code=404, detail={"error": {
+            "message": f"凭据不在池中: {base}", "type": "invalid_request_error"}})
+    management.admin_set_credential_enabled(identity, value)
+    return {"name": base, "enabled": value}
 
 
 
@@ -2789,6 +2913,35 @@ def _request_id():
     return context.request_id if context is not None else uuid.uuid4().hex
 
 
+def _reasoning_requested(body: dict) -> bool:
+    """客户端是否显式要求推理输出：reasoning_effort 存在且不为 off。"""
+    effort = body.get("reasoning_effort")
+    return isinstance(effort, str) and effort.strip().lower() not in ("", "off", "none", "disabled")
+
+
+def _pin_thinking(body: dict) -> dict:
+    """把客户端的推理要求钉死成显式 thinking 开关（DeepSeek/GLM 系模型）。
+
+    上游对 reasoning_effort 的思考分离并不总是生效——超长会话下会间歇性把思考
+    整段漏进 content 通道；显式 thinking 字段才是稳定的思考开关。仅当：
+      1) 模型名命中 CONFIG["thinking_pin_models"] 子串（默认仅 deepseek 系）；
+      2) 客户端以 reasoning_effort 显式要求推理；
+      3) 客户端未显式给出 thinking（显式字段始终优先，包括 disabled）；
+    才注入 {"type": "enabled"}。非命中模型不注入，避免未知字段被其他厂商拒绝。
+    """
+    raw = CONFIG.get("thinking_pin_models")
+    if isinstance(raw, str):
+        patterns = tuple(item.strip() for item in raw.split(",") if item.strip())
+    else:
+        patterns = tuple(raw or ())
+    if not patterns or body.get("thinking") is not None or not _reasoning_requested(body):
+        return body
+    model = str(body.get("model") or "")
+    if not any(pattern in model for pattern in patterns):
+        return body
+    return {**body, "thinking": {"type": "enabled"}}
+
+
 def _prepare_chat_body(body: dict, *, region=None, session_payload=None) -> dict:
     """Normalize models, system messages, streaming, desensitization and payload budgets."""
     if session_payload is not None:
@@ -2817,6 +2970,7 @@ def _prepare_chat_body(body: dict, *, region=None, session_payload=None) -> dict
             message_indices.insert(0, message_indices.pop(system_index))
     body["messages"] = normalize_chat_messages(messages, message_indices=message_indices)
     _normalize_tool_choice(body)
+    body = _pin_thinking(body)
     body["stream"] = True
     body.setdefault("stream_options", {"include_usage": True})
     body = _chat_body_desensitize(body)
@@ -3161,8 +3315,13 @@ def _chat_result_to_sse_lines(m: dict) -> list[str]:
 def _network_error_text(error: Exception) -> str:
     return sanitize_log_text(f"{type(error).__name__}: {str(error).strip() or 'upstream transport failed'}", 512)
 
-async def _coalesce_reasoning_sse(lines, *, max_bytes=0):
-    """Coalesce normalized Chat SSE reasoning before downstream protocol adapters."""
+async def _coalesce_reasoning_sse(lines, *, max_bytes=0, live=False):
+    """Coalesce normalized Chat SSE reasoning before downstream protocol adapters.
+
+    live（移植开关，由 CONFIG[coalesce_reasoning]=False 开启）：思考增量逐帧透传，
+    不缓冲到可见正文；同一次解析的归一化仍然生效。用于前端要看思考链实时打字的场景——
+    合并成单块会让客户端测得的思考时长恒为 0。
+    """
     pending: list[str] = []
     template = None
     buffer_budget = StreamOutputBudget(max_bytes)
@@ -3228,11 +3387,21 @@ async def _coalesce_reasoning_sse(lines, *, max_bytes=0):
             if embedded_boundary:
                 yield ""
             continue
+        # 本地移植归一化：复用这一次解析剥掉 delta 空装饰字段与零宽字符（见 _normalize_chat_event）；
+        # 只有真正发生改变的少数帧才重新序列化，其余原样向下流。
+        if isinstance(event, dict) and _normalize_chat_event(event):
+            line = "data: " + json.dumps(event, ensure_ascii=False)
         choices = event.get("choices") if isinstance(event, dict) else None
         choice = choices[0] if isinstance(choices, list) and choices else None
         delta = choice.get("delta") if isinstance(choice, dict) else None
         reasoning = delta.get("reasoning_content") if isinstance(delta, dict) else None
         if isinstance(reasoning, str) and reasoning:
+            if live:
+                # 实时模式：思考帧（已归一化）立即下发，不合并、不等可见正文。
+                yield line
+                if embedded_boundary:
+                    yield ""
+                continue
             if template is None:
                 template = event
             pending.append(reasoning)
@@ -3317,9 +3486,15 @@ async def _backend_stream(url, headers, body, *, timeout=300, rid="", model_name
     try:
         resources = request_resources.get()
         clients = resources.clients if resources is not None and CONFIG.get("upstream_keepalive") else None
-        async with open_backend_stream(url, headers, _upstream_chat_body(body), read_timeout=timeout, on_retry=retry,
+        # 流超时体系：read_timeout 兜底相邻字节；ttfb 约束首行前的干等；idle 约束行间停顿。
+        # 显式传入的 timeout 优先（调用方约定），否则回落到可配置的 read_timeout。
+        effective_timeout = timeout if timeout != 300 else float(CONFIG.get("read_timeout") or 300)
+        ttfb = float(CONFIG.get("ttfb_timeout") or 0) or None
+        idle = float(CONFIG.get("stream_idle_timeout") or 0) or None
+        async with open_backend_stream(url, headers, _upstream_chat_body(body), read_timeout=effective_timeout, on_retry=retry,
                                        retry_write_timeout=bool(CONFIG.get("retry_write_timeout")),
-                                       clients=clients, headers_for_attempt=attempt_headers) as response:
+                                       clients=clients, headers_for_attempt=attempt_headers,
+                                       ttfb_timeout=ttfb, idle_timeout=idle) as response:
             opened = True
             observe_attempt("upstream_http", status_code=response.status_code,
                             duration_ms=(time.monotonic() - started) * 1000)
@@ -3437,6 +3612,53 @@ async def _fetch_checked_chat(url, headers, body, model_name, rid, cred=None, *,
                         total_tokens=discarded.get("total_tokens"))
         _log(f"[{rid}] tool_calls 损坏，重试 {tool_attempt}/{budget} | {model_name}")
 
+def _strip_zwsp(text: str) -> str:
+    """响应侧剥离 U+200B：聊天输出里零宽字符没有语义，只会是提示词零宽的回声泄漏。"""
+    return text.replace("\u200b", "") if "\u200b" in text else text
+
+
+def _normalize_chat_event(chunk) -> bool:
+    """原位归一化一个已解析的 Chat SSE 事件，返回是否有改动。
+
+    剥掉上游 delta 里的空装饰字段（content:""/tool_calls:[]/function_call:null/refusal:""）：
+    部分客户端（AI SDK v5 / ZCode 系）对 content 与 reasoning_content 的切换判定不看内容
+    是否为空，同帧出现的空 content 会把连续思考流切成逐词的独立思考块。同时剥离模型输出
+    里的零宽字符（防止脱敏回声漏进产物）。由 reasoning 合并器在解析后调用——流式热路径对每条
+    SSE 事件只解析一次，只有真正发生改变的少数帧才需要重新序列化。
+    """
+    changed = False
+    for choice in chunk.get("choices") or []:
+        delta = choice.get("delta") if isinstance(choice, dict) else None
+        if not isinstance(delta, dict):
+            continue
+        for key in ("content", "reasoning_content", "refusal"):
+            value = delta.get(key)
+            if value == "":
+                delta.pop(key)
+                changed = True
+            elif isinstance(value, str):
+                cleaned = _strip_zwsp(value)
+                if cleaned != value:
+                    delta[key] = cleaned
+                    changed = True
+        if delta.get("tool_calls") == []:
+            delta.pop("tool_calls")
+            changed = True
+        if delta.get("function_call") is None and "function_call" in delta:
+            delta.pop("function_call")
+            changed = True
+        for tool_call in delta.get("tool_calls") or []:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            if isinstance(function, dict) and isinstance(function.get("arguments"), str):
+                cleaned = _strip_zwsp(function["arguments"])
+                if cleaned != function["arguments"]:
+                    function["arguments"] = cleaned
+                    changed = True
+    return changed
+
+
 async def _chat_sse_lines(url, headers, body, model_name, t0, rid, cred=None, *,
                           policy=None, tracker=None, state=None):
     """Yield validated Chat SSE with bounded filter detection and no streaming filter retries."""
@@ -3507,7 +3729,8 @@ async def _stream_upstream(url: str, headers: dict, body: dict,
     sent = False
     upstream = _coalesce_reasoning_sse(_chat_sse_lines(
         url, headers, body, model_name, t0, rid, cred, policy=policy),
-        max_bytes=policy.max_collect_bytes)
+        max_bytes=policy.max_collect_bytes,
+        live=not bool(CONFIG.get("coalesce_reasoning", True)))
     try:
         try:
             async for line in upstream:
@@ -3540,7 +3763,7 @@ def _cred_manager(cred):
 # Retryable upstream auth, quota and gateway responses; deterministic request errors are excluded.
 FAILOVER_CODES = frozenset({401, 403, 429, 502, 503, 504})
 # Connection failures occur before any request body is sent.
-REPLAYABLE_TRANSPORT = (httpx.ConnectError, httpx.ConnectTimeout)
+REPLAYABLE_TRANSPORT = (httpx.ConnectError, httpx.ConnectTimeout, UpstreamTimeout)
 # Write-timeout replay requires explicit opt-in because partial requests may already be billed.
 WRITE_TIMEOUT_TRANSPORT = (httpx.WriteTimeout,)
 # Gateway timeouts may follow billable upstream work and need an explicit cost warning.
@@ -3817,6 +4040,8 @@ async def create_response(request: Request,
         raise HTTPException(status_code=400, detail={"error": {"message": f"request conversion error: {e}", "type": "invalid_request_error"}})
 
     await run_in_threadpool(_bind_request_session, payload, chat_body)
+    # 上下文投影模式（balanced 压缩已知 CLI 客户端历史，passthrough 全量透传）。
+    # 全量重放历史的客户端（DSH/pi-ai 等）必须配 passthrough：压缩会截断工具输出导致死循环。
     projection_mode = CONFIG.get("responses_projection_mode", "balanced")
     projection_max_bytes = int(CONFIG.get("responses_projection_max_bytes", 40000))
     try:
@@ -3930,7 +4155,8 @@ async def _stream_adapted(url, headers, body, model_name, t0, rid, cred=None, *,
     upstream = _coalesce_reasoning_sse(_chat_sse_lines(
         url, headers, body, model_name, t0, rid, cred,
         policy=policy, tracker=tracker, state=state),
-        max_bytes=policy.max_collect_bytes)
+        max_bytes=policy.max_collect_bytes,
+        live=not bool(CONFIG.get("coalesce_reasoning", True)))
     try:
         try:
             async for line in upstream:
@@ -4181,6 +4407,20 @@ def _projection_bytes_arg(value):
     return number
 
 
+def _nonnegative_number(value):
+    number = float(value)
+    if not number >= 0 or number != number:
+        raise argparse.ArgumentTypeError("必须为非负数")
+    return number
+
+
+def _positive_number(value):
+    number = _nonnegative_number(value)
+    if number == 0:
+        raise argparse.ArgumentTypeError("必须为正数")
+    return number
+
+
 def _origins_arg(value):
     from app.settings import normalize_allowed_origins
     try:
@@ -4298,6 +4538,29 @@ def main():
                     help="把「写请求体超时」也算作上游没收下请求体从而参与重放，默认 false。写超时只能"
                          "证明正文没写完，上游是否已按半截正文计费看不到，因此要显式开启（同时作用于连接"
                          "重试与 --failover-max 换凭证重放）")
+    ap.add_argument("--read-timeout", type=_positive_number, metavar="SECONDS",
+                    default=os.environ.get("CODEBUDDY2API_READ_TIMEOUT", "300"),
+                    help="上游流式读取超时（相邻字节的最长等待兜底），默认 300 秒")
+    ap.add_argument("--ttfb-timeout", type=_nonnegative_number, metavar="SECONDS",
+                    default=os.environ.get("CODEBUDDY2API_TTFB_TIMEOUT", "45"),
+                    help="上游首字节超时秒数：连上却迟迟不发第一个数据行时快速失败并允许换凭证重放，"
+                         "默认 45 秒；0 关闭")
+    ap.add_argument("--stream-idle-timeout", type=_nonnegative_number, metavar="SECONDS",
+                    default=os.environ.get("CODEBUDDY2API_STREAM_IDLE_TIMEOUT", "60"),
+                    help="上游流空闲超时秒数（相邻两个数据行的最大间隔），超过即判定上游卡死，默认 60；0 关闭")
+    ap.add_argument("--stream-tools", type=_boolean_arg, nargs="?", const=True,
+                    default=os.environ.get("CODEBUDDY2API_STREAM_TOOLS", "false"),
+                    help="带 tools 的请求也逐字节流式转发，默认 false（缓冲聚合以校验并重试损坏的 tool_calls）")
+    ap.add_argument("--coalesce-reasoning", type=_boolean_arg, nargs="?", const=True,
+                    default=os.environ.get("CODEBUDDY2API_COALESCE_REASONING", "true"),
+                    help="把流式 reasoning 合并成单个客户端块（上游 v1.3.2 行为，客户端测得的思考时长为 0）；"
+                         "默认 true，设 false 则思考增量逐帧实时下发")
+    ap.add_argument("--thinking-pin-models", metavar="SUBSTR,...",
+                    default=os.environ.get("CODEBUDDY2API_THINKING_PIN_MODELS",
+                                           ",".join(THINKING_PIN_MODELS)),
+                    help="对模型名命中任一子串的请求，把 reasoning_effort 钉死成显式 "
+                         "thinking:{type:enabled}（默认 deepseek；空串关闭注入）。上游长会话下"
+                         "会间歇性忽略 reasoning_effort 导致思维链漏进 content。")
     ap.add_argument("--auto-trial", type=_boolean_arg, nargs="?", const=True,
                     default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
@@ -4313,8 +4576,11 @@ def main():
                 "tool_call_max_retry", "max_inbound_bytes", "max_collect_bytes", "max_concurrent",
                 "failover_max", "retry_write_timeout", "upstream_keepalive", "max_inflight_per_account",
                 "request_context_mode", "stream_mode", "model_capability_guard", "admin_allowed_origins",
-                "responses_projection_mode", "responses_projection_max_bytes"):
-        CONFIG[key] = getattr(args, key)
+                "responses_projection_mode", "responses_projection_max_bytes",
+                "read_timeout", "ttfb_timeout", "stream_idle_timeout", "stream_tools",
+                "thinking_pin_models", "coalesce_reasoning"):
+        if hasattr(args, key):
+            CONFIG[key] = getattr(args, key)
     CONFIG["api_key"] = args.api_key
     CONFIG["desensitize"] = args.desensitize
     CONFIG["no_compact"] = args.no_compact

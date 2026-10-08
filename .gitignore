@@ -40,3 +40,9 @@ converter.log*
 
 # IDE
 .idea/
+
+# 本地私人工作文档（不入库）
+私人工作文档/
+
+# cpa-plugin 是独立项目,不属于本网关仓库
+cpa-plugin/
