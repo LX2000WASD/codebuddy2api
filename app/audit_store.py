@@ -23,6 +23,116 @@ METRICS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:/@-]{1,160}$")
 _SECRET = re.compile(r"(?i)(bearer|sk-|cb-|access[_-]?token|refresh[_-]?token|api[_-]?key|eyJ|://)")
 
+# -- 融合层：延迟分位数与生成速率（tokens/s）的聚合口径 ----------------------
+# 固定延迟直方图桶边界（毫秒）：bucket i 覆盖 [edges[i-1], edges[i])，最后一个桶
+# 覆盖 [51200, +inf)。分位数在桶内线性插值；该口径随聚合持久化，明细清理不
+# 影响结果。桶边界固定，避免热配置改变历史聚合的语义。
+LATENCY_EDGES = (100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200)
+BUCKET_COUNT = len(LATENCY_EDGES) + 1
+# 生成速率口径：流式请求且首字节延迟 >= 该阈值时，扣除 TTFB 后再计算 tokens/s；
+# 更小的 TTFB（如上游缓存命中）说明首字节几乎即达，扣除反而让除数过小，回退
+# 为端到端口径。阈值固定，理由同桶边界。
+RATE_TTFB_THRESHOLD_MS = 200.0
+PERCENTILE_MIN_SAMPLES = 5
+DIMENSIONS = ("global", "model", "profile", "credential")
+
+
+def latency_bucket_index(value):
+    """Map a duration in milliseconds to its fixed histogram bucket."""
+    if value is None or value < 0:
+        return None
+    for index, edge in enumerate(LATENCY_EDGES):
+        if value < edge:
+            return index
+    return BUCKET_COUNT - 1
+
+
+def empty_buckets():
+    """A fresh per-bucket latency histogram with zero counts."""
+    return [0] * BUCKET_COUNT
+
+
+def merge_buckets(target, source):
+    """Element-wise merge of two latency histograms; unequal shapes keep the wider."""
+    if not isinstance(target, list) or not isinstance(source, list):
+        return target if isinstance(target, list) else source
+    if len(target) < len(source):
+        target, source = source, target
+    for index, value in enumerate(source):
+        if isinstance(value, int):
+            target[index] = int(target[index]) + value
+    return target
+
+
+def latency_percentiles(buckets, fractions=(0.5, 0.95, 0.99)):
+    """Interpolate P50/P95/P99 from the fixed latency histogram.
+
+    Returns a dict keyed by the fraction; each value is None when the sample
+    count is below the confidence floor or the histogram is unusable.
+    """
+    result = {fraction: None for fraction in fractions}
+    if not isinstance(buckets, list) or len(buckets) != BUCKET_COUNT:
+        return result
+    try:
+        counts = [int(value) for value in buckets]
+    except (TypeError, ValueError):
+        return result
+    total = sum(counts)
+    if total < PERCENTILE_MIN_SAMPLES:
+        return result
+    for fraction in fractions:
+        target = fraction * total
+        cumulative = 0.0
+        for index, count in enumerate(counts):
+            previous = cumulative
+            cumulative += count
+            if cumulative < target or count <= 0:
+                continue
+            low = LATENCY_EDGES[index - 1] if index > 0 else 0
+            if index >= len(LATENCY_EDGES):
+                # The open-ended tail has no upper edge: report its lower bound.
+                result[fraction] = float(low)
+                break
+            high = LATENCY_EDGES[index]
+            position = (target - previous) / count
+            result[fraction] = float(low + position * (high - low))
+            break
+    return result
+
+
+def stats_view(stats):
+    """Project a merged stats payload into the fusion readout (averages, percentiles, rate).
+
+    Sum fields are accumulated by the aggregator; this function derives the
+    display values and never invents data for unknown metrics.
+    """
+    if not isinstance(stats, dict):
+        return {}
+    view = {key: stats.get(key) for key in ("requests", "success", "error", "cancelled")}
+    for key in METRICS:
+        view[key] = stats.get(key)
+        view[key + "_known"] = stats.get(key + "_known")
+    duration_sum = stats.get("duration_ms_sum")
+    duration_known = stats.get("duration_ms_known") or 0
+    first_sum = stats.get("first_token_ms_sum")
+    first_known = stats.get("first_token_ms_known") or 0
+    view["duration_avg_ms"] = round(duration_sum / duration_known, 2) if duration_sum and duration_known else None
+    view["first_token_avg_ms"] = round(first_sum / first_known, 2) if first_sum and first_known else None
+    view["latency_known"] = duration_known
+    percentiles = latency_percentiles(stats.get("latency_buckets"))
+    view["latency_p50_ms"] = percentiles[0.5]
+    view["latency_p95_ms"] = percentiles[0.95]
+    view["latency_p99_ms"] = percentiles[0.99]
+    effective = stats.get("effective_ms_sum")
+    rate_known = stats.get("tokens_rate_known") or 0
+    rate_output = stats.get("tokens_rate_output_sum")
+    if isinstance(rate_output, (int, float)) and isinstance(effective, (int, float)) and effective > 0:
+        view["tokens_per_s"] = round(rate_output / (effective / 1000.0), 2)
+    else:
+        view["tokens_per_s"] = None
+    view["tokens_per_s_known"] = rate_known
+    return view
+
 
 def safe_label(value: Any, limit: int = 160) -> str | None:
     """Accept identifiers, never free-form diagnostics, headers or bodies."""
@@ -244,13 +354,23 @@ class AuditStore:
                 **{key: None for key in METRICS},
                 **{key + "_known": 0 for key in METRICS},
                 "duration_ms_sum": 0, "duration_ms_known": 0,
-                "first_token_ms_sum": 0, "first_token_ms_known": 0}
+                "first_token_ms_sum": 0, "first_token_ms_known": 0,
+                # Fusion readouts: latency histogram buckets, the TTFB-deducted
+                # effective time for generation-rate math, and the count of
+                # records that contribute to that rate.
+                "latency_buckets": empty_buckets(),
+                "effective_ms_sum": 0, "tokens_rate_known": 0, "tokens_rate_output_sum": 0}
 
     @staticmethod
     def _merge(target, source):
         for key, value in source.items():
             if isinstance(value, (int, float)):
                 target[key] = (target.get(key) or 0) + value
+            elif isinstance(value, list) and key == "latency_buckets":
+                # Histogram payloads merge element-wise; legacy rows without the
+                # key leave the target histogram untouched.
+                current = target.get(key)
+                target[key] = merge_buckets(current if isinstance(current, list) else value, value)
         return target
 
     def _aggregate(self, record):
@@ -263,6 +383,30 @@ class AuditStore:
         for key in ("duration_ms", "first_token_ms"):
             increment[key + "_sum"] = record[key] or 0
             increment[key + "_known"] = int(record[key] is not None)
+        # Latency histogram over the end-to-end duration; a missing or negative
+        # duration leaves every bucket at zero rather than corrupting the shape.
+        duration = record.get("duration_ms")
+        bucket_index = latency_bucket_index(duration)
+        if bucket_index is not None:
+            increment["latency_buckets"][bucket_index] = 1
+        # Generation-rate accounting: when the request streamed and its first
+        # byte arrived after the fixed threshold, subtract the first-byte wait
+        # before accumulating the effective generation time. Records whose
+        # first-byte wait exceeds their own duration are inconsistent and drop
+        # out of the rate entirely; both the numerator and the denominator move
+        # together so the ratio can never be inflated by partial observations.
+        output = record.get("output_tokens")
+        if duration is not None and output is not None:
+            first_token = record.get("first_token_ms")
+            if (record.get("streaming") and isinstance(first_token, (int, float))
+                    and first_token >= RATE_TTFB_THRESHOLD_MS):
+                effective = duration - first_token
+            else:
+                effective = duration
+            if effective >= 0:
+                increment["effective_ms_sum"] = effective
+                increment["tokens_rate_output_sum"] = output
+                increment["tokens_rate_known"] = 1
         dimensions = [("global", "")]
         dimensions += [(key, record.get("public_model" if key == "model" else key) or "")
                        for key in ("model", "profile", "credential")]
@@ -527,6 +671,105 @@ class AuditStore:
                     "profiles": [{"profile": key, **value} for key, value in profiles.items()],
                     "generated_at": now, "range": {**period, "partial": partial}}
         return self._run(fetch, {"summary": self._empty_stats(), "series": [], "models": [], "profiles": [], "generated_at": now, "range": period, "degraded": True})
+
+    # -- 融合层：按维度切分的聚合查询 -------------------------------------
+
+    def _validate_dimension(self, dimension, key, days, granularity):
+        """Validate the fusion stats query shape shared by the dimension methods."""
+        if dimension not in DIMENSIONS:
+            raise ValueError("invalid dimension")
+        if dimension == "global":
+            if key not in (None, ""):
+                raise ValueError("global dimension takes no key")
+            dimension_key = ""
+        else:
+            # Keys share the identifier rules of log filters: never free-form text.
+            if not safe_label(key):
+                raise ValueError("invalid dimension key")
+            dimension_key = key
+        days = int(days)
+        if not 1 <= days <= 36500:
+            raise ValueError("invalid stats range")
+        granularity = "day" if granularity == "auto" else granularity
+        if granularity not in ("hour", "day"):
+            raise ValueError("invalid granularity")
+        if granularity == "hour" and days > 90:
+            raise ValueError("hourly range exceeds 90 days")
+        return dimension, dimension_key, days, granularity
+
+    @staticmethod
+    def _dimension_period(days, now):
+        start = int(now // 86400) * 86400 - (days - 1) * 86400
+        return start
+
+    def dimension_query(self, dimension="global", key=None, days=30, granularity="day"):
+        """Windowed aggregation for one dimension key (or global), feeding the fusion stats endpoints."""
+        dimension, dimension_key, days, granularity = self._validate_dimension(dimension, key, days, granularity)
+        now = time.time()
+        start = self._dimension_period(days, now)
+
+        def fetch():
+            summary = self._empty_stats()
+            rows = self._db.execute(
+                "SELECT bucket,payload FROM stats_daily WHERE dimension=? AND dimension_key=? "
+                "AND bucket>=? AND bucket<=? ORDER BY bucket",
+                (dimension, dimension_key, start, now)).fetchall()
+            series = []
+            for row in rows:
+                stats = json.loads(row["payload"])
+                self._merge(summary, stats)
+                if granularity == "day":
+                    series.append({"bucket": row["bucket"], **stats})
+            if granularity == "hour":
+                rows = self._db.execute(
+                    "SELECT bucket,payload FROM stats_hourly WHERE dimension=? AND dimension_key=? "
+                    "AND bucket>=? AND bucket<=? ORDER BY bucket",
+                    (dimension, dimension_key, start, now)).fetchall()
+                series = [{"bucket": row["bucket"], **json.loads(row["payload"])} for row in rows]
+            partial = granularity == "hour" and sum(row.get("requests") or 0 for row in series) != (summary.get("requests") or 0)
+            step = 3600 if granularity == "hour" else 86400
+            if days <= 90 and not partial:
+                recorded = {row["bucket"]: row for row in series}
+                series = [recorded.get(bucket, {"bucket": bucket, **self._empty_stats()})
+                          for bucket in range(start, int(now // step) * step + 1, step)]
+            for row in series:
+                row["date"] = time.strftime("%Y-%m-%d %H:00" if granularity == "hour" else "%Y-%m-%d",
+                                            time.gmtime(row["bucket"]))
+            return {"summary": summary, "series": series,
+                    "range": {"days": days, "start": start, "end": now, "granularity": granularity,
+                              "dimension": dimension, "key": dimension_key or None, "partial": partial}}
+
+        fallback = {"summary": self._empty_stats(), "series": [],
+                    "range": {"days": days, "start": start, "end": now, "granularity": granularity,
+                              "dimension": dimension, "key": dimension_key or None},
+                    "degraded": True}
+        return self._run(fetch, fallback, write=True)
+
+    def dimension_keys(self, dimension, days=30):
+        """Per-key aggregation for one dimension, bounded and ordered by traffic."""
+        if dimension not in ("model", "profile", "credential"):
+            raise ValueError("invalid dimension")
+        days = int(days)
+        if not 1 <= days <= 36500:
+            raise ValueError("invalid stats range")
+        now = time.time()
+        start = self._dimension_period(days, now)
+
+        def fetch():
+            merged = {}
+            rows = self._db.execute(
+                "SELECT dimension_key,payload FROM stats_daily WHERE dimension=? "
+                "AND bucket>=? AND bucket<=? ORDER BY bucket",
+                (dimension, start, now)).fetchall()
+            for row in rows:
+                self._merge(merged.setdefault(row["dimension_key"], self._empty_stats()),
+                            json.loads(row["payload"]))
+            ordered = sorted(merged.items(), key=lambda item: item[1].get("requests") or 0, reverse=True)
+            return {"dimension": dimension, "days": days, "keys": dict(ordered[:200])}
+
+        fallback = {"dimension": dimension, "days": days, "keys": {}, "degraded": True}
+        return self._run(fetch, fallback, write=True)
+
     def storage(self):
         def fetch():
             self._prune()

@@ -17,8 +17,10 @@ from starlette.responses import JSONResponse, Response
 
 from . import auth_oauth
 from .admin_auth import AdminAuth, AdminMiddleware, COOKIE_NAME, SESSION_TTL, error_response, same_origin
+from .audit_store import stats_view
 from .control_store import ConflictError, validate_model
 from .credential_io import CredentialFileError, MAX_CREDENTIAL_BYTES, _valid_name, read_import_file
+from .health_endpoints import int_param
 from .settings import SCHEMA, resolve_settings, validate_settings
 
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
@@ -374,16 +376,25 @@ def install_admin(app, config, gateway):
     @route("PATCH", "/admin/credentials/{id}")
     async def credentials_patch(request):
         data = await _body(request)
-        if set(data) not in ({"enabled"}, {"auto_checkin"}, {"auto_travel"}, {"auto_daily_chat"}) or any(type(value) is not bool for value in data.values()):
-            raise ValueError("仅接受一个布尔字段：enabled、auto_checkin、auto_travel 或 auto_daily_chat")
+        if set(data) not in ({"enabled"}, {"paused"}, {"auto_checkin"}, {"auto_travel"}, {"auto_daily_chat"}) or any(type(value) is not bool for value in data.values()):
+            raise ValueError("仅接受一个布尔字段：enabled、paused、auto_checkin、auto_travel 或 auto_daily_chat")
         field, value = next(iter(data.items()))
         identity = request.path_params["id"]
+        # Fusion-A: paused 与 enabled 是两个正交开关——暂停只退出选号（签到/旅行/保号
+        # 照跑），停用才是 control_store 的 enabled。paused 走池侧入口
+        # admin_set_credential_paused(identity, paused)；未落地时回退到 enabled 切换，
+        # 保持语义连续（详见 docs/fusion-api.md「凭证 paused 开关」）。
+        via_pause = field == "paused"
+        if via_pause and not hasattr(gateway, "admin_set_credential_paused"):
+            field, value = "enabled", not value
         def apply():
             if selected(identity) is None:
                 return error_response(404, "凭证不存在")
             with mutation_lock:
                 # The gateway persists under the pool lock before publishing routing state.
-                if field == "enabled":
+                if via_pause:
+                    gateway.admin_set_credential_paused(identity, value)
+                elif field == "enabled":
                     gateway.admin_set_credential_enabled(identity, value)
                 elif field == "auto_checkin":
                     gateway.admin_set_auto_checkin(identity, value)
@@ -392,6 +403,10 @@ def install_admin(app, config, gateway):
                 else:
                     gateway.admin_set_auto_travel(identity, value)
             event("credential." + field, {"credential": identity, field: value})
+            enabled = control.snapshot()["credentials"].get(identity, {}).get("enabled", True)
+            if via_pause:
+                return JSONResponse({"id": identity, "field": "paused", "paused": value,
+                                     "enabled": enabled, "revision": control.snapshot()["revision"]})
             return JSONResponse({"id": identity, field: value, "revision": control.snapshot()["revision"]})
         return await run_in_threadpool(apply)
 
@@ -545,5 +560,197 @@ def install_admin(app, config, gateway):
             return result
         result = await run_in_threadpool(build_dashboard)
         return result if isinstance(result, Response) else JSONResponse(result)
+
+    # -- 融合层：分位数 / 维度切分 / 生成速率与积分到期视图 ----------------
+
+    def _stats_days(request):
+        """Shared window validation for the fusion statistics endpoints."""
+        days = request.query_params.get("days", "7")
+        try:
+            days = int(str(days).strip())
+        except ValueError:
+            raise ValueError("days 必须为 1、7、30 或 90") from None
+        if days not in (1, 7, 30, 90):
+            raise ValueError("days 必须为 1、7、30 或 90")
+        return days
+
+    def _dimension_query(dimension, key, days, granularity):
+        """Run a dimension query, mapping an unavailable backend to a degraded marker."""
+        backend = getattr(audit, "dimension_query", None)
+        if backend is None:
+            return {"degraded": True}
+        try:
+            return backend(dimension, key, days, granularity)
+        except Exception:
+            # The store reports degradation itself; a hard fault degrades the same way.
+            return {"degraded": True}
+
+    @route("GET", "/admin/stats/summary")
+    async def stats_summary(request):
+        days = _stats_days(request)
+
+        def build():
+            result = _dimension_query("global", None, days, "day")
+            if result.get("degraded"):
+                return error_response(503, "统计暂时无法读取，不能确认当前数值；请检查审计存储状态")
+            summary = stats_view(result.get("summary") or {})
+            return JSONResponse({"generated_at": time.time(), "range": result.get("range"),
+                                 "summary": summary, "degraded": False})
+        return await run_in_threadpool(build)
+
+    @route("GET", "/admin/stats/series")
+    async def stats_series(request):
+        days = _stats_days(request)
+        granularity = request.query_params.get("granularity", "auto")
+        if granularity not in ("auto", "hour", "day"):
+            raise ValueError("granularity 必须为 auto、hour 或 day")
+        dimension = request.query_params.get("dimension", "global")
+        if dimension not in ("global", "model", "profile", "credential"):
+            raise ValueError("dimension 必须为 global、model、profile 或 credential")
+        key = request.query_params.get("key")
+        if dimension == "global":
+            if key not in (None, ""):
+                raise ValueError("global 维度不接受 key")
+            key = None
+        elif not key:
+            raise ValueError("非 global 维度必须提供 key")
+
+        def build():
+            result = _dimension_query(dimension, key, days, granularity)
+            if result.get("degraded"):
+                return error_response(503, "统计暂时无法读取，不能确认当前数值；请检查审计存储状态")
+            series = [dict(row, **stats_view(row)) for row in (result.get("series") or [])]
+            return JSONResponse({"generated_at": time.time(), "range": result.get("range"),
+                                 "series": series,
+                                 "summary": stats_view(result.get("summary") or {}),
+                                 "degraded": False})
+        return await run_in_threadpool(build)
+
+    @route("GET", "/admin/stats/dimensions")
+    async def stats_dimensions(request):
+        dimension = request.query_params.get("dimension")
+        if dimension not in ("model", "profile", "credential"):
+            raise ValueError("dimension 必须为 model、profile 或 credential")
+        days = _stats_days(request)
+        # The credential list mirrors /admin/credentials so the picker can reuse labels.
+        rows = {str(item.get("id")): item for item in inventory()} if dimension == "credential" else {}
+
+        def build():
+            backend = getattr(audit, "dimension_keys", None)
+            if backend is None:
+                return error_response(503, "统计暂时无法读取，不能确认当前数值；请检查审计存储状态")
+            try:
+                result = backend(dimension, days)
+            except Exception:
+                return error_response(503, "统计暂时无法读取，不能确认当前数值；请检查审计存储状态")
+            items = []
+            for key, payload in (result.get("keys") or {}).items():
+                view = stats_view(payload)
+                view["key"] = key
+                if dimension == "credential":
+                    row = rows.get(key) or {}
+                    view["label"] = Path(str(row.get("name") or "")).name or None
+                    view["profile"] = row.get("profile")
+                else:
+                    view["label"] = None
+                    view["profile"] = None
+                items.append(view)
+            items.sort(key=lambda item: item.get("requests") or 0, reverse=True)
+            return JSONResponse({"generated_at": time.time(), "dimension": dimension,
+                                 "days": days, "items": items[:200],
+                                 "degraded": bool(result.get("degraded"))})
+        return await run_in_threadpool(build)
+
+    @route("GET", "/admin/credits/expiry")
+    async def credits_expiry(request):
+        days = int_param(request, "days", 30, 1, 90)
+        burn_days = int_param(request, "burn_days", 7, 1, 30)
+        threshold_days = config.get("alert_credits_expiry_days")
+        try:
+            threshold_days = int(threshold_days)
+        except (TypeError, ValueError):
+            threshold_days = 3
+
+        def build():
+            now = time.time()
+            window_end = now + days * 86400
+            rows = inventory()
+            burn = {}
+            backend = getattr(audit, "dimension_query", None)
+            burn_known = backend is not None
+            if backend is not None:
+                for row in rows:
+                    identity = str(row.get("id") or "")
+                    if not identity:
+                        continue
+                    try:
+                        result = backend("credential", identity, burn_days, "day")
+                    except Exception:
+                        result = {"degraded": True}
+                    if result.get("degraded"):
+                        burn_known = False
+                        break
+                    burn[identity] = result.get("summary") or {}
+            items = []
+            for row in rows:
+                credits = row.get("credits") if isinstance(row.get("credits"), dict) else {}
+                segments = [segment for segment in (credits.get("segments") or [])
+                            if isinstance(segment, dict) and float(segment.get("remaining") or 0) > 0]
+                if not segments:
+                    continue
+                segments.sort(key=lambda segment: float(segment.get("expires_at") or 0))
+                identity = str(row.get("id") or "")
+                remaining = round(sum(float(segment.get("remaining") or 0) for segment in segments), 2)
+                soonest = segments[0].get("expires_at")
+                days_remaining = None
+                if isinstance(soonest, (int, float)) and soonest > 0:
+                    days_remaining = max(0.0, (float(soonest) - now) / 86400.0)
+                summary = burn.get(identity) or {}
+                credit_used = summary.get("credit")
+                daily_burn = None
+                if credit_used is not None:
+                    daily_burn = round(float(credit_used) / float(burn_days), 2)
+                projected = None
+                if daily_burn and daily_burn > 0 and remaining is not None:
+                    projected = round(remaining / daily_burn, 1)
+                shown = []
+                for segment in segments[:32]:
+                    expiry = segment.get("expires_at")
+                    shown.append({"remaining": round(float(segment.get("remaining") or 0), 2),
+                                  "total": round(float(segment.get("total") or 0), 2),
+                                  "expires_at": float(expiry) if isinstance(expiry, (int, float)) else None,
+                                  "source": str(segment.get("source") or "积分")[:120],
+                                  "package_code": str(segment.get("package_code") or "")[:120],
+                                  "in_window": bool(isinstance(expiry, (int, float)) and expiry <= window_end)})
+                items.append({"account_id": identity,
+                              "name": Path(str(row.get("name") or "")).name or None,
+                              "profile": row.get("profile"),
+                              "remaining_credits": remaining,
+                              "daily_burn": daily_burn,
+                              "soonest_expiry": float(soonest) if isinstance(soonest, (int, float)) else None,
+                              "days_remaining": round(days_remaining, 2) if days_remaining is not None else None,
+                              "projected_exhaustion_days": projected,
+                              "urgent": bool(days_remaining is not None and days_remaining < threshold_days),
+                              "segments": shown})
+            items.sort(key=lambda item: (item["days_remaining"] is None, item["days_remaining"] or 0))
+            expiring = [item for item in items
+                        if any(segment.get("in_window") for segment in item["segments"])]
+            expiring_credits = round(sum(
+                segment["remaining"] for item in expiring for segment in item["segments"] if segment.get("in_window")), 2)
+            total_credits = round(sum(item["remaining_credits"] or 0 for item in items), 2)
+            daily_total = None
+            if burn_known:
+                used = sum((burn.get(str(item["account_id"])) or {}).get("credit") or 0 for item in items)
+                daily_total = round(float(used) / float(burn_days), 2) if used else 0.0
+            return JSONResponse({"generated_at": now, "threshold_days": threshold_days,
+                                 "burn_window_days": burn_days,
+                                 "summary": {"expiring_accounts": len(expiring),
+                                             "expiring_credits": expiring_credits,
+                                             "urgent_accounts": sum(1 for item in items if item["urgent"]),
+                                             "total_credits": total_credits,
+                                             "daily_burn": daily_total,
+                                             "daily_burn_known": burn_known},
+                                 "items": items})
+        return await run_in_threadpool(build)
 
     return auth

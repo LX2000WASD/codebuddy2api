@@ -2089,3 +2089,390 @@ $white: var(--page);
     backdrop-filter: none;
   }
 }
+
+// ── fusion UI: skeletons, live countdowns, charts, event/channel layouts ─────
+
+@mixin shimmer {
+  background: linear-gradient(
+    100deg,
+    var(--soft) 12%,
+    color-mix(in srgb, var(--surface) 78%, var(--highlight)) 40%,
+    var(--soft) 68%
+  );
+  background-size: 220% 100%;
+  animation: shimmer 1.35s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0% {
+    background-position: 130% 0;
+  }
+  100% {
+    background-position: -40% 0;
+  }
+}
+.skeleton {
+  border-radius: 14px;
+  min-height: 18px;
+}
+.skeleton-line {
+  @include shimmer;
+  height: 16px;
+  margin: 9px 22px;
+}
+.skeleton-card {
+  @include shimmer;
+  border-radius: 24px;
+  min-height: 128px;
+  margin-bottom: 20px;
+}
+.skeleton-chart {
+  @include shimmer;
+  min-height: 220px;
+  margin: 4px 15px 18px;
+  border-radius: 18px;
+}
+.skeleton-table {
+  padding: 16px 22px 10px;
+  display: grid;
+  gap: 10px;
+}
+.skeleton-row {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr 1fr 1fr;
+  gap: 12px;
+  span {
+    @include shimmer;
+    height: 15px;
+    border-radius: 7px;
+  }
+}
+
+.countdown {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.countdown[data-urgent="true"] {
+  color: var(--error);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .pageEnter {
+    animation: pageIn 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+}
+@keyframes pageIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.fusionControls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-end;
+  padding: 4px 22px 20px;
+  .field {
+    margin: 0;
+    min-width: 150px;
+  }
+  .tabs {
+    margin: 0 0 0 auto;
+    border: 0;
+  }
+}
+
+.chartWide {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 190px;
+  padding: 0 15px;
+  touch-action: pan-y;
+  cursor: crosshair;
+}
+.chartTick {
+  font-size: 11px;
+  fill: var(--muted);
+}
+.chartMean {
+  font-size: 10.5px;
+  fill: var(--strong);
+  font-weight: 600;
+}
+.chartPeak {
+  font-size: 10.5px;
+  fill: var(--error);
+  font-weight: 600;
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 15px 12px;
+  button {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 12px;
+    border-radius: 999px;
+    font-size: 11px;
+    min-height: 30px;
+  }
+  span {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  small {
+    color: var(--muted);
+    font-size: 10px;
+  }
+}
+.legendOn {
+  background: var(--selected);
+  border-color: var(--accent);
+  color: var(--strong);
+}
+.legendOff {
+  opacity: 0.55;
+}
+.chartDetailRow {
+  margin: 0 15px 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  overflow-wrap: anywhere;
+  div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    align-items: baseline;
+  }
+  strong {
+    font-variant-numeric: tabular-nums;
+  }
+  span {
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.filterChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+  padding: 0 22px 16px;
+}
+.chip,
+.chipOn {
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 11px;
+  min-height: 30px;
+}
+.chipOn {
+  background: var(--selected);
+  border-color: var(--accent);
+  color: var(--strong);
+  font-weight: 600;
+}
+.severitySelect {
+  max-width: 130px;
+  margin-left: auto;
+}
+
+.eventList {
+  display: grid;
+  gap: 12px;
+  padding: 0 22px 18px;
+}
+.eventItem {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--muted);
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  min-width: 0;
+  &[data-severity="critical"] {
+    border-left-color: var(--error);
+  }
+  &[data-severity="warning"] {
+    border-left-color: var(--warning);
+  }
+  p {
+    margin-top: 7px;
+    overflow-wrap: anywhere;
+  }
+  small {
+    color: var(--muted);
+    display: block;
+    margin-top: 4px;
+  }
+}
+.eventHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  strong {
+    overflow-wrap: anywhere;
+  }
+}
+
+.subsystems {
+  display: grid;
+  gap: 12px;
+  padding: 0 22px 20px;
+  > div {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    strong {
+      font-size: 12px;
+      font-weight: 550;
+      min-width: 76px;
+    }
+    small {
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+  }
+}
+
+.channelGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  padding: 0 22px 20px;
+}
+.channelCard {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 16px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  min-width: 0;
+  > div {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 9px;
+    strong {
+      font-size: 12px;
+    }
+  }
+  small {
+    color: var(--muted);
+    display: block;
+    overflow-wrap: anywhere;
+    line-height: 1.6;
+  }
+}
+
+.creditCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 20px;
+}
+.creditCard {
+  @include glass(0.5, 18px);
+  border-radius: 22px;
+  padding: 20px 22px;
+  min-width: 0;
+  &[data-urgent] {
+    border-color: color-mix(in srgb, var(--error) 45%, var(--line));
+  }
+}
+.creditHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  strong {
+    font-size: 15px;
+  }
+  small {
+    display: block;
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 3px;
+  }
+}
+.creditMetrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 18px;
+  margin: 16px 0 14px;
+  div {
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 9px;
+  }
+  dt {
+    color: var(--muted);
+    font-size: 10px;
+  }
+  dd {
+    margin: 4px 0 0;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    small {
+      display: block;
+      color: var(--muted);
+      font-weight: 400;
+      margin-top: 2px;
+    }
+  }
+}
+.creditCard .tableWrap {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: auto;
+  th,
+  td {
+    padding: 9px 12px;
+  }
+}
+.mutedInline {
+  color: var(--muted);
+  font-size: 11px;
+  display: block;
+  margin-bottom: 8px;
+}
+
+@media (max-width: 1100px) {
+  .channelGrid {
+    grid-template-columns: 1fr;
+  }
+  .creditCards {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 800px) {
+  .creditMetrics {
+    grid-template-columns: 1fr;
+  }
+  .fusionControls {
+    .tabs {
+      margin-left: 0;
+    }
+    .field {
+      min-width: 100%;
+    }
+  }
+  .severitySelect {
+    margin-left: 0;
+  }
+  .skeleton-row {
+    grid-template-columns: 1fr 1fr;
+  }
+}

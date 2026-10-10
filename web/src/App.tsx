@@ -7,16 +7,27 @@ import { Models } from "./pages/Models";
 import { Credentials } from "./pages/Credentials";
 import { Logs } from "./pages/Logs";
 import { Settings } from "./pages/Settings";
+import { Trends } from "./pages/Trends";
+import { Diagnostics } from "./pages/Diagnostics";
+import { Alerts } from "./pages/Alerts";
+import { Credits } from "./pages/Credits";
 import { Appearance } from "./appearance";
 import s from "./ui.module.scss";
 
-const navigation = [
+const workspaceNav = [
   ["", "概览", "grid"],
   ["/models", "模型路由", "model"],
   ["/credentials", "凭证管理", "key"],
   ["/logs", "日志审计", "logs"],
   ["/settings", "系统设置", "settings"],
-];
+] as const;
+const observabilityNav = [
+  ["/trends", "趋势分析", "chart"],
+  ["/diagnostics", "诊断", "pulse"],
+  ["/alerts", "告警中心", "bell"],
+  ["/credits", "积分到期", "coin"],
+] as const;
+const navigation = [...workspaceNav, ...observabilityNav];
 export function Guard() {
   const { status, error } = useSession();
   if (status === "checking")
@@ -87,11 +98,28 @@ function Shell() {
         </div>
         <p className={s.navLabel}>工作空间</p>
         <nav id="workspace-navigation" aria-label="主导航">
-          {navigation.map(([path, label, icon]) => (
+          {workspaceNav.map(([path, label, icon]) => (
             <NavLink
               key={path}
               to={`/dashboard${path}`}
               end={path === ""}
+              aria-label={label}
+              title={collapsed ? label : undefined}
+              data-label={label}
+              className={({ isActive }) => `${s.navItem} ${isActive ? s.active : ""}`}
+            >
+              <Icon name={icon} />
+              <span className={s.navText}>{label}</span>
+              <span className={s.navArrow}>
+                <Icon name="arrow" />
+              </span>
+            </NavLink>
+          ))}
+          <p className={s.navLabel}>可观测性</p>
+          {observabilityNav.map(([path, label, icon]) => (
+            <NavLink
+              key={path}
+              to={`/dashboard${path}`}
               aria-label={label}
               title={collapsed ? label : undefined}
               data-label={label}
@@ -135,7 +163,11 @@ function Shell() {
         </header>
         <main id="main" className={s.main}>
           <ErrorNotice message={error} />
-          <Outlet />
+          {/* Keyed by pathname so each navigation replays the enter transition; the
+              animation is disabled under prefers-reduced-motion (see ui.module.scss). */}
+          <div key={location.pathname} className={s.pageEnter}>
+            <Outlet />
+          </div>
         </main>
         <footer className={s.footer}>CodeBuddy2API</footer>
       </div>
@@ -213,6 +245,10 @@ export function AppRoutes() {
           <Route path="credentials" element={<Credentials />} />
           <Route path="logs" element={<Logs />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="trends" element={<Trends />} />
+          <Route path="diagnostics" element={<Diagnostics />} />
+          <Route path="alerts" element={<Alerts />} />
+          <Route path="credits" element={<Credits />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

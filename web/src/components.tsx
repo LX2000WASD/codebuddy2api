@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api, errorMessage, object } from "./api";
+import { countdownText, useNow } from "./hooks";
 import { lockPage } from "./modal";
 import { useExiting } from "./presence";
 export { DrawerPresence } from "./presence";
@@ -26,6 +27,10 @@ export function Icon({ name = "grid" }: { name?: string }) {
     sun: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5",
     moon: "M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11Z",
     system: "M3 4h18v13H3zM8 21h8m-4-4v4",
+    chart: "M4 20h16M7 20v-6M12 20V6M17 20v-10",
+    pulse: "M2 12h4l3-8 4 16 3-8h6",
+    bell: "M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8M10.3 21a2 2 0 0 0 3.4 0",
+    coin: "M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6",
   };
   return (
     <svg
@@ -193,6 +198,75 @@ export function Drawer({
     </dialog>
   );
 }
+/**
+ * Skeleton placeholders reserve the painted space so loading states never shift the
+ * layout (no CLS, no spinner jump) — the shape users will see is the shape they get.
+ */
+export function Skeleton({
+  variant = "line",
+  label = "内容加载中",
+  className = "",
+}: {
+  variant?: "line" | "card" | "chart" | "table";
+  label?: string;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`${s.skeleton} ${s[`skeleton-${variant}`] ?? ""} ${className}`}
+      role="status"
+      aria-label={label}
+      aria-busy="true"
+    >
+      {variant === "table" &&
+        Array.from({ length: 6 }, (_, row) => (
+          <div className={s.skeletonRow} key={row} aria-hidden="true">
+            {Array.from({ length: 4 }, (_, cell) => (
+              <span key={cell} style={{ animationDelay: `${(row * 4 + cell) * 70}ms` }} />
+            ))}
+          </div>
+        ))}
+    </div>
+  );
+}
+
+/**
+ * Live ticking countdown for epoch-second (or epoch-ms) deadlines. Shares one clock
+ * per component; the absolute end time stays available in a tooltip.
+ */
+export function Countdown({
+  until,
+  fallback = "—",
+  ms = false,
+  absolute = true,
+}: {
+  until: number | null;
+  fallback?: string;
+  ms?: boolean;
+  absolute?: boolean;
+}) {
+  const now = useNow(1000);
+  // 0 (or negative) deadlines mean "no deadline set", same as unknown.
+  const seconds =
+    typeof until === "number" && Number.isFinite(until) && until > 0
+      ? Math.max(0, Math.ceil(until - (ms ? now : now / 1000)))
+      : null;
+  const ended = seconds !== null && seconds === 0;
+  return (
+    <span
+      className={s.countdown}
+      data-urgent={seconds !== null && seconds < 300 && !ended ? "true" : undefined}
+      title={
+        absolute && typeof until === "number"
+          ? new Date(ms ? until : until * 1000).toLocaleString("zh-CN")
+          : undefined
+      }
+    >
+      {ended ? "已结束" : countdownText(until, fallback, now, ms)}
+    </span>
+  );
+}
+
 export const CLEAR_CONFIRMATION = "清空全部日志与统计";
 export function ClearLogs({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const [scope, setScope] = useState<"details" | "all">("details");

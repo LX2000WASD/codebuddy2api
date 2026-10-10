@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useDebouncedValue } from "../hooks";
 import {
   api,
   errorMessage,
@@ -41,6 +42,14 @@ export function Logs() {
   const [draft, setDraft] = useState(emptyFilters);
   const [filters, setFilters] = useState(emptyFilters);
   const [cursors, setCursors] = useState<string[]>([]);
+  // Live filter: typing debounces and re-fetches on its own; the Apply button stays
+  // for an immediate submit. Each new filter resets pagination to the first page.
+  const debouncedDraft = useDebouncedValue(draft, 450);
+  useEffect(() => {
+    if (debouncedDraft === filters) return;
+    setFilters(debouncedDraft);
+    setCursors([]);
+  }, [debouncedDraft, filters]);
   const [detail, setDetail] = useState<RecordValue | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);

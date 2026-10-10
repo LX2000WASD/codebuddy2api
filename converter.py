@@ -51,7 +51,8 @@ from app.adapters.anthropic_adapter import (
 from app import auth_oauth
 from app import trial_rewards
 from app import buddy, daily_chat, checkin as checkin_service, model_policy, travel
-from app.credential_cooldowns import CredentialCooldowns
+from app.credential_cooldowns import CredentialCooldowns, AccountPauses
+from app.credit_floor import CostLedger, catalog_paid, floor_admit
 from app.model_blocks import ModelBlocks
 from app.usage_snapshots import UsageSnapshots
 from app.client_hangup import ClientHungUp, await_or_hangup
@@ -562,7 +563,12 @@ class CredentialPool:
         self._cooldowns = CredentialCooldowns(cooldowns_path, store=state_store)
         self._storage_warned = 0.0   # Rate limit for persistence-failure warnings
         self._rr = {None: 0, "cn": 0, "intl": 0}
+        self._rr_sig: dict = {None: None, "cn": None, "intl": None}  # Fusion: 组变化时从头轮转
         self._ledger = None              # Prefer credits expiring sooner.
+        # Fusion: 账号级暂停（选号让位，与「停用」正交，签到/旅行/保号照跑）。
+        self._pauses = AccountPauses(self._pause_store_path(cooldowns_path, state_store))
+        self._auth_fails: dict[str, int] = {}   # Fusion: 连续 401/403 计数（成功或手工清零）
+        self._costs = None               # Fusion: EMA 扣费台账，积分保底双判据之一
         self._capacity = AccountCapacity()
         self._scan = scan                # Rescan credentials before selection.
         # Explicit paths must survive rejection or eviction so a repaired file re-enters.
@@ -578,6 +584,19 @@ class CredentialPool:
         self.reload(paths or [])
         if self._scan:
             self._rescan()             # Discover credentials at startup.
+
+    @staticmethod
+    def _pause_store_path(cooldowns_path, state_store):
+        """Resolve the pause ledger path beside the cooldown store it accompanies."""
+        store_path = getattr(state_store, "path", None) if state_store is not None else None
+        root = Path(str(store_path)).parent if store_path else (
+            Path(cooldowns_path).parent if cooldowns_path else None)
+        return (root / "account-pauses.json") if root else None
+
+    def set_cost_ledger(self, costs):
+        """Attach the EMA charge ledger used by the credit-floor admission."""
+        with self._lock:
+            self._costs = costs
 
     def reload(self, paths: list[Path], *, reset: bool = True):
         """Reset authentication only for changed or imported files and schedule catalog refresh."""
@@ -629,6 +648,7 @@ class CredentialPool:
                             # persisted breaker is lifted; a replacement must keep the incoming
                             # account's own breaker, which is hydrated just below.
                             self._forget_credential_cooldown(entry)
+                            self._auth_fails.pop(cid, None)   # An explicit reload is a manual reset.
                         self._adopt_cooldowns(entry)
                         if entry.get("uid"):
                             have_uids[identity] = cid
@@ -752,6 +772,7 @@ class CredentialPool:
         self._syncing.discard(cid)
         self._sync_retry.pop(cid, None)
         self._sync_attempts.pop(cid, None)
+        self._auth_fails.pop(cid, None)
         invalidate_model_table()
     def prune(self):
         """Remove missing credential files and their session bindings."""
@@ -904,6 +925,7 @@ class CredentialPool:
             changed = entry["fail_until"] > time.time()
             entry["fail_until"] = 0.0
             entry["last_error"] = None
+            self._auth_fails.pop(entry["id"], None)   # Fusion: 手工清零
             if not durable:
                 durable = self._cooldowns.clear_credential(entry["account_key"], entry["profile"])["durable"]
             self._warn_storage("cooldown", durable)
@@ -933,6 +955,7 @@ class CredentialPool:
                 if self._model_fail[key] > now:
                     changed = True
                 del self._model_fail[key]
+            self._auth_fails.pop(entry["id"], None)   # Fusion: 手工清零
             # One durable write for the whole account, replacing any breaker and model rows. An
             # account whose identity is incomplete still resets in memory, but owns no disk row.
             durable = not self._durable_identity(entry)
@@ -1089,11 +1112,102 @@ class CredentialPool:
         return time.time() >= self._blocks.until(endpoint, _block_model(model))
 
     def _model_healthy(self, e: dict, model: str | None) -> bool:
-        """Check this credential's model-specific 429 cooldown."""
-        if not model:
+        """Check this credential's model-specific 429 cooldown (model-level soft cooldown).
+
+        Fusion: 与 11102 model_blocks（后端×模型，6h→24h 退避）正交——本表维度是
+        (账号, 模型)，撞 429 且文案带重置时间时对齐墙钟（见 note_status），换模型时
+        该冷却不阻塞选号（切模型豁免：只查当前 routed_model）。关闭
+        model_soft_cooldown 后本检查整体放行。
+        """
+        if not model or not CONFIG.get("model_soft_cooldown", True):
             return True
         routed_model = _upstream_model(model, self._entry_profile(e))
         return time.time() >= self._model_fail.get((e["id"], routed_model), 0.0)
+
+    def _paused(self, e: dict) -> bool:
+        """Fusion: 账号级暂停——只退出选号，签到/旅行/保号任务不受影响。"""
+        if not CONFIG.get("account_pause", True):
+            return False
+        identity = e.get("account_key")
+        return bool(identity) and self._pauses.is_paused(identity)
+
+    def _balance_credits(self, entry, profile) -> float | None:
+        """Return this account's region-matched balance, or None when unknown."""
+        if self._ledger is None:
+            return None
+        balance = (self._ledger.entry(entry["id"]).get("credits") or {})
+        if not balance:
+            return None
+        try:
+            if bool(balance.get("intl")) != (profile_region(profile) == "intl"):
+                return None     # The snapshot belongs to another region's pricing.
+            return float(balance.get("credits") or 0)
+        except (TypeError, ValueError):
+            return None
+
+    def _floor_blocked(self, entry, model: str | None) -> bool:
+        """Fusion: 积分保底——余额低于 credit_floor 的账号不派发收费模型。
+
+        双判据（任一判收费即拦）：本地 EMA 扣费台账（实测扣费）与上游目录倍率
+        （本地无观测时的兜底）。实测/声明免费的模型永不拦截；余额未知不拦截
+        （未知≠触底）；全池触底由 floor_exhausted 报 503，不打穿。
+        """
+        floor = CONFIG.get("credit_floor", 0.0)
+        if not floor or not model:
+            return False
+        profile = self._entry_profile(entry)
+        if not profile:
+            return False
+        balance = self._balance_credits(entry, profile)
+        if balance is None or balance >= floor:
+            return False
+        routed_model = _upstream_model(model, profile)
+        observed = self._costs.paid(entry.get("account_key"), routed_model) if self._costs is not None else None
+        accounts = CONFIG.get("account_catalogs")
+        if accounts is not None or CONFIG.get("model_cache") is not None:
+            account = (accounts or {}).get(entry.get("account_key")) or {}
+            if account.get("profile") != profile:
+                return False
+            serves = _effective_account_scope(account, "serves", model_id=routed_model)
+        else:
+            serves = _models_for_profile(profile, scope="serves", model_id=routed_model)
+        return floor_admit(balance, observed, catalog_paid(serves, routed_model))
+
+    def floor_exhausted(self, model: str | None, *, region=None, tried=()) -> bool:
+        """Report whether the credit floor is the only thing keeping candidates out.
+
+        Mirrors pick's gates so the two never disagree about who was eligible:
+        an account held out by nothing but the floor counts here, while a pool
+        blocked for any other reason stays the generic 503's business.
+        """
+        if not model or not CONFIG.get("credit_floor"):
+            return False
+        eligible = self._candidates(model, region=region, tried=tried, floor_filter=False)
+        if not eligible:
+            return False
+        return not self._candidates(model, region=region, tried=tried)
+
+    def _expiring_soon(self, entry, now: float, window: float) -> bool:
+        """Fusion: 账号是否有窗口内仍未过期的正余额批次（快过期积分加权选号）。"""
+        if not window or self._ledger is None:
+            return False
+        segments = ((self._ledger.entry(entry["id"]).get("credits") or {}).get("segments")) or []
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            expiry = segment.get("expires_at")
+            try:
+                expiry = float(expiry) if expiry is not None else None
+            except (TypeError, ValueError):
+                expiry = None
+            remaining = segment.get("remaining")
+            try:
+                remaining = float(remaining) if remaining is not None else 0.0
+            except (TypeError, ValueError):
+                remaining = 0.0
+            if expiry is not None and now < expiry <= now + window and remaining > 0:
+                return True
+        return False
 
     def _evict_sticky(self):
         now = time.time()
@@ -1104,13 +1218,19 @@ class CredentialPool:
             else:
                 break
 
-    def _candidates(self, model: str | None, *, region=None, tried=()) -> list[dict]:
-        """Exclude tried credentials and rank candidates by zero rate and credit expiry."""
+    def _candidates(self, model: str | None, *, region=None, tried=(), floor_filter=True) -> list[dict]:
+        """Exclude tried credentials and rank candidates by zero rate and credit expiry.
+
+        Fusion gates: 账号级暂停退出选号（签到/旅行/保号不受影响）；积分保底在
+        floor_filter 为真时拦掉触底账号的收费模型派发。floor_filter=False 复用于
+        floor_exhausted，判定「全池只剩保底在挡」与选路口径保持一致。
+        """
         tried = set(tried)
         healthy = [entry for entry in self._entries if entry["cm"] not in tried
-                   and self._healthy(entry)
+                   and self._healthy(entry) and not self._paused(entry)
                    and self._eligible(entry, model, region=region) and self._model_healthy(entry, model)
-                   and self._model_servable(entry, model)]
+                   and self._model_servable(entry, model)
+                   and (not floor_filter or not self._floor_blocked(entry, model))]
         if not healthy:
             return []
         # Prefer zero-rate models, then earlier credit expiry; unknown balances sort last.
@@ -1156,8 +1276,27 @@ class CredentialPool:
                     raise self._capacity_error()
             best = candidates[0]
             free = self._model_free(best, model)
-            top = [e for e in candidates if self._model_free(e, model) == free
-                   and self._expiry_rank(e) == self._expiry_rank(best)]
+            # Fusion: 快过期积分加权选号——窗口内有效批次权重 ×N（默认 3，软偏好）。
+            # 候选已按 (零倍率, 最早到期) 排序，扩展后最早到期者仍占最前槽位；零倍率
+            # 优先与粘性命中不受影响。关闭（window=0 或 weight<=1）时退回原同 Rank
+            # 窄表逻辑，行为与移植前一致。候选组签名变化时从头开始轮转——最早到期者
+            # 领头（对应移植前严格排序的首选语义），稳态组内才按权重轮转。
+            now = time.time()
+            window = float(CONFIG.get("expiring_credit_window_s", 604800) or 0)
+            weight = max(1, int(CONFIG.get("expiring_credit_weight", 3) or 1))
+            if window > 0 and weight > 1:
+                group = [e for e in candidates if self._model_free(e, model) == free]
+                top: list[dict] = []
+                for e in group:
+                    slots = weight if self._expiring_soon(e, now, window) else 1
+                    top.extend([e] * slots)
+            else:
+                top = [e for e in candidates if self._model_free(e, model) == free
+                       and self._expiry_rank(e) == self._expiry_rank(best)]
+            signature = tuple(e["id"] for e in top)
+            if self._rr_sig.get(region) != signature:
+                self._rr_sig[region] = signature
+                self._rr[region] = 0
             if skey and skey in self._sticky:
                 cid, _ = self._sticky[skey]
                 sticky = next((e for e in top if e["id"] == cid), None)
@@ -1195,6 +1334,7 @@ class CredentialPool:
                 self.reload([cm.path], reset=False)
                 entry = next((entry for entry in self._entries if entry["cm"] is cm), None)
                 if (entry is not None and cm._generation == generation and self._healthy(entry)
+                        and not self._paused(entry) and not self._floor_blocked(entry, model)
                         and self._eligible(entry, model, region=region, profile=profile) and self._model_healthy(entry, model)):
                     if requirements is not None:
                         failures = requirements.violations(model_capabilities.entry_model(sys.modules[__name__], entry, model))
@@ -1225,17 +1365,19 @@ class CredentialPool:
             return generation == cm._generation
         return generation == cm._generation
 
-    def cooldown(self, cm: CredentialManager, reason: str = "", *, generation=None):
+    def cooldown(self, cm: CredentialManager, reason: str = "", *, generation=None, duration=None):
         with self._lock, (cm._lock if generation is not None else nullcontext()):
             if not self._lease_matches(cm, generation):
                 return
+            # Fusion: duration 仅由认证失败阈值路径传入（长禁用），其余保持默认短熔断。
+            seconds = float(duration) if duration else CRED_COOLDOWN
             for e in self._entries:
                 if e["cm"] is cm:
-                    e["fail_until"] = time.time() + CRED_COOLDOWN
+                    e["fail_until"] = time.time() + seconds
                     e["last_error"] = sanitize_log_text(reason, 256)
                     e["last_failure_at"] = time.time()
                     self._remember_credential(e, e["last_error"])
-        _log(f"[cred] 凭证熔断 {CRED_COOLDOWN}s: {Path(cm.path).name} {reason}")
+        _log(f"[cred] 凭证熔断 {seconds:.0f}s: {Path(cm.path).name} {reason}")
 
 
     def note_status(self, cm: CredentialManager | None, status: int,
@@ -1244,7 +1386,27 @@ class CredentialPool:
         if cm is None:
             return
         if status in (401, 403):
-            self.cooldown(cm, reason=f"backend HTTP {status}", generation=generation)
+            # Fusion: 认证类错误连续 N 次才禁用（默认 3）——单次 401/403 可能只是抖动，
+            # 连续失败才是账号失能的证据；refresh/chat 成功或手工清零计数。
+            threshold = max(1, int(CONFIG.get("auth_fail_threshold", 3) or 3))
+            count, disable = 0, False
+            with self._lock, (cm._lock if generation is not None else nullcontext()):
+                if not self._lease_matches(cm, generation):
+                    return
+                entry = next((e for e in self._entries if e["cm"] is cm), None)
+                if entry is not None:
+                    count = self._auth_fails.get(entry["id"], 0) + 1
+                    if count < threshold:
+                        self._auth_fails[entry["id"]] = count
+                    else:
+                        # 达到阈值：清零计数（下一轮失败重新累计）并进入长禁用。
+                        self._auth_fails.pop(entry["id"], None)
+                        disable = True
+            if disable:
+                self.cooldown(cm, reason=f"backend HTTP {status}（连续 {count} 次认证失败）",
+                              generation=generation, duration=CONFIG.get("auth_disable_seconds", 3600))
+            else:
+                self.cooldown(cm, reason=f"backend HTTP {status}", generation=generation)
             return
         not_servable = _parse_not_servable(raw, status) if model else None
         if not_servable:
@@ -1257,8 +1419,10 @@ class CredentialPool:
             until = now + retry_after
         else:
             reset = _parse_reset_time(raw)
-            until = reset if reset is not None and reset > now else now + MODEL_COOLDOWN
-        until = min(until, now + MODEL_COOLDOWN_MAX)
+            until = reset if reset is not None and reset > now else now + float(
+                CONFIG.get("model_cooldown_s", MODEL_COOLDOWN) or MODEL_COOLDOWN)
+        until = min(until, now + float(CONFIG.get("model_cooldown_max_s", MODEL_COOLDOWN_MAX)
+                                       or MODEL_COOLDOWN_MAX))
         with self._lock, (cm._lock if generation is not None else nullcontext()):
             if not self._lease_matches(cm, generation):
                 return
@@ -1267,7 +1431,14 @@ class CredentialPool:
                 if e["cm"] is cm:
                     routed_model = _upstream_model(model, self._entry_profile(e))
                     key = (e["id"], routed_model)
-                    until = max(until, self._model_fail.get(key, 0.0))
+                    existing = self._model_fail.get(key, 0.0)
+                    if (existing > now and until <= existing
+                            and CONFIG.get("model_cooldown_no_stack", True)):
+                        # Fusion: 处于软冷却中再次撞 429（重试/兜底探测）——文案未给出更晚的
+                        # 重置时间时，不延长截止、不推进任何计数，避免越重试越冷。
+                        _log(f"[cred] 模型冷却保持 {model} @ {Path(cm.path).name}（兜底探测不堆叠）")
+                        return
+                    until = max(until, existing)
                     self._model_fail[key] = until
                     self._remember_model(e, routed_model, until)
         _log(f"[cred] 模型冷却 {model} @ {Path(cm.path).name} 至 "
@@ -1312,6 +1483,10 @@ class CredentialPool:
         if not model:
             return False
         entry = next((e for e in self._entries if e["cm"] is cm), None)
+        # Fusion: chat 成功即账号可用的最强证据，连续认证失败计数归零。
+        if entry is not None:
+            with self._lock:
+                self._auth_fails.pop(entry["id"], None)
         endpoint = self._model_block_key(entry) if entry else None
         return bool(endpoint) and self._blocks.clear(endpoint, _block_model(model))
 
@@ -1386,6 +1561,8 @@ class CredentialPool:
             if failure:
                 self.cooldown(cm, reason=failure[0], generation=failure[1])
             elif refreshed:
+                # Fusion: refresh 成功证明认证通道恢复，连续认证失败计数归零。
+                self._auth_fails.pop(entry["id"], None)
                 _log(f"[cred] {'每日保活刷新' if keepalive_due else '已主动刷新'}并回写: {Path(entry['id']).name}")
 
     def remove_file(self, name: str) -> bool:
@@ -1422,9 +1599,67 @@ class CredentialPool:
             accounts.pop(entry["id"], None)
 
     def forget_credential_state(self, entry):
-        """Run both independent cleanups for a credential that is gone or replaced."""
+        """Run the independent cleanups for a credential that is gone or replaced."""
         self.forget_cooldowns(entry)
         self.forget_usage(entry)
+        # A reused path must not inherit the previous account's pause or cost rows.
+        identity = entry.get("account_key")
+        if identity:
+            self._pauses.forget(identity)
+            if self._costs is not None:
+                self._costs.forget(identity)
+
+    def pause(self, identity: str, reason: str = "") -> dict:
+        """Fusion: 暂停选号（签到/旅行/保号照跑），与「停用」正交。
+
+        管理面入口为模块级 gateway.admin_set_credential_paused(identity, paused)；
+        语义详见 docs/fusion-api.md「凭证 paused 开关」。
+        """
+        with self._lock:
+            if not any(entry.get("account_key") == identity for entry in self._entries):
+                raise KeyError(identity)
+            outcome = self._pauses.pause(identity, reason=reason)
+        _log(f"[cred] 暂停选号: {identity[:12]}（{reason or '管理操作'}）")
+        return outcome
+
+    def resume(self, identity: str) -> dict:
+        """Fusion: 恢复选号（幂等，未暂停账号为空操作）。"""
+        with self._lock:
+            if not any(entry.get("account_key") == identity for entry in self._entries):
+                raise KeyError(identity)
+            outcome = self._pauses.resume(identity)
+        _log(f"[cred] 恢复选号: {identity[:12]}…")
+        return outcome
+
+    def is_paused(self, identity: str) -> bool:
+        """Fusion: 查询某账号是否被暂停选号（供诊断/管理面读取，snapshot 另有布尔字段）。"""
+        return bool(identity) and self._pauses.is_paused(identity)
+
+    def paused_detail(self) -> list:
+        """Return paused account rows for diagnostics."""
+        return self._pauses.detail()
+
+    def pause_storage(self) -> dict:
+        """Report whether pause persistence is currently usable."""
+        return self._pauses.storage()
+
+    def note_cost(self, cm, model: str | None, usage) -> None:
+        """Fusion: 记录一次实测扣费，喂积分保底的 EMA 台账（成本判据）。"""
+        if self._costs is None or not model or not isinstance(usage, dict):
+            return
+        entry = next((e for e in self._entries if e["cm"] is cm), None)
+        if entry is None or not entry.get("account_key"):
+            return
+        credit, tokens = usage.get("credit"), usage.get("total_tokens")
+        if tokens is None:
+            prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")
+            if prompt is None and completion is None:
+                return
+            tokens = (prompt or 0) + (completion or 0)
+        routed_model = _upstream_model(model, self._entry_profile(entry))
+        durable = self._costs.note(entry["account_key"], routed_model, credit, tokens)
+        if not durable:
+            _log(f"[floor] 扣费台账写入失败（{self._costs.last_error}）；本次运行仍按内存态生效")
 
     def first(self) -> CredentialManager | None:
         with self._lock:
@@ -1438,6 +1673,8 @@ class CredentialPool:
                 s: dict = {"auth_file": e["id"], "healthy": self._healthy(e),
                            "in_flight": self._capacity.count(self._capacity_key(e)),
                            "max_in_flight": CONFIG.get("max_inflight_per_account", 0),
+                           # Fusion: 暂停与连续认证失败计数，供管理面/诊断展示。
+                           "paused": self._paused(e), "auth_fails": self._auth_fails.get(e["id"], 0),
                            "model_cooldowns": {m: time.strftime("%m-%d %H:%M:%S", time.localtime(u))
                                                for (cid, m), u in self._model_fail.items()
                                                if cid == e["id"] and u > now},
@@ -1842,6 +2079,10 @@ def _housekeep_once(pool: CredentialPool, ledger, *, pending_only=False):
         # prune is reported rather than silently leaving stale rows on disk.
         pool._cooldowns.prune()
         pool._warn_storage("cooldown", pool._cooldowns.last_error is None)
+        # Fusion: 扣费台账过期观测随保活周期清理（TTL 6h 防跨时段复活）。
+        costs = CONFIG.get("cost_ledger")
+        if costs is not None:
+            costs.prune()
         if CONFIG.get("usage_snapshots") is not None:
             CONFIG["usage_snapshots"].prune()
         control_store = CONFIG.get("control_store")
@@ -1854,11 +2095,19 @@ def _housekeep_once(pool: CredentialPool, ledger, *, pending_only=False):
                 _log(f"[housekeeper] 打卡记录清理失败: {_network_error_text(error)}")
         ids = pool.begin_sync(all_entries=not pending_only)
         failed = set()
+        # Fusion: 保号任务跨账号限速——签到/旅行/打卡的循环间默认 ~0.8s sleep，
+        # 避免短时间全量账号同动作触发上游风控（0 关闭）。pending_only 通道只做
+        # 余额/目录读取，不复用该节拍。
+        gap = 0.0 if pending_only else max(0.0, float(CONFIG.get("maintenance_account_gap_s", 0.8) or 0.0))
+        processed = 0
         try:
             refs = {}
             for entry in pool.entries():
                 if entry["id"] not in ids:
                     continue
+                if processed and gap:
+                    time.sleep(gap)
+                processed += 1
                 result = _sync_credits(pool, ledger, entry, checkin=not pending_only, failed=failed)
                 if result is not None:
                     refs[entry["id"]] = result
@@ -2071,6 +2320,14 @@ def _cred_for(payload: dict, model: str | None = None, *, region=None, tried=(),
                                f"预计 {t} 后重试；请改用 /v1/models 列出的模型",
                     "type": "invalid_request_error", "code": "model_not_found",
                     "param": "model"}})
+            # Fusion: 全池触底宁返回 503 不打穿——候选齐整但全被积分保底拦住时，
+            # 明确告知调用方在等签到/余额刷新，而不是借量切到触底号上。
+            if pool.floor_exhausted(model, region=region, tried=tried):
+                raise HTTPException(status_code=503, headers={"Retry-After": "300"},
+                                    detail={"error": {"message": "全池积分触底（credit_floor）：可用账号余额低于"
+                                                                 "保底线，收费模型暂停派发，待签到或余额刷新后恢复",
+                                                      "type": "service_unavailable",
+                                                      "code": "credit_floor_exhausted"}})
             raise HTTPException(status_code=503, headers={"Retry-After": "3" if _catalog_pending(region) else "30"},
                                 detail={"error": {"message": "无可用凭证（未登录、目录/额度未就绪或全部熔断）",
                                                   "type": "auth_error"}})
@@ -2155,6 +2412,14 @@ def _note_cred_status(cred, status: int, model: str | None = None, raw: bytes = 
         cm, generation = cred if isinstance(cred, tuple) else (cred, None)
         pool.note_status(cm, status, model=model, raw=raw, generation=generation, retry_after=retry_after)
 
+
+def _note_cred_cost(cred, model: str | None, usage) -> None:
+    """Feed the EMA charge ledger after an upstream completion (credit-floor cost signal)."""
+    pool = CONFIG.get("cred_pool")
+    if pool is not None and cred is not None and model and isinstance(usage, dict):
+        cm = cred[0] if isinstance(cred, tuple) else cred
+        pool.note_cost(cm, model, usage)
+
 @app.get("/health")
 def health():
     """Return public liveness without accessing or exposing credentials."""
@@ -2170,6 +2435,34 @@ def admin_list_credentials(authorization: Optional[str] = Header(default=None),
     if CONFIG.get("management") is not None:
         return {"credentials": CONFIG["management"].admin_credential_inventory()}
     return {"credentials": pool.snapshot() if pool else []}
+
+
+def admin_set_credential_paused(identity: str, paused: bool) -> dict:
+    """Toggle 暂停选号 for one account (Fusion; management surface entry point).
+
+    Contract (docs/fusion-api.md「凭证 paused 开关」):
+      request  : PATCH /admin/credentials/{id} {"paused": bool}
+      response : {"id": identity, "paused": bool}
+
+    池内机制由 CredentialPool.pause/resume 提供，持久化 account-pauses.json，
+    snapshot() 行携带 "paused"。暂停只退出选号——签到/旅行/保号任务照跑；
+    与「停用」(control_store credentials.enabled) 正交。未传该方法时管理面
+    回退 admin_set_credential_enabled(identity, not paused)。
+    """
+    pool = CONFIG.get("cred_pool")
+    if pool is None:
+        raise HTTPException(status_code=404, detail={"error": {"message": "凭证不存在"}})
+    if not isinstance(paused, bool):
+        raise HTTPException(status_code=400, detail={"error": {"message": "paused 必须为布尔值"}})
+    with pool._lock:
+        if not any(entry.get("account_key") == identity for entry in pool.entries()):
+            raise HTTPException(status_code=404, detail={"error": {"message": "凭证不存在"}})
+    try:
+        pool.pause(identity) if paused else pool.resume(identity)
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"error": {"message": "凭证不存在"}}) from None
+    invalidate_model_table()
+    return {"id": identity, "paused": paused}
 
 
 class CredentialConflictError(CredentialFileError):
@@ -3594,7 +3887,9 @@ async def _fetch_checked_chat(url, headers, body, model_name, rid, cred=None, *,
 
         calls = result["choices"][0]["message"].get("tool_calls")
         if _tool_calls_healthy(calls, body) and (detector.detected or _tool_choice_satisfied(calls, body)):
-            observe_usage(result.get("usage") or {})
+            usage = result.get("usage") or {}
+            observe_usage(usage)
+            _note_cred_cost(cred, body.get("model"), usage)   # Fusion: EMA 扣费台账
             return result
         # Content filtering must not trigger tool-repair regeneration.
         budget = CONFIG.get("tool_call_max_retry", _TOOL_CALL_MAX_RETRY)
@@ -3715,6 +4010,7 @@ async def _chat_sse_lines(url, headers, body, model_name, t0, rid, cred=None, *,
     finally:
         if tracker.usage:
             observe_usage(tracker.usage)
+            _note_cred_cost(cred, body.get("model"), tracker.usage)   # Fusion: EMA 扣费台账
     if tracker.filter_detector.detected:
         _note_content_filter(rid, model_name, final=True)
         return
@@ -4487,6 +4783,46 @@ def main():
                     help="国际站积分折算单价（美元/Credit），默认 0.03（Pro 加量包 $15/500 积分）")
     ap.add_argument("--model-catalog-ttl", type=int, default=6 * 3600, metavar="SECONDS",
                     help="云端模型表缓存有效期，默认 21600 秒（6 小时）；TTL 内不再打 /v3/config")
+    # Fusion 融合层：账号池调度与冷却（对齐 workbuddy2api-panel）
+    ap.add_argument("--model-soft-cooldown", type=_boolean_arg, nargs="?", const=True,
+                    default=os.environ.get("CODEBUDDY2API_MODEL_SOFT_COOLDOWN", "true"),
+                    help="模型级软冷却：429 按 账号×模型 隔离并对齐重置墙钟，切模型豁免；默认 true")
+    ap.add_argument("--model-cooldown", type=_positive_int, metavar="SECONDS",
+                    default=os.environ.get("CODEBUDDY2API_MODEL_COOLDOWN", "600"),
+                    help="429 文案未带重置时间时的模型冷却秒数，默认 600")
+    ap.add_argument("--model-cooldown-max", type=_positive_int, metavar="SECONDS",
+                    default=os.environ.get("CODEBUDDY2API_MODEL_COOLDOWN_MAX", "86400"),
+                    help="模型软冷却封顶秒数（与持久化天花板一致），默认 86400")
+    ap.add_argument("--model-cooldown-no-stack", type=_boolean_arg, nargs="?", const=True,
+                    default=os.environ.get("CODEBUDDY2API_MODEL_COOLDOWN_NO_STACK", "true"),
+                    help="软冷却中的重复 429 不延长冷却、不推进计数，默认 true")
+    ap.add_argument("--auth-fail-threshold", type=_positive_int, metavar="N",
+                    default=os.environ.get("CODEBUDDY2API_AUTH_FAIL_THRESHOLD", "3"),
+                    help="连续 401/403 达到该次数才禁用账号；单次失败只算抖动，默认 3")
+    ap.add_argument("--auth-disable-seconds", type=_positive_int, metavar="SECONDS",
+                    default=os.environ.get("CODEBUDDY2API_AUTH_DISABLE_SECONDS", "3600"),
+                    help="达到认证失败阈值后的禁用秒数，默认 3600；refresh/chat 成功或手工清零计数")
+    ap.add_argument("--account-pause", type=_boolean_arg, nargs="?", const=True,
+                    default=os.environ.get("CODEBUDDY2API_ACCOUNT_PAUSE", "true"),
+                    help="账号级暂停：只退出选号，签到/旅行/保号照跑；管理面可切，默认 true")
+    ap.add_argument("--maintenance-account-gap", type=_nonnegative_number, metavar="SECONDS",
+                    default=os.environ.get("CODEBUDDY2API_MAINTENANCE_ACCOUNT_GAP", "0.8"),
+                    help="保号任务跨账号循环间休眠秒数，默认 0.8，0 关闭")
+    ap.add_argument("--credit-floor", type=_nonnegative_number, metavar="CREDITS",
+                    default=os.environ.get("CODEBUDDY2API_CREDIT_FLOOR", "0"),
+                    help="积分保底余额：低于该值的账号不派收费模型（EMA 台账+目录倍率双判据），默认 0 关闭")
+    ap.add_argument("--credit-floor-cost-alpha", type=float, metavar="ALPHA",
+                    default=os.environ.get("CODEBUDDY2API_CREDIT_FLOOR_COST_ALPHA", "0.3"),
+                    help="本地扣费台账 EMA 平滑系数，默认 0.3")
+    ap.add_argument("--credit-floor-cost-ttl", type=_positive_int, metavar="SECONDS",
+                    default=os.environ.get("CODEBUDDY2API_CREDIT_FLOOR_COST_TTL", "21600"),
+                    help="扣费台账观测有效期，默认 21600 秒（6 小时，防跨时段复活）")
+    ap.add_argument("--expiring-credit-window", type=_nonnegative_int, metavar="SECONDS",
+                    default=os.environ.get("CODEBUDDY2API_EXPIRING_CREDIT_WINDOW", "604800"),
+                    help="快过期积分判定窗口，默认 604800 秒（168 小时）；0 关闭加权")
+    ap.add_argument("--expiring-credit-weight", type=_positive_int, metavar="N",
+                    default=os.environ.get("CODEBUDDY2API_EXPIRING_CREDIT_WEIGHT", "3"),
+                    help="窗口内快过期账号的选号权重倍数（软偏好，不破坏粘性与零倍率优先），默认 3")
     ap.add_argument("--no-model-guard", action="store_true",
                     help="关闭表外模型本地拦截；默认拦截，避免无效请求打到上游并触发扣费")
     ap.add_argument("--max-images", type=_nonnegative_int, metavar="N",
@@ -4578,9 +4914,19 @@ def main():
                 "request_context_mode", "stream_mode", "model_capability_guard", "admin_allowed_origins",
                 "responses_projection_mode", "responses_projection_max_bytes",
                 "read_timeout", "ttfb_timeout", "stream_idle_timeout", "stream_tools",
-                "thinking_pin_models", "coalesce_reasoning"):
+                "thinking_pin_models", "coalesce_reasoning",
+                # Fusion 融合层（CLI dest 与 SCHEMA 键同名者）
+                "model_soft_cooldown", "model_cooldown_no_stack", "auth_fail_threshold",
+                "auth_disable_seconds", "account_pause", "credit_floor", "credit_floor_cost_alpha",
+                "expiring_credit_weight"):
         if hasattr(args, key):
             CONFIG[key] = getattr(args, key)
+    # Fusion: CLI 短名映射到 SCHEMA 键
+    CONFIG["model_cooldown_s"] = args.model_cooldown
+    CONFIG["model_cooldown_max_s"] = args.model_cooldown_max
+    CONFIG["maintenance_account_gap_s"] = args.maintenance_account_gap
+    CONFIG["credit_floor_cost_ttl_s"] = args.credit_floor_cost_ttl
+    CONFIG["expiring_credit_window_s"] = args.expiring_credit_window
     CONFIG["api_key"] = args.api_key
     CONFIG["desensitize"] = args.desensitize
     CONFIG["no_compact"] = args.no_compact
@@ -4611,6 +4957,12 @@ def main():
         CONFIG["ledger"] = ledger
         CONFIG["model_cache"] = credits_mod.ModelCatalogCache(ttl=args.model_catalog_ttl, store=CONFIG["state_store"])
         CONFIG["cred_pool"].set_ledger(ledger)  # Verify balance ownership before publishing catalogs.
+        # Fusion: EMA 扣费台账（积分保底成本判据），与冷却/暂停状态同放数据目录。
+        CONFIG["cost_ledger"] = CostLedger(
+            managed_auth_dir() / "credit-floor.json",
+            alpha=CONFIG.get("credit_floor_cost_alpha", 0.3),
+            ttl=CONFIG.get("credit_floor_cost_ttl_s", 21600))
+        CONFIG["cred_pool"].set_cost_ledger(CONFIG["cost_ledger"])
     _publish_model_cache()
     # Publish cached usage before maintenance threads start, so the dashboard is populated from
     # the first request. It stays a no-op when nothing is cached, so an empty deployment and a
@@ -4625,6 +4977,15 @@ def main():
         # a later start under the superseded key could adopt it and revive admin cookies.
         runtime_management.close(CONFIG)
         ap.error(str(error))
+    # Fusion observability: unauthenticated probe, guarded status, diagnostic view and
+    # alerting (events/channels/evaluator). Registration only; routing stays unchanged.
+    from app.health_endpoints import install as install_health_endpoints
+    from app.diagnostic import install as install_diagnostic
+    from app.alerting import install as install_alerting
+    install_health_endpoints(app, CONFIG, version=APP_VERSION)
+    install_diagnostic(app, CONFIG)
+    install_alerting(app, CONFIG, state_path=managed_auth_dir() / "alerts-state.json",
+                     version=APP_VERSION)
     threading.Thread(target=_refresher_loop, args=(CONFIG["cred_pool"],),
                      daemon=True, name="cred-refresher").start()
     if credits_mod is not None:

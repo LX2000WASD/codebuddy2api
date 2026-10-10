@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { OAuth } from "../OAuth";
+import { useNow, useOptimisticOverrides } from "../hooks";
+import { countdownText } from "../hooks";
+import { fusionMutate } from "../fusion/client";
 import { Trial } from "../Trial";
 import { TravelSummary } from "../Travel";
 import { Buddy, buddyConfirmation } from "../Buddy";
@@ -183,20 +186,49 @@ export function Credentials() {
     setNotice("授权完成，凭证已添加。");
     resource.reload();
   }, [resource.reload]);
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  const run = (action: () => Promise<unknown>) => {
+  // One ticking clock drives every countdown text on this page (one interval,
+  // not one per row).
+  const now = useNow();
+  // Optimistic overlay for the paused switch and the enabled button: the toggle
+  // flips immediately and rolls back if the write fails.
+  const optimistic = useOptimisticOverrides<string>();
+  const togglePaused = (credential: Credential, paused: boolean) => {
+    if (busy) return;
+    optimistic.apply(credential.id, { enabled: !paused, paused });
+    setBusy(true);
+    setError(null);
+    // fused contract: PATCH {paused} equals enabled=false
+    void fusionMutate("PATCH", `/admin/credentials/${encodeURIComponent(credential.id)}`, {
+      paused,
+    })
+      .then(() => {
+        setNotice(
+          paused
+            ? "账号已暂停：不再参与选号，保留在池中。"
+            : "账号已恢复运行，后续请求按规则选用。",
+        );
+      })
+      .catch((err: unknown) => {
+        optimistic.clear(credential.id);
+        setError(errorMessage(err));
+      })
+      .finally(() => setBusy(false));
+  };
+  // key optionally identifies the credential row carrying an optimistic override so
+  // a failed write rolls the UI back to the authoritative list value.
+  const run = (action: () => Promise<unknown>, key?: string) => {
     setBusy(true);
     setError(null);
     void action()
       .then(() => {
+        if (key) optimistic.clear(key);
         resource.reload();
         setDeleting(null);
       })
-      .catch((err: unknown) => setError(errorMessage(err)))
+      .catch((err: unknown) => {
+        if (key) optimistic.clear(key);
+        setError(errorMessage(err));
+      })
       .finally(() => setBusy(false));
   };
   const preference = (
@@ -204,6 +236,9 @@ export function Credentials() {
     field: "auto_checkin" | "auto_travel" | "auto_daily_chat",
     enabled: boolean,
   ) => {
+    // Flip the switch immediately; the overlay is cleared when the write confirms
+    // (reload) or rolls back (run's catch).
+    optimistic.apply(credential.id, { [field]: enabled });
     run(async () => {
       const response = await api.patch(`/credentials/${encodeURIComponent(credential.id)}`, {
         [field]: enabled,
@@ -222,7 +257,7 @@ export function Credentials() {
             ? "自动旅行"
             : "自动活跃打卡";
       setNotice(`${label}已${enabled ? "开启" : "关闭"}；保存不会立即执行，后续维护按新设置执行。`);
-    });
+    }, credential.id);
   };
   const liveSelected = selected.filter((id) => resource.data?.some((c) => c.id === id));
   return (
@@ -342,10 +377,11 @@ export function Credentials() {
                   </tr>
                 </thead>
                 <tbody>
-                  {resource.data.map((c) => {
+                  {resource.data.map((raw) => {
+                    // Apply the optimistic overlay (paused/enabled writes) on top of
+                    // the authoritative list; reloads reconcile it away.
+                    const c = optimistic.view(raw);
                     const until = number(c.fail_until);
-                    const remaining =
-                      until === null ? null : Math.max(0, Math.ceil(until - now / 1000));
                     const cooldowns = Array.isArray(c.cooldowns) ? list(c.cooldowns) : null;
                     const balance =
                       c.credits && typeof c.credits === "object" ? object(c.credits) : null;
@@ -393,6 +429,17 @@ export function Credentials() {
                                 ? "人工停用"
                                 : "未知"}
                           </Badge>
+                          <label className={s.check}>
+                            <input
+                              type="checkbox"
+                              role="switch"
+                              aria-label={`暂停账号 ${c.name ?? c.id}`}
+                              checked={c.enabled === false}
+                              disabled={busy || typeof c.enabled !== "boolean"}
+                              onChange={(e) => togglePaused(c, e.target.checked)}
+                            />
+                            {c.enabled === false ? "已暂停" : "运行中"}
+                          </label>
                         </td>
                         <td className={s.automation}>
                           <label className={s.check}>
@@ -463,15 +510,11 @@ export function Credentials() {
                         <td>
                           <Badge
                             tone={
-                              remaining !== null && remaining > 0
-                                ? "bad"
-                                : c.health === "ready"
-                                  ? "good"
-                                  : "warn"
+                              until && until > 0 ? "bad" : c.health === "ready" ? "good" : "warn"
                             }
                           >
-                            {remaining !== null && remaining > 0
-                              ? `认证熔断 ${remaining}s`
+                            {until && until > 0
+                              ? `认证熔断 ${countdownText(until, "", now)}`
                               : c.health === "ready"
                                 ? "认证正常"
                                 : text(c.health)}
@@ -495,9 +538,11 @@ export function Credentials() {
                               cooldowns.map((cooldown, i) => (
                                 <small key={i}>
                                   {text(cooldown.model)} ·{" "}
-                                  {number(cooldown.until) !== null
-                                    ? `${Math.max(0, Math.ceil(Number(cooldown.until) - now / 1000))}s`
-                                    : text(cooldown.remaining_seconds)}
+                                  {countdownText(
+                                    number(cooldown.until),
+                                    text(cooldown.remaining_seconds),
+                                    now,
+                                  )}
                                 </small>
                               ))
                             ) : (
@@ -591,13 +636,16 @@ export function Credentials() {
                             )}
                             <button
                               disabled={busy || typeof c.enabled !== "boolean"}
-                              onClick={() =>
-                                run(() =>
-                                  api.patch(`/credentials/${encodeURIComponent(c.id)}`, {
-                                    enabled: !c.enabled,
-                                  }),
-                                )
-                              }
+                              onClick={() => {
+                                optimistic.apply(c.id, { enabled: !c.enabled });
+                                run(
+                                  () =>
+                                    api.patch(`/credentials/${encodeURIComponent(c.id)}`, {
+                                      enabled: !c.enabled,
+                                    }),
+                                  c.id,
+                                );
+                              }}
                             >
                               {c.enabled === false ? "启用" : "停用"}
                             </button>

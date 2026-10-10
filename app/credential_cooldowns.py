@@ -424,3 +424,142 @@ def _bounded_ceiling(value, default):
     if number is None or number < 60:
         return float(default)
     return min(number, float(default))
+
+
+class AccountPauses:
+    """Persist per-account selection pauses, orthogonal to disabling and cooldowns.
+
+    A paused account leaves credential selection but keeps running check-in,
+    travel, keepalive and balance maintenance: pausing is "stand aside", not
+    "judged dead", so nothing else is reset and resume is immediate. Disabling
+    is the separate control_store credentials.enabled flag, and the two have
+    no interaction here.
+
+    Management contract (see docs/fusion-api.md「凭证 paused 开关」):
+      pool.pause(identity) / pool.resume(identity) / pool.is_paused(identity)
+      gateway.admin_set_credential_paused(identity, paused) is the module-level
+      entry the admin API calls; pool.snapshot() rows carry a "paused" field.
+
+    The persisted shape is a bounded document keyed by validated account
+    identity, written atomically as a standalone JSON file next to the control
+    database (the SQLite state store has a fixed namespace set). Storage is
+    tolerant like the cooldown table: a failed write leaves the in-memory
+    pause effective and reports last_error instead of raising, and an
+    unreadable file degrades to an empty table rather than losing the account.
+    """
+
+    VERSION = 1
+    MAX_ACCOUNTS = 256
+    MAX_BYTES = 64 * 1024
+    _FIELDS = {"at", "reason"}
+
+    def __init__(self, path=None):
+        self.path = str(path) if path else None
+        self._lock = threading.RLock()
+        self._data: dict[str, dict] = {}
+        self.last_error: str | None = None
+        if self.path:
+            self._load()
+
+    def _load(self):
+        """Adopt only a fully valid snapshot; anything else pauses nobody."""
+        try:
+            with open(self.path, "rb") as stream:
+                raw = stream.read(self.MAX_BYTES + 1)
+        except OSError:
+            return
+        if len(raw) > self.MAX_BYTES:
+            return
+        try:
+            document = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeError):
+            return
+        if (not isinstance(document, dict) or set(document) != {"version", "paused"}
+                or type(document["version"]) is not int or document["version"] != self.VERSION):
+            return
+        paused = document["paused"]
+        if not isinstance(paused, dict) or len(paused) > self.MAX_ACCOUNTS:
+            return
+        restored: dict[str, dict] = {}
+        for identity, row in paused.items():
+            if not _valid_identity(identity) or not isinstance(row, dict) or set(row) != self._FIELDS:
+                return
+            stamp = _number(row["at"])
+            if stamp is None:
+                return
+            restored[identity] = {"at": stamp, "reason": _text(row["reason"], 128)}
+        with self._lock:
+            self._data = restored
+
+    def _save_locked(self) -> bool:
+        if not self.path:
+            return True
+        content = json.dumps({"version": self.VERSION, "paused": self._data},
+                             ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        temporary = None
+        try:
+            directory = os.path.dirname(self.path) or "."
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(prefix=".account-pauses-", suffix=".tmp", dir=directory)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(content)
+            try:
+                os.chmod(temporary, 0o600)
+            except OSError:
+                pass
+            os.replace(temporary, self.path)
+        except OSError as error:
+            self.last_error = type(error).__name__
+            return False
+        finally:
+            if temporary:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+        self.last_error = None
+        return True
+
+    def pause(self, identity: str, reason: str = "", now=None) -> dict:
+        """Stand an account aside from selection; returns whether it is durable."""
+        if not _valid_identity(identity):
+            return {"changed": False, "durable": True}
+        stamp = _number(time.time() if now is None else now)
+        if stamp is None:
+            return {"changed": False, "durable": True}
+        with self._lock:
+            row = self._data.get(identity)
+            if row is not None:
+                return {"changed": False, "durable": self._save_locked() if self.last_error else True}
+            if len(self._data) >= self.MAX_ACCOUNTS:
+                self._data.pop(next(iter(self._data)), None)
+            self._data[identity] = {"at": stamp, "reason": _text(reason, 128)}
+            return {"changed": True, "durable": self._save_locked()}
+
+    def resume(self, identity: str) -> dict:
+        """Return a paused account to selection; a missing row is a no-op."""
+        if not _valid_identity(identity):
+            return {"changed": False, "durable": True}
+        with self._lock:
+            if self._data.pop(identity, None) is None:
+                return {"changed": False, "durable": self._save_locked() if self.last_error else True}
+            return {"changed": True, "durable": self._save_locked()}
+
+    def is_paused(self, identity) -> bool:
+        with self._lock:
+            return identity in self._data
+
+    def forget(self, identity: str) -> bool:
+        """Drop a deleted or replaced account's pause row."""
+        with self._lock:
+            self._data.pop(identity, None)
+            return self._save_locked()
+
+    def detail(self) -> list:
+        with self._lock:
+            return [{"identity": identity, **row} for identity, row in self._data.items()]
+
+    def storage(self) -> dict:
+        return {"available": self.path is not None, "path": self.path,
+                "degraded": self.last_error is not None, "last_error": self.last_error,
+                "rows": len(self._data)}
