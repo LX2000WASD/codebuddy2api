@@ -47,5 +47,6 @@ converter.log*
 # cpa-plugin 是独立项目,不属于本网关仓库
 cpa-plugin/
 
-# 私人凭证保存备份
+# 私人凭证保存备份(本地目录与拉回服务器的快照, 均不入库)
 .backup-codebuddy-auth/
+backup-codebuddy-auth*/

@@ -27,6 +27,7 @@ import app.alerting as alerting
 from app.alerting import AlertBus, AlertEvaluator, mask_url
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.testclient import TestClient
 
 _SEQUENCE = count()
@@ -716,5 +717,60 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(self.client.post("/admin/alerts/test?channel=webhook").status_code, 400)
 
 
+class RouteOrderTests(unittest.TestCase):
+    """The fused routes must be registered BEFORE the management page fallback.
+
+    gateway_management installs page_fallback, a catch-all route that matches every
+    path (302 to /dashboard, or 404 for v1/admin/health prefixes). Starlette matches
+    in registration order, so the fusion modules must install first or /healthz and
+    the fused /admin/* endpoints become unreachable behind the fallback.
+    """
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.config = {
+            "alert_enabled": False, "alert_throttle_seconds": 3600,
+            "alert_history_limit": 20, "alert_timeout_seconds": 5, "alert_retry_count": 0,
+            "alert_evaluator_interval_seconds": 0, "health_service_name": "codebuddy2api",
+        }
+        self.app = FastAPI()
+        install_health(self.app, self.config, version="1.3.2-local")
+        diagnostic.install(self.app, self.config)
+        alerting.install(self.app, self.config,
+                         state_path=self.root / "alerts-state.json", version="1.3.2-local")
+        # A faithful miniature of gateway_management.page_fallback, registered AFTER
+        # the fusion routes exactly as the production assembly did when it broke.
+        @self.app.api_route("/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "PATCH",
+                                                     "DELETE", "OPTIONS"],
+                            include_in_schema=False)
+        def page_fallback(path=""):
+            if (path.split("/", 1)[0] in {"v1", "admin", "health"} or Path(path).suffix
+                    or path.startswith(("cn/v1", "intl/v1"))):
+                return JSONResponse({"detail": "Not Found"}, status_code=404)
+            return RedirectResponse("/dashboard", status_code=302)
+
+        self.client = TestClient(self.app)
+        self.addCleanup(lambda: self.config["alert_bus"].close())
+
+    def test_healthz_survives_the_page_fallback(self):
+        # The unauthenticated probe must answer itself, not redirect to /dashboard.
+        response = self.client.get("/healthz")
+        self.assertIn(response.status_code, (200, 503))
+        self.assertEqual(response.headers["X-Service"], "codebuddy2api")
+
+    def test_fused_admin_routes_survive_the_page_fallback(self):
+        # Registered before the catch-all, these still answer instead of 404.
+        self.assertEqual(self.client.get("/admin/status").status_code, 200)
+        self.assertEqual(self.client.get("/admin/diagnostic").status_code, 200)
+
+    def test_fallback_still_handles_unknown_pages(self):
+        # The catch-all keeps its day job for paths nobody serves.
+        response = self.client.get("/some-unknown-page", follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["location"], "/dashboard")
+        self.assertEqual(self.client.get("/v1/nothing").status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()
+

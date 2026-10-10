@@ -4970,15 +4970,12 @@ def main():
     if CONFIG["usage_snapshots"].detail():
         _publish_usage_daily(CONFIG["cred_pool"])
 
-    try:
-        runtime_management.install(sys.modules[__name__])
-    except SessionStoreError as error:
-        # An obsolete session snapshot survived, so the new key epoch must not activate:
-        # a later start under the superseded key could adopt it and revive admin cookies.
-        runtime_management.close(CONFIG)
-        ap.error(str(error))
-    # Fusion observability: unauthenticated probe, guarded status, diagnostic view and
-    # alerting (events/channels/evaluator). Registration only; routing stays unchanged.
+    # Fusion observability: MUST register before runtime_management.install().
+    # The management pages install a catch-all fallback (page_fallback in
+    # gateway_management) that matches every path; routes registered after it are
+    # unreachable (/healthz would 302 to /dashboard, fused /admin/* would 404).
+    # The /admin/* auth middleware wraps the whole app at request time, so it still
+    # guards these routes regardless of registration order.
     from app.health_endpoints import install as install_health_endpoints
     from app.diagnostic import install as install_diagnostic
     from app.alerting import install as install_alerting
@@ -4986,6 +4983,13 @@ def main():
     install_diagnostic(app, CONFIG)
     install_alerting(app, CONFIG, state_path=managed_auth_dir() / "alerts-state.json",
                      version=APP_VERSION)
+    try:
+        runtime_management.install(sys.modules[__name__])
+    except SessionStoreError as error:
+        # An obsolete session snapshot survived, so the new key epoch must not activate:
+        # a later start under the superseded key could adopt it and revive admin cookies.
+        runtime_management.close(CONFIG)
+        ap.error(str(error))
     threading.Thread(target=_refresher_loop, args=(CONFIG["cred_pool"],),
                      daemon=True, name="cred-refresher").start()
     if credits_mod is not None:
