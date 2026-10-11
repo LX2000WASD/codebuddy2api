@@ -518,5 +518,85 @@ class ExpiringWeightTests(FusionFixture):
                 self.assertIs(pool.pick(None, "glm-5.3-flash"), entries[0]["cm"])
 
 
+# --------------------------------------------------------------------------- #
+# 8. 传输层连败降权（借鉴 workbuddy2api-panel）：与熔断/冷却正交，阈值出池，
+#    成功清零，全池出池兜底放行，到期自动恢复，手工复位解除。
+# --------------------------------------------------------------------------- #
+class TransportPenaltyTests(FusionFixture):
+
+    def test_below_threshold_stays_in_rotation(self):
+        pool, _ = self.pool()
+        cm = pool.first()
+        for _ in range(4):                      # 默认阈值 5，4 次仍未出池
+            self.assertFalse(pool.note_transport_failure(cm))
+        self.assertEqual(pool._transport_fails[pool._entries[0]["id"]], 4)
+        self.assertFalse(pool._transport_penalty_active(pool._entries[0]))
+
+    def test_threshold_puts_account_out_of_rotation(self):
+        pool, _ = self.pool(("a.info", "b.info"), ("uid-a", "uid-b"))
+        cm = pool.first()
+        for _ in range(5):
+            pool.note_transport_failure(cm)
+        self.assertTrue(pool._transport_penalty_active(pool._entries[0]))
+        picked = {pool.pick(None, None) for _ in range(8)}   # 轮转多次都选不到 a
+        self.assertNotIn(cm, picked)
+        self.assertEqual(pool._transport_fails.get(pool._entries[0]["id"], 0), 0)
+
+    def test_threshold_is_configurable(self):
+        with patch.dict(converter.CONFIG, {"transport_fail_threshold": 2}):
+            pool, _ = self.pool()
+            cm = pool.first()
+            self.assertFalse(pool.note_transport_failure(cm))
+            self.assertTrue(pool.note_transport_failure(cm))  # 2 次即出池
+            self.assertTrue(pool._transport_penalty_active(pool._entries[0]))
+
+    def test_success_clears_counter_but_keeps_penalty(self):
+        pool, _ = self.pool()
+        cm = pool.first()
+        for _ in range(4):
+            pool.note_transport_failure(cm)
+        pool.note_transport_ok(cm)
+        self.assertEqual(pool._transport_fails.get(pool._entries[0]["id"], 0), 0)
+        self.assertFalse(pool._transport_penalty_active(pool._entries[0]))  # 4 次未达阈值，本无惩罚
+        # 计数清零后重新从 1 累计
+        pool.note_transport_failure(cm)
+        self.assertEqual(pool._transport_fails[pool._entries[0]["id"]], 1)
+
+    def test_all_penalized_falls_back_to_serving(self):
+        pool, _ = self.pool(("a.info", "b.info"), ("uid-a", "uid-b"))
+        for entry in pool._entries:
+            for _ in range(5):
+                pool.note_transport_failure(entry["cm"])
+        # 全池出池 → 兜底放行（否则等于服务中断，与冷却兜底口径一致）
+        self.assertIsNotNone(pool.pick(None, None))
+
+    def test_expiry_restores_account(self):
+        pool, _ = self.pool(("a.info", "b.info"), ("uid-a", "uid-b"))
+        cm = pool.first()
+        for _ in range(5):
+            pool.note_transport_failure(cm)
+        with pool._lock:
+            pool._transport_penalty[pool._entries[0]["id"]] = time.time() - 1
+        self.assertIsNotNone(pool.pick(None, None))
+
+    def test_manual_reset_lifts_penalty(self):
+        pool, _ = self.pool(("a.info",), ("uid-a",))
+        cm = pool.first()
+        for _ in range(5):
+            pool.note_transport_failure(cm)
+        pool.reset_cooldowns_for(self.identity(pool))
+        self.assertFalse(pool._transport_penalty_active(pool._entries[0]))
+
+    def test_snapshot_exposes_transport_state(self):
+        pool, _ = self.pool(("a.info",), ("uid-a",))
+        cm = pool.first()
+        pool.note_transport_failure(cm)
+        for _ in range(4):
+            pool.note_transport_failure(cm)
+        rows = pool.snapshot()
+        self.assertEqual(rows[0]["transport_fails"], 0)            # 出池时计数已清零
+        self.assertGreater(rows[0]["transport_penalty_until"], time.time())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

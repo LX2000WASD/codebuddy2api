@@ -568,6 +568,10 @@ class CredentialPool:
         # Fusion: 账号级暂停（选号让位，与「停用」正交，签到/旅行/保号照跑）。
         self._pauses = AccountPauses(self._pause_store_path(cooldowns_path, state_store))
         self._auth_fails: dict[str, int] = {}   # Fusion: 连续 401/403 计数（成功或手工清零）
+        # Fusion: 传输层连败降权（借鉴 workbuddy2api-panel）：ConnectError/WriteTimeout/
+        # TTFB 等"连得上但不回数据"的失败不进熔断也不进 429 冷却，但会连续卡死选号。
+        self._transport_fails: dict[str, int] = {}      # entry id → 连续传输失败次数
+        self._transport_penalty: dict[str, float] = {}  # entry id → 出池截止时间戳
         self._costs = None               # Fusion: EMA 扣费台账，积分保底双判据之一
         self._capacity = AccountCapacity()
         self._scan = scan                # Rescan credentials before selection.
@@ -649,6 +653,8 @@ class CredentialPool:
                             # account's own breaker, which is hydrated just below.
                             self._forget_credential_cooldown(entry)
                             self._auth_fails.pop(cid, None)   # An explicit reload is a manual reset.
+                            self._transport_fails.pop(cid, None)  # Fusion: 传输连败同样重置
+                            self._transport_penalty.pop(cid, None)
                         self._adopt_cooldowns(entry)
                         if entry.get("uid"):
                             have_uids[identity] = cid
@@ -773,6 +779,8 @@ class CredentialPool:
         self._sync_retry.pop(cid, None)
         self._sync_attempts.pop(cid, None)
         self._auth_fails.pop(cid, None)
+        self._transport_fails.pop(cid, None)   # Fusion: 账号移除，传输连败状态一并丢弃
+        self._transport_penalty.pop(cid, None)
         invalidate_model_table()
     def prune(self):
         """Remove missing credential files and their session bindings."""
@@ -926,6 +934,8 @@ class CredentialPool:
             entry["fail_until"] = 0.0
             entry["last_error"] = None
             self._auth_fails.pop(entry["id"], None)   # Fusion: 手工清零
+            self._transport_fails.pop(entry["id"], None)  # Fusion: 传输连败手工清零
+            self._transport_penalty.pop(entry["id"], None)
             if not durable:
                 durable = self._cooldowns.clear_credential(entry["account_key"], entry["profile"])["durable"]
             self._warn_storage("cooldown", durable)
@@ -956,6 +966,8 @@ class CredentialPool:
                     changed = True
                 del self._model_fail[key]
             self._auth_fails.pop(entry["id"], None)   # Fusion: 手工清零
+            self._transport_fails.pop(entry["id"], None)  # Fusion: 传输连败手工清零
+            self._transport_penalty.pop(entry["id"], None)
             # One durable write for the whole account, replacing any breaker and model rows. An
             # account whose identity is incomplete still resets in memory, but owns no disk row.
             durable = not self._durable_identity(entry)
@@ -1235,6 +1247,12 @@ class CredentialPool:
             return []
         # Prefer zero-rate models, then earlier credit expiry; unknown balances sort last.
         healthy.sort(key=lambda entry: (not self._model_free(entry, model), *self._expiry_rank(entry)))
+        # Fusion: 传输层连败出池是软偏好——有其它候选时避开惩罚中的账号；全池都在
+        # 惩罚时兜底放行（否则等于服务中断，与冷却兜底口径一致）。
+        if healthy:
+            active = [e for e in healthy if not self._transport_penalty_active(e)]
+            if active:
+                healthy = active
         return healthy
 
     @staticmethod
@@ -1380,6 +1398,47 @@ class CredentialPool:
         _log(f"[cred] 凭证熔断 {seconds:.0f}s: {Path(cm.path).name} {reason}")
 
 
+    def note_transport_failure(self, cm: CredentialManager | None) -> bool:
+        """Fusion: 传输层失败连败计数（ConnectError/WriteTimeout/TTFB/空闲超时等）。
+
+        与熔断、429 冷却、积分保底正交：这类失败上游不返回任何 HTTP 状态，只会
+        白等超时。连续达阈值即临时出池（出池期间签到/旅行/保号照跑），到期自动
+        恢复；一次成功即清零计数。状态是内存态：重启归零，但已落盘的熔断/冷却不受影响。
+        返回 True 表示本次失败让账号进入出池（便于日志与诊断观测）。
+        """
+        if cm is None:
+            return False
+        with self._lock:
+            entry = next((e for e in self._entries if e["cm"] is cm), None)
+            if entry is None:
+                return False
+            ident = entry["id"]
+            threshold = max(1, int(CONFIG.get("transport_fail_threshold", 5) or 5))
+            count = self._transport_fails.get(ident, 0) + 1
+            if count < threshold:
+                self._transport_fails[ident] = count
+                _log(f"[cred] 传输层连败 {count}/{threshold} @ {Path(cm.path).name}")
+                return False
+            self._transport_fails.pop(ident, None)
+            seconds = float(CONFIG.get("transport_penalty_seconds", 600) or 600)
+            self._transport_penalty[ident] = time.time() + seconds
+            _log(f"[cred] 传输层连败出池 {seconds:g}s @ {Path(cm.path).name}")
+            return True
+
+    def note_transport_ok(self, cm: CredentialManager | None) -> None:
+        """成功一次即清零传输连败计数；出池状态不提前解除，到期自动恢复。"""
+        if cm is None:
+            return
+        with self._lock:
+            entry = next((e for e in self._entries if e["cm"] is cm), None)
+            if entry is not None:
+                self._transport_fails.pop(entry["id"], None)
+
+    def _transport_penalty_active(self, entry) -> bool:
+        """出池未到期则为真；过期键惰性忽略（不主动清理，留下到期时间供诊断查看）。"""
+        until = self._transport_penalty.get(entry["id"])
+        return until is not None and until > time.time()
+
     def note_status(self, cm: CredentialManager | None, status: int,
                     model: str | None = None, raw: bytes = b"", *, generation=None, retry_after=None):
         """Apply credential-wide auth cooldowns, per-model 429 cooldowns and backend/model backoff."""
@@ -1483,10 +1542,12 @@ class CredentialPool:
         if not model:
             return False
         entry = next((e for e in self._entries if e["cm"] is cm), None)
-        # Fusion: chat 成功即账号可用的最强证据，连续认证失败计数归零。
+        # Fusion: chat 成功即账号可用的最强证据，连续认证失败计数归零；
+        # 传输层连败同样清零（出池状态到期自动解除，不提前恢复）。
         if entry is not None:
             with self._lock:
                 self._auth_fails.pop(entry["id"], None)
+                self._transport_fails.pop(entry["id"], None)
         endpoint = self._model_block_key(entry) if entry else None
         return bool(endpoint) and self._blocks.clear(endpoint, _block_model(model))
 
@@ -1561,8 +1622,10 @@ class CredentialPool:
             if failure:
                 self.cooldown(cm, reason=failure[0], generation=failure[1])
             elif refreshed:
-                # Fusion: refresh 成功证明认证通道恢复，连续认证失败计数归零。
+                # Fusion: refresh 成功证明认证通道恢复，连续认证失败计数归零；
+                # 传输层连败也一并清零。
                 self._auth_fails.pop(entry["id"], None)
+                self._transport_fails.pop(entry["id"], None)
                 _log(f"[cred] {'每日保活刷新' if keepalive_due else '已主动刷新'}并回写: {Path(entry['id']).name}")
 
     def remove_file(self, name: str) -> bool:
@@ -1675,6 +1738,8 @@ class CredentialPool:
                            "max_in_flight": CONFIG.get("max_inflight_per_account", 0),
                            # Fusion: 暂停与连续认证失败计数，供管理面/诊断展示。
                            "paused": self._paused(e), "auth_fails": self._auth_fails.get(e["id"], 0),
+                      "transport_fails": self._transport_fails.get(e["id"], 0),
+                      "transport_penalty_until": self._transport_penalty.get(e["id"], 0.0),
                            "model_cooldowns": {m: time.strftime("%m-%d %H:%M:%S", time.localtime(u))
                                                for (cid, m), u in self._model_fail.items()
                                                if cid == e["id"] and u > now},
@@ -2411,6 +2476,14 @@ def _note_cred_status(cred, status: int, model: str | None = None, raw: bytes = 
     if pool is not None and cred is not None:
         cm, generation = cred if isinstance(cred, tuple) else (cred, None)
         pool.note_status(cm, status, model=model, raw=raw, generation=generation, retry_after=retry_after)
+
+
+def _note_cred_transport_failure(cred) -> None:
+    """Feed the transport-level fail counter (Connect/Write/Read/TTFB timeouts, no HTTP status)."""
+    pool = CONFIG.get("cred_pool")
+    if pool is not None and cred is not None:
+        cm = cred[0] if isinstance(cred, tuple) else cred
+        pool.note_transport_failure(cm)
 
 
 def _note_cred_cost(cred, model: str | None, usage) -> None:
@@ -3784,10 +3857,16 @@ async def _backend_stream(url, headers, body, *, timeout=300, rid="", model_name
         effective_timeout = timeout if timeout != 300 else float(CONFIG.get("read_timeout") or 300)
         ttfb = float(CONFIG.get("ttfb_timeout") or 0) or None
         idle = float(CONFIG.get("stream_idle_timeout") or 0) or None
+        # 缺省回落 20s；显式 0 才关闭（不单独限制写）。
+        _raw_write = CONFIG.get("write_timeout")
+        write_bound = 20.0 if _raw_write is None else float(_raw_write)
+        if write_bound <= 0:
+            write_bound = None
         async with open_backend_stream(url, headers, _upstream_chat_body(body), read_timeout=effective_timeout, on_retry=retry,
                                        retry_write_timeout=bool(CONFIG.get("retry_write_timeout")),
                                        clients=clients, headers_for_attempt=attempt_headers,
-                                       ttfb_timeout=ttfb, idle_timeout=idle) as response:
+                                       ttfb_timeout=ttfb, idle_timeout=idle,
+                                       write_timeout=write_bound) as response:
             opened = True
             observe_attempt("upstream_http", status_code=response.status_code,
                             duration_ms=(time.monotonic() - started) * 1000)
@@ -4216,6 +4295,8 @@ async def _stream_plan(payload, canonical, model_name, rid, t0, make, routed, cr
             release_credential(cred)
             recovered = observe_failure_seq()   # Recover only this failure sequence.
             tried.append(cred)
+            if isinstance(failure.error, httpx.TransportError):
+                _note_cred_transport_failure(cred)   # Fusion: 传输层连败降权
             limit = _failover_limit()
             surface = HTTPException(status_code=failure.status, headers=failure.headers,
                                     detail=_safe_err_raw(failure.raw, failure.status))
@@ -4266,6 +4347,8 @@ async def _routed_fetch(payload, canonical, model_name, rid, t0, fetch, routed, 
             status, raw = _upstream_failure(error, model_name, t0, rid)
             recovered = observe_failure_seq()
             tried.append(cred)
+            if isinstance(error, httpx.TransportError):
+                _note_cred_transport_failure(cred)   # Fusion: 传输层连败降权
             limit = _failover_limit()
             surface = HTTPException(status_code=status, detail=_safe_err_raw(raw, status),
                                     headers=error.headers if isinstance(error, UpstreamHTTPError) else None)
@@ -4808,6 +4891,12 @@ def main():
     ap.add_argument("--maintenance-account-gap", type=_nonnegative_number, metavar="SECONDS",
                     default=os.environ.get("CODEBUDDY2API_MAINTENANCE_ACCOUNT_GAP", "0.8"),
                     help="保号任务跨账号循环间休眠秒数，默认 0.8，0 关闭")
+    ap.add_argument("--transport-fail-threshold", type=_positive_int, metavar="N",
+                    default=os.environ.get("CODEBUDDY2API_TRANSPORT_FAIL_THRESHOLD", "5"),
+                    help="传输层（连接/读写/首字节超时，无 HTTP 状态）连续失败多少次临时出池，默认 5")
+    ap.add_argument("--transport-penalty-seconds", type=_positive_int, metavar="SECONDS",
+                    default=os.environ.get("CODEBUDDY2API_TRANSPORT_PENALTY_SECONDS", "600"),
+                    help="传输层连败出池时长，默认 600 秒；到期自动恢复，成功一次清零计数")
     ap.add_argument("--credit-floor", type=_nonnegative_number, metavar="CREDITS",
                     default=os.environ.get("CODEBUDDY2API_CREDIT_FLOOR", "0"),
                     help="积分保底余额：低于该值的账号不派收费模型（EMA 台账+目录倍率双判据），默认 0 关闭")
@@ -4870,17 +4959,17 @@ def main():
                          "只重放上游没收下请求体或用 401/403/429/502/503/504 拒绝的失败；"
                          "写请求体超时需另开 --retry-write-timeout 才参与")
     ap.add_argument("--retry-write-timeout", type=_boolean_arg, nargs="?", const=True,
-                    default=os.environ.get("CODEBUDDY2API_RETRY_WRITE_TIMEOUT", "false"),
-                    help="把「写请求体超时」也算作上游没收下请求体从而参与重放，默认 false。写超时只能"
-                         "证明正文没写完，上游是否已按半截正文计费看不到，因此要显式开启（同时作用于连接"
-                         "重试与 --failover-max 换凭证重放）")
+                    default=os.environ.get("CODEBUDDY2API_RETRY_WRITE_TIMEOUT", "true"),
+                    help="把「写请求体超时」也算作上游没收下请求体从而参与重放，默认 true（本地移植层"
+                         "有意偏离上游的 false：卡在写阶段时请求体尚未被上游处理，重放重复计费风险极低，"
+                         "60s 白等不如换号）。同时作用于连接重试与 --failover-max 换凭证重放")
     ap.add_argument("--read-timeout", type=_positive_number, metavar="SECONDS",
                     default=os.environ.get("CODEBUDDY2API_READ_TIMEOUT", "300"),
                     help="上游流式读取超时（相邻字节的最长等待兜底），默认 300 秒")
     ap.add_argument("--ttfb-timeout", type=_nonnegative_number, metavar="SECONDS",
-                    default=os.environ.get("CODEBUDDY2API_TTFB_TIMEOUT", "45"),
+                    default=os.environ.get("CODEBUDDY2API_TTFB_TIMEOUT", "30"),
                     help="上游首字节超时秒数：连上却迟迟不发第一个数据行时快速失败并允许换凭证重放，"
-                         "默认 45 秒；0 关闭")
+                         "默认 30 秒（3 次换号重放 ≤ 90s，给 Cloudflare 120s 代理读取窗口留缓冲）；0 关闭")
     ap.add_argument("--stream-idle-timeout", type=_nonnegative_number, metavar="SECONDS",
                     default=os.environ.get("CODEBUDDY2API_STREAM_IDLE_TIMEOUT", "60"),
                     help="上游流空闲超时秒数（相邻两个数据行的最大间隔），超过即判定上游卡死，默认 60；0 关闭")

@@ -363,6 +363,8 @@ function diagnosticResponse(): DiagnosticResponse {
       last_failure_at: a.last_failure_at,
       sync_error: a.sync_error,
       catalog_ready: a.catalog_ready,
+      transport_fails: 0,
+      transport_penalty_remaining: 0,
     })),
     model_locks: [
       {

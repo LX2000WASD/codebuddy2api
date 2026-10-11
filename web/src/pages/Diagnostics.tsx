@@ -207,9 +207,18 @@ export function Diagnostics() {
                     <td>
                       {account.disabled_reason && <small>{account.disabled_reason}</small>}
                       {account.sync_error && <small>同步失败：{account.sync_error}</small>}
-                      {!account.disabled_reason && !account.sync_error && (
-                        <span className={s.muted}>正常</span>
+                      {account.transport_penalty_remaining > 0 && (
+                        <Badge tone="warn">
+                          传输连败出池 {Math.ceil(account.transport_penalty_remaining)}s
+                        </Badge>
                       )}
+                      {account.transport_fails > 0 && account.transport_penalty_remaining <= 0 && (
+                        <small>传输连败 {account.transport_fails} 次</small>
+                      )}
+                      {!account.disabled_reason &&
+                        !account.sync_error &&
+                        account.transport_penalty_remaining <= 0 &&
+                        account.transport_fails <= 0 && <span className={s.muted}>正常</span>}
                     </td>
                   </tr>
                 ))}

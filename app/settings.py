@@ -96,6 +96,12 @@ SCHEMA = {
                            env="CODEBUDDY2API_ACCOUNT_PAUSE"),
     "maintenance_account_gap_s": _item(0.8, "number", "保号任务跨账号循环间休眠秒数（0 关闭）",
                                        env="CODEBUDDY2API_MAINTENANCE_ACCOUNT_GAP", minimum=0, maximum=60),
+    # 传输层连败降权（借鉴 workbuddy2api-panel）：ConnectError/WriteTimeout/TTFB 等
+    # 传输失败连续达阈值即临时出池，与熔断/冷却正交；成功清零，到期自动恢复。
+    "transport_fail_threshold": _item(5, "integer", "传输层连续失败多少次临时出池",
+                                      env="CODEBUDDY2API_TRANSPORT_FAIL_THRESHOLD", minimum=1, maximum=100),
+    "transport_penalty_seconds": _item(600, "number", "传输连败出池时长（秒）",
+                                       env="CODEBUDDY2API_TRANSPORT_PENALTY_SECONDS", minimum=1, maximum=86400),
     "credit_floor": _item(0, "number", "积分保底余额（0 关闭；低于保底的账号不派收费模型）",
                           env="CODEBUDDY2API_CREDIT_FLOOR", minimum=0),
     "credit_floor_cost_alpha": _item(0.3, "number", "扣费台账 EMA 平滑系数",
@@ -112,7 +118,9 @@ SCHEMA = {
     "log_body_limit": _item(65536, "integer", "旧文本预览（已停用）", env="CODEBUDDY2API_LOG_BODY_LIMIT", minimum=0, maximum=1024**2),
     "failover_max": _item(0, "integer", "换凭证重放次数", env="CODEBUDDY2API_FAILOVER_MAX",
                           minimum=0, maximum=10),
-    "retry_write_timeout": _item(False, "boolean", "写超时参与重放",
+    # 写超时重放默认开：卡在"上游不读请求体"阶段时请求尚未被处理，重复计费风险极低；
+    # 白等 60s 不如换号。
+    "retry_write_timeout": _item(True, "boolean", "写超时参与重放",
                                  env="CODEBUDDY2API_RETRY_WRITE_TIMEOUT"),
     "upstream_keepalive": _item(False, "boolean", "上游连接复用", mode="restart",
                                 env="CODEBUDDY2API_UPSTREAM_KEEPALIVE"),
@@ -120,10 +128,13 @@ SCHEMA = {
                                       env="CODEBUDDY2API_MAX_INFLIGHT_PER_ACCOUNT", minimum=0, maximum=10000),
     "read_timeout": _item(300, "number", "上游流式读取超时秒数", env="CODEBUDDY2API_READ_TIMEOUT",
                           minimum=1, maximum=86400),
-    "ttfb_timeout": _item(45.0, "number", "上游首字节超时秒数（0 关闭）", env="CODEBUDDY2API_TTFB_TIMEOUT",
+    # 默认 30s：3 次尝试 ≤ 90s，给 Cloudflare 120s 代理读取窗口留 30s 缓冲。
+    "ttfb_timeout": _item(30.0, "number", "上游首字节超时秒数（0 关闭）", env="CODEBUDDY2API_TTFB_TIMEOUT",
                           minimum=0, maximum=86400),
     "stream_idle_timeout": _item(60.0, "number", "上游流空闲超时秒数（0 关闭）",
                                  env="CODEBUDDY2API_STREAM_IDLE_TIMEOUT", minimum=0, maximum=86400),
+    "write_timeout": _item(20.0, "number", "上游写请求体超时秒数（写不进即放弃，0 不单独限制）",
+                           env="CODEBUDDY2API_WRITE_TIMEOUT", minimum=0, maximum=86400),
     "stream_tools": _item(False, "boolean", "带 tools 请求逐字节流式",
                           env="CODEBUDDY2API_STREAM_TOOLS"),
     "coalesce_reasoning": _item(True, "boolean", "思考链合并成单块（上游 v1.3.2 行为）；关闭则逐帧实时流式",

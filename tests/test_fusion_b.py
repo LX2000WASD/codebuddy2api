@@ -644,6 +644,11 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(body["service"], "codebuddy2api")
         self.assertEqual(body["version"], "1.3.2-local")
         self.assertEqual(body["pool"]["total"], 0)
+        # Contract §2: by_profile is a top-level key, NOT nested inside pool.
+        self.assertIn("by_profile", body)
+        self.assertNotIn("by_profile", body["pool"])
+        self.assertEqual(body["pool"].keys(), {"total", "healthy", "cooling", "disabled",
+                                               "expired", "error", "servable"})
         # No audit store configured: the status reports the degraded marker.
         self.assertTrue(body["audit"]["degraded"])
         self.assertFalse(body["alerts"]["enabled"])

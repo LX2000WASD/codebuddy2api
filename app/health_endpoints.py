@@ -156,9 +156,14 @@ def install(app, config, *, version=""):
             bus = alerting.get_bus(config)
             if bus is not None:
                 alerts_view = bus.status()
+            # pool_counts bundles by_profile inside counts; the contract
+            # (docs/fusion-api.md §2) puts by_profile at the top level, next to pool.
+            pool_view = {key: counts[key] for key in
+                         ("total", "healthy", "cooling", "disabled", "expired", "error", "servable")}
             return JSONResponse({"service": service_name(config), "version": version,
                                  "uptime_seconds": round(time.monotonic() - started, 1),
-                                 "generated_at": time.time(), "pool": counts,
+                                 "generated_at": time.time(), "pool": pool_view,
+                                 "by_profile": counts.get("by_profile") or {},
                                  "audit": audit_view, "cooldown_storage": cooldown_view,
                                  "alerts": alerts_view})
         try:

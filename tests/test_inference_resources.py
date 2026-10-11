@@ -96,7 +96,9 @@ class ClientPoolTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all("Cookie" not in request.headers for request in seen))
             self.assertTrue(all(not client.cookies for client in clients))
             self.assertTrue(all(client.trust_env for client in clients))
-            self.assertTrue(all(request.extensions["timeout"] == {"connect": 15, "read": 300, "write": 60, "pool": 15}
+            # write=20 是本地移植层的 write_timeout 默认（上游 write 60s 卡"连得上
+            # 但不读请求体"的账号时白等，见 settings 的 write_timeout 键）。
+            self.assertTrue(all(request.extensions["timeout"] == {"connect": 15, "read": 300, "write": 20, "pool": 15}
                                 for request in seen))
             self.assertIsNone(pool.get("https://untrusted.invalid/v2/chat/completions"))
         finally:

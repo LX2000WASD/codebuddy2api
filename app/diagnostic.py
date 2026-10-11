@@ -72,7 +72,11 @@ def _account_view(row, identity, now):
             "last_error_code": _safe_text(row.get("last_error_code"), 80),
             "last_failure_at": float(row.get("last_failure_at") or 0) or None,
             "sync_error": _safe_text(row.get("sync_error"), _REASON_LIMIT),
-            "catalog_ready": bool(row.get("catalog_ready"))}
+            "catalog_ready": bool(row.get("catalog_ready")),
+            # Fusion: 传输层连败降权（出池期间账号仍出现在池里，但被选路软偏好避开）。
+            "transport_fails": int(row.get("transport_fails") or 0),
+            "transport_penalty_remaining": (max(0.0, round(float(row.get("transport_penalty_until") or 0) - now, 1))
+                                            if float(row.get("transport_penalty_until") or 0) > now else 0.0)}
 
 
 def _model_locks(config, now):

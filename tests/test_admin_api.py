@@ -434,11 +434,14 @@ class AdminApiTests(unittest.TestCase):
         """Apply failover and write-timeout settings without restarting the process."""
         current = self.client.get("/admin/settings", headers=self.headers).json()
         items = {item["key"]: item for item in current["items"]}
-        for key, kind, default in (("failover_max", "integer", 0), ("retry_write_timeout", "boolean", False)):
+        # retry_write_timeout 默认 True 是本地移植层有意偏离上游（上游默认 False）：上游
+        # intl-work "连得上但不读请求体" 的卡顿会白等 60s 再 502 给客户端；写阶段请求体
+        # 尚未被上游处理，重放重复计费风险极低。保留运行时关闭能力。
+        for key, kind, default in (("failover_max", "integer", 0), ("retry_write_timeout", "boolean", True)):
             with self.subTest(key=key):
                 spec = items[key]
                 self.assertEqual((spec["mode"], spec["locked"], spec["type"]), ("hot", False, kind))
-                self.assertEqual(spec["value"], default, "默认必须与上游行为一致：关闭")
+                self.assertEqual(spec["value"], default)
         response = self.client.patch("/admin/settings", headers=self.headers, json={
             "revision": current["revision"], "values": {"failover_max": 2, "retry_write_timeout": True}})
         self.assertEqual(response.status_code, 200, response.text)

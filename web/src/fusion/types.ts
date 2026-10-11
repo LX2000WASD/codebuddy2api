@@ -145,6 +145,8 @@ export type DiagnosticAccount = {
   last_failure_at: EpochSeconds | null;
   sync_error: string | null;
   catalog_ready: boolean;
+  transport_fails: number;
+  transport_penalty_remaining: number;
 };
 
 export type ModelLock = {

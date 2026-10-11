@@ -515,13 +515,15 @@ async def _attempt_client(url, timeout, clients):
 @asynccontextmanager
 async def open_backend_stream(url, headers, body, *, read_timeout=300, on_retry=None,
                               retry_write_timeout=False, clients=None, headers_for_attempt=None,
-                              ttfb_timeout=None, idle_timeout=None):
+                              ttfb_timeout=None, idle_timeout=None, write_timeout=20):
     """Retry connection failures once on a fresh client; write timeouts require explicit opt-in.
     Never replay after the upstream response opens. When either timeout bound is set the
     yielded response is a :class:`BoundedStream` that fails fast on TTFB or idle stalls.
     """
     retryable = BODY_NOT_ACCEPTED + (WRITE_TIMEOUT if retry_write_timeout else ())
-    timeout = httpx.Timeout(read_timeout, connect=15, write=60, pool=15)
+    # write bound: an upstream that accepts the TCP connection but never reads the
+    # request body stalls here; 0/None disables the separate write bound.
+    timeout = httpx.Timeout(read_timeout, connect=15, write=write_timeout or None, pool=15)
     bounded = ttfb_timeout is not None or idle_timeout is not None
     for attempt in range(2):
         opened = False
