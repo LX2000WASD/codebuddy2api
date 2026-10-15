@@ -8,7 +8,7 @@ Use your **WorkBuddy / CodeBuddy (Tencent)** subscription as local **OpenAI- and
 - Built-in **WebUI** for browser login, models, credentials, logs and settings — no desktop client required.
 - Automatic multi-account routing across domestic and international sites, with credential refresh.
 - Per-account automation: domestic check-in then Buddy travel by default, with independent switches; international check-in is opt-in.
-- **Local port layer** on top of upstream v1.3.2: per-account×model soft cooldown, credit floor, expiry-aware routing, transport-failure demotion, diagnostics, alerting and trend analytics — see [Local port layer](#local-port-layer).
+- **Local port layer** on top of upstream v1.3.6: per-account×model soft cooldown, credit floor, expiry-aware routing, transport-failure demotion, diagnostics, alerting and trend analytics — see [Local port layer](#local-port-layer).
 
 ## Where this repository comes from
 
@@ -16,7 +16,7 @@ This checkout is a **personal fork** that tracks two upstream projects and adds 
 
 | Role | Repository | Notes |
 |------|------------|-------|
-| Upstream gateway (base) | [maiphucgiang/codebuddy2api](https://github.com/maiphucgiang/codebuddy2api) | Python gateway + WebUI. This fork is based on **v1.3.2**; upstream has since released v1.3.3, v1.3.5 and v1.3.6. |
+| Upstream gateway (base) | [maiphucgiang/codebuddy2api](https://github.com/maiphucgiang/codebuddy2api) | Python gateway + WebUI. This fork tracks upstream **v1.3.6** (merged 2026-10-15, previously based on v1.3.2). |
 | Second upstream (ideas) | [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) | Go gateway with a Web panel (MIT), an enhanced fork of the now-deleted `Sliverkiss/workbuddy2api`. Its account-pool operations and observability ideas were ported into the local layer below; no Go code is used. |
 | This fork | `LX2000WASD/codebuddy2api` (branch `local/main`) | Upstream base + the local port layer. Published as its own images; changes are **not** sent back upstream. |
 
@@ -24,11 +24,11 @@ Upstreaming policy: the fork deliberately stays **semi-detached** — it does no
 
 ## Local port layer
 
-Added on top of upstream v1.3.2 (`local/main`), all of it optional and switchable through the WebUI or `.env`:
+Added on top of upstream v1.3.6 (`local/main`), all of it optional and switchable through the WebUI or `.env`:
 
 **Routing and account operations**
 
-- Model-level **soft** cooldown (upstream v1.3.2 already had a fixed per-model cooldown): the 429 window is isolated per account × model, aligned to the reset clock in the upstream message, switched by a single global toggle, with switching models bypassing a cooldown, and repeat 429s during a soft cooldown no longer stacking.
+- Model-level **soft** cooldown (upstream already had a fixed per-model cooldown): the 429 window is isolated per account × model, aligned to the reset clock in the upstream message, switched by a single global toggle, with switching models bypassing a cooldown, and repeat 429s during a soft cooldown no longer stacking.
 - Credentials are disabled only after N consecutive auth failures (default 3); a successful refresh/chat or a manual reset clears the counter.
 - Account-level `paused`: leaves selection but keeps check-in / travel / maintenance running.
 - Credit floor: an EMA spend ledger plus upstream catalogue multipliers keep low-balance accounts off paid models; a fully drained pool returns 503 instead of hammering upstream.
