@@ -50,3 +50,7 @@ cpa-plugin/
 # 私人凭证保存备份(本地目录与拉回服务器的快照, 均不入库)
 .backup-codebuddy-auth/
 backup-codebuddy-auth*/
+
+# playwright/浏览器验证产物
+.playwright-mcp/
+dashboard-public.png
