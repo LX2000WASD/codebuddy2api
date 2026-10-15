@@ -52,6 +52,11 @@ export type MockAccount = {
   sync_error: string | null;
   catalog_ready: boolean;
   share: number;
+  // Transport failure counters surfaced by the diagnostic view (Diagnostics.tsx:243-262).
+  // transportPenaltySeconds is a remaining-seconds offset resolved against NOW() at
+  // render time, so the countdown never goes stale in a long-lived dev session.
+  transportFails: number;
+  transportPenaltySeconds: number;
 };
 
 const MODEL_CATALOG = [
@@ -86,6 +91,8 @@ function accountsFixture(): MockAccount[] {
       sync_error: null,
       catalog_ready: true,
       share: 0.34,
+      transportFails: 0,
+      transportPenaltySeconds: 0,
     },
     {
       id: "cn-mainland-b",
@@ -103,6 +110,8 @@ function accountsFixture(): MockAccount[] {
       sync_error: null,
       catalog_ready: true,
       share: 0.18,
+      transportFails: 0,
+      transportPenaltySeconds: 0,
     },
     {
       id: "cn-work-buddy",
@@ -120,6 +129,8 @@ function accountsFixture(): MockAccount[] {
       sync_error: null,
       catalog_ready: true,
       share: 0.16,
+      transportFails: 3,
+      transportPenaltySeconds: 0,
     },
     {
       id: "intl-cb-pro",
@@ -137,6 +148,8 @@ function accountsFixture(): MockAccount[] {
       sync_error: null,
       catalog_ready: false,
       share: 0.2,
+      transportFails: 0,
+      transportPenaltySeconds: 0,
     },
     {
       id: "intl-work-1",
@@ -154,6 +167,8 @@ function accountsFixture(): MockAccount[] {
       sync_error: "余额同步被上游拒绝",
       catalog_ready: false,
       share: 0.12,
+      transportFails: 5,
+      transportPenaltySeconds: 120,
     },
   ];
 }
@@ -363,8 +378,8 @@ function diagnosticResponse(): DiagnosticResponse {
       last_failure_at: a.last_failure_at,
       sync_error: a.sync_error,
       catalog_ready: a.catalog_ready,
-      transport_fails: 0,
-      transport_penalty_remaining: 0,
+      transport_fails: a.transportFails,
+      transport_penalty_remaining: Math.max(0, a.transportPenaltySeconds),
     })),
     model_locks: [
       {

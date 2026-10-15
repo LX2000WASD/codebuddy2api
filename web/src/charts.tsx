@@ -403,7 +403,7 @@ export function StackedBars({
   );
 }
 
-export type LineMetric = {
+type LineMetric = {
   key: string;
   label: string;
   unit: string;

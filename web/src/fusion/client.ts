@@ -19,8 +19,6 @@ export const FUSION_DEVELOPMENT =
 
 /** Raised when a request was aborted by unmount or a superseded request. */
 export class FusionAbortError extends Error {}
-/** Raised when the backend (or mock) answers with an error status. */
-export class FusionHttpError extends Error {}
 
 function decodeMockError(status: number, data: unknown): string {
   const message =
@@ -63,8 +61,7 @@ async function perform(
         return { status: 400, data: { error: { message, type: "admin_error" } } };
       }
     })();
-    if (result.status >= 400)
-      throw new FusionHttpError(decodeMockError(result.status, result.data));
+    if (result.status >= 400) throw new Error(decodeMockError(result.status, result.data));
     return result.data;
   }
   // Paths are stored with their documented prefix (/admin/..., /healthz); the

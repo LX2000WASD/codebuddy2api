@@ -17,7 +17,10 @@ import uvicorn
 import converter as gateway
 from app.audit_store import AuditStore
 from app.control_store import ControlStore
+from app.alerting import install as install_alerting
+from app.diagnostic import install as install_diagnostic
 from app.gateway_management import Management
+from app.health_endpoints import install as install_health_endpoints
 from app.runtime_management import install, close
 from app.settings import apply_persisted_settings
 
@@ -72,6 +75,14 @@ def main():
         gateway.open_backend_stream = fake_backend
         gateway.trial_rewards.claim_trial = fake_trial
         socket.socket.connect = forbid_connect
+        # Mirror converter.py's registration order (see its "Fusion observability" block):
+        # install() adds the management page catch-all, so the fusion routes must be
+        # registered first or /healthz 302s to /dashboard and the fused /admin/* 404.
+        install_health_endpoints(gateway.app, gateway.CONFIG, version="webui-fixture")
+        install_diagnostic(gateway.app, gateway.CONFIG)
+        install_alerting(gateway.app, gateway.CONFIG,
+                         state_path=gateway.managed_auth_dir() / "alerts-state.json",
+                         version="webui-fixture")
         install(gateway)
         try:
             uvicorn.run(gateway.app, host="127.0.0.1", port=5175, log_level="info")

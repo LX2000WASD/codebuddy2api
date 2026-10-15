@@ -1,7 +1,15 @@
-import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { LineChart, StackedBars, type ChartBucket } from "./charts";
-import { countdownText, useDebouncedValue } from "./hooks";
+import { countdownText, useDebouncedValue, useOptimisticOverrides } from "./hooks";
 import {
   FUSION_DEVELOPMENT,
   FusionAbortError,
@@ -10,6 +18,9 @@ import {
   useFusionResource,
 } from "./fusion/client";
 import { __resetFusionMock, __setFusionLatency, mockRequest } from "./fusion/mock";
+import { Alerts } from "./pages/Alerts";
+import { Credits } from "./pages/Credits";
+import { Diagnostics } from "./pages/Diagnostics";
 import { Trends } from "./pages/Trends";
 
 beforeEach(() => {
@@ -315,5 +326,143 @@ describe("Trends page", () => {
     await waitFor(() => expect(screen.getByRole("img", { name: "按日请求量" })).toBeTruthy(), {
       timeout: 4000,
     });
+  });
+});
+describe("Diagnostics page", () => {
+  it("renders the transport failure badge and counter from the live contract", async () => {
+    render(<Diagnostics />);
+    await waitFor(() => expect(screen.getByText("intl-work-1.info")).toBeTruthy(), {
+      timeout: 4000,
+    });
+    // Diagnostics.tsx:243 — an active penalty window wins over the plain counter.
+    expect(screen.getByText("传输连败出池 120s")).toBeTruthy();
+    // Diagnostics.tsx:250 — failures without a remaining penalty show the count.
+    expect(screen.getByText("传输连败 3 次")).toBeTruthy();
+    // Exactly one account is out of the pool, so exactly one badge may render.
+    expect(screen.getAllByText(/传输连败出池/)).toHaveLength(1);
+  });
+
+  it("falls back to the normal state when an account has no fault at all", async () => {
+    render(<Diagnostics />);
+    await waitFor(() => expect(screen.getByText("mainland-a.info")).toBeTruthy(), {
+      timeout: 4000,
+    });
+    // Diagnostics.tsx:257-262 — no disabled_reason, no sync_error, zero failures.
+    const row = screen.getByText("mainland-a.info").closest("tr")!;
+    expect(within(row).getByText("正常")).toBeTruthy();
+    // A circuit-broken account explains itself instead of claiming to be normal.
+    const broken = screen.getByText("mainland-b.info").closest("tr")!;
+    expect(within(broken).queryByText("正常")).toBeNull();
+    expect(within(broken).getByText("认证熔断")).toBeTruthy();
+  });
+});
+describe("useOptimisticOverrides", () => {
+  type Row = { id: string; enabled: boolean; paused: boolean };
+  it("overlays the optimistic patch, then rolls the view back to the authoritative row", () => {
+    const { result } = renderHook(() => useOptimisticOverrides<string>());
+    const authoritative: Row = { id: "a", enabled: true, paused: false };
+    expect(result.current.view(authoritative)).toEqual(authoritative);
+
+    // The write is issued: the toggle flips before the server answers.
+    act(() => result.current.apply("a", { enabled: false, paused: true }));
+    expect(result.current.view(authoritative)).toEqual({ id: "a", enabled: false, paused: true });
+
+    // The write rejects: the page calls clear(), so the row must return to the
+    // authoritative value rather than keeping the phantom flip.
+    act(() => result.current.clear("a"));
+    expect(result.current.view(authoritative)).toEqual(authoritative);
+  });
+
+  it("keeps each key independent and ignores clearing an unknown key", () => {
+    const { result } = renderHook(() => useOptimisticOverrides<string>());
+    act(() => result.current.apply("a", { paused: true }));
+    act(() => result.current.apply("b", { enabled: false }));
+    expect(result.current.view({ id: "a", enabled: true, paused: false }).paused).toBe(true);
+    expect(result.current.view({ id: "b", enabled: true, paused: false }).enabled).toBe(false);
+    expect(result.current.view({ id: "c", enabled: true, paused: false }).paused).toBe(false);
+    // Clearing a key that was never overridden must not disturb the others.
+    act(() => result.current.clear("zzz"));
+    expect(result.current.view({ id: "a", enabled: true, paused: false }).paused).toBe(true);
+  });
+});
+describe("Alerts page", () => {
+  it("lists the alert events with severity labels and the channel overview", async () => {
+    render(<Alerts />);
+    // Wait for an actual event, not the panel title, which renders before the fetch.
+    await waitFor(() => expect(screen.getByText("积分即将到期")).toBeTruthy(), { timeout: 4000 });
+    // eventsFixture() (fusion/mock.ts:196) ships one event per ALERT_KINDS entry.
+    expect(screen.getByText("全池无可服务账号")).toBeTruthy();
+    // Severity resolves through t() rather than the raw contract value.
+    expect(screen.getAllByText("严重").length).toBeGreaterThan(0);
+    // The channel overview is a second, independent fetch: await it rather than
+    // asserting while its skeleton (role="status") is still on screen.
+    // channelsFixture() enables webhook only, so the summary counts exactly one.
+    await waitFor(() => expect(screen.getByText(/已启用通道 1 个/)).toBeTruthy(), {
+      timeout: 4000,
+    });
+    expect(screen.getByText("Webhook")).toBeTruthy();
+    expect(screen.getByText("已启用")).toBeTruthy();
+    expect(screen.getAllByText("未启用")).toHaveLength(2);
+  });
+
+  it("narrows the stream when the severity filter changes", async () => {
+    render(<Alerts />);
+    await waitFor(() => expect(screen.getByText("积分即将到期")).toBeTruthy(), { timeout: 4000 });
+    fireEvent.change(screen.getByLabelText("事件级别"), { target: { value: "critical" } });
+    // The critical-only refetch drops the warning-severity events (Alerts.tsx:71-76).
+    await waitFor(() => expect(screen.queryByText("积分即将到期")).toBeNull(), { timeout: 4000 });
+    expect(screen.getByText("全池无可服务账号")).toBeTruthy();
+  });
+
+  it("renders the empty state for a severity the backend has no events for", async () => {
+    render(<Alerts />);
+    await waitFor(() => expect(screen.getByText("积分即将到期")).toBeTruthy(), { timeout: 4000 });
+    // The fixture holds warning/critical events only, so filtering by info must
+    // exercise the empty branch (Alerts.tsx:172-174) through the real mock.
+    fireEvent.change(screen.getByLabelText("事件级别"), { target: { value: "info" } });
+    await waitFor(() => expect(screen.getByText("暂无告警事件")).toBeTruthy(), { timeout: 4000 });
+    expect(
+      screen.getByText("触发条件（余额耗尽、积分将到期、认证熔断等）满足时自动记录。"),
+    ).toBeTruthy();
+  });
+});
+
+describe("Credits page", () => {
+  it("orders the FEFO batches by soonest expiry and flags the urgent account", async () => {
+    render(<Credits />);
+    await waitFor(() => expect(screen.getByText("mainland-a.info")).toBeTruthy(), {
+      timeout: 4000,
+    });
+    // mock creditsExpiry (fusion/mock.ts:783) sorts by days_remaining ascending.
+    expect(screen.getAllByText(/\.info$/).map((node) => node.textContent)).toEqual([
+      "mainland-a.info",
+      "work-buddy.info",
+      "intl-pro.info",
+    ]);
+    // mainland-a expires in 2.1 days, inside the 3-day threshold.
+    const card = screen.getByText("mainland-a.info").closest("section")!;
+    expect(within(card).getByText("紧急")).toBeTruthy();
+    expect(within(card).getByText("旗舰版连续包月")).toBeTruthy();
+    expect(screen.getByText("到期分布")).toBeTruthy();
+  });
+
+  it("marks a non-urgent account with its days-to-expiry instead of the urgent badge", async () => {
+    render(<Credits />);
+    await waitFor(() => expect(screen.getByText("intl-pro.info")).toBeTruthy(), { timeout: 4000 });
+    const card = screen.getByText("intl-pro.info").closest("section")!;
+    expect(within(card).queryByText("紧急")).toBeNull();
+    expect(within(card).getByText(/天后到期/)).toBeTruthy();
+  });
+
+  it("reveals batches outside the default window when the display window widens", async () => {
+    render(<Credits />);
+    await waitFor(() => expect(screen.getByText("mainland-a.info")).toBeTruthy(), {
+      timeout: 4000,
+    });
+    // mainland-a's 44-day batch is excluded at the default 30-day window...
+    expect(screen.queryByText("团队版年付")).toBeNull();
+    fireEvent.change(screen.getByLabelText("展示窗口"), { target: { value: "90" } });
+    // ...and included once the window covers it.
+    await waitFor(() => expect(screen.getByText("团队版年付")).toBeTruthy(), { timeout: 4000 });
   });
 });

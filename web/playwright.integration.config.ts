@@ -17,7 +17,9 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: `${process.env.WEBUI_PYTHON ?? "../.venv/bin/python"} -B ../tests/webui_fixture.py`,
+    // e2e/fusion-live-server.py reuses tests/webui_fixture.py and adds the three
+    // fusion installs converter.py performs at :4946-4954 (see that file's header).
+    command: `${process.env.WEBUI_PYTHON ?? "../.venv/bin/python"} -B e2e/fusion-live-server.py`,
     stdout: "pipe",
     stderr: "pipe",
     wait: { stderr: /Uvicorn running on http:\/\/127\.0\.0\.1:5175/ },

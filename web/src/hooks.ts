@@ -74,5 +74,5 @@ export function useOptimisticOverrides<Key extends string | number>() {
     });
   const view = <T extends Record<string, unknown>>(record: T & { id?: Key }): T =>
     overrides[record.id as Key] ? { ...record, ...overrides[record.id as Key] } : record;
-  return { apply, clear, view, overrides };
+  return { apply, clear, view };
 }

@@ -266,26 +266,6 @@ $white: var(--page);
 .active .navArrow {
   opacity: 0.6;
 }
-.sidebarFoot {
-  margin-top: auto;
-  padding: 20px 12px 4px;
-  border-top: 1px solid #dce5d1;
-  color: #829076;
-}
-.sidebarFoot svg {
-  display: block;
-  color: $green;
-  margin-bottom: 10px;
-}
-.sidebarFoot strong {
-  font-size: 11px;
-  font-weight: 500;
-}
-.sidebarFoot p {
-  font-size: 10px;
-  line-height: 1.9;
-  margin-top: 7px;
-}
 .workspace {
   margin-left: calc(var(--sidebar-width) + 32px);
   min-width: 0;
@@ -352,12 +332,6 @@ $white: var(--page);
 .pageTitle p:not(.eyebrow) {
   color: $muted;
   font-size: 12px;
-}
-.eyebrow {
-  font-size: 9px;
-  letter-spacing: 1.8px;
-  font-weight: 500;
-  color: #91a280;
 }
 .actions {
   display: flex;
@@ -1774,10 +1748,6 @@ $white: var(--page);
   top: 55px;
   left: max(50px, 9vw);
 }
-.loginIntro > .eyebrow {
-  margin-top: 90px;
-  margin-bottom: 22px;
-}
 .loginIntro h1 {
   font-size: clamp(42px, 4vw, 64px);
   line-height: 1.3;
@@ -1851,20 +1821,6 @@ $white: var(--page);
   justify-content: space-between;
   padding: 12px 16px;
   margin-top: 8px;
-}
-.loginNote {
-  display: flex;
-  gap: 9px;
-  margin-top: 27px;
-  color: #9aa68f;
-  font-size: 10px;
-  line-height: 1.8;
-}
-.loginNote svg {
-  width: 15px;
-  height: 15px;
-  flex-shrink: 0;
-  margin-top: 2px;
 }
 .mono {
   font-family: "SFMono-Regular", Consolas, monospace;
@@ -2372,7 +2328,6 @@ $white: var(--page);
 }
 .navItem,
 .header,
-.eyebrow,
 .navLabel,
 .stat > div,
 .stat small,
@@ -2392,7 +2347,6 @@ $white: var(--page);
 .loginIntro > small,
 .loginIntro > p,
 .loginCard > p,
-.loginNote,
 .neutral,
 .rank {
   color: var(--muted);
@@ -2800,8 +2754,7 @@ $white: var(--page);
     height: 32px;
   }
   .sidebar .brand small,
-  .navLabel,
-  .sidebarFoot {
+  .navLabel {
     display: none;
   }
   .sidebar nav {
@@ -2871,10 +2824,6 @@ $white: var(--page);
   }
   .loginIntro .brand {
     position: static;
-  }
-  .loginIntro > .eyebrow {
-    margin-top: 36px;
-    margin-bottom: 12px;
   }
   .loginIntro h1 {
     font-size: 35px;
