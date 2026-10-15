@@ -225,16 +225,6 @@ def desensitize_text(text: str) -> str:
     return _PATTERN.sub(lambda m: _zero_width_split(m.group(0)), text)
 
 
-def _iter_text_blocks(content):
-    """Yield text containers and keys from string or block-based Chat content."""
-    if isinstance(content, str):
-        yield content, None  # The caller replaces plain strings directly.
-    elif isinstance(content, list):
-        for blk in content:
-            if isinstance(blk, dict) and blk.get("type") == "text":
-                yield blk, "text"
-
-
 def _content_to_text(content) -> str:
     """Extract plain text from content blocks for trusted-template detection."""
     text = content if isinstance(content, str) else ""

@@ -54,15 +54,30 @@ from app import buddy, daily_chat, checkin as checkin_service, model_policy, tra
 from app.credential_cooldowns import CredentialCooldowns, AccountPauses
 from app.credit_floor import CostLedger, catalog_paid, floor_admit
 from app.model_blocks import ModelBlocks
+from app.model_rates import is_free_multiplier, multiplier_value
+# Pure request/response and catalog-view helpers now live in app/catalog_view.py.
+# They are re-exported here because the module's own call sites (and several tests)
+# address them as converter.<name>; the definitions themselves are no longer in
+# this file.
+from app.catalog_view import (
+    _REQUEST_POLICY_KEY, _RESET_DATE_TIME_JOIN_RE, _RESET_DATETIME_RE,
+    _RESET_DEFAULT_UTC_OFFSET, _RESET_MAX_AHEAD_SECONDS, _RESET_MIN_AHEAD_SECONDS,
+    _account_scope, _bearer_token, _bind_request_session,
+    _block_model, _boolean_arg, _chat_completion, _chunk_bytes, _client_wants_stream,
+    _completion_to_merged, _credential_account, _declared_tool_names, _estimate_input_tokens,
+    _free_multiplier, _in_region, _last_user_text, _msg_text, _nonnegative_int,
+    _nonnegative_number, _normalize_tool_choice, _origins_arg, _parse_reset_time,
+    _reasoning_requested, _request_id, _strip_zwsp, _truncate, _upstream_chat_body,
+    _usable_models, auth_dirs)
 from app.usage_snapshots import UsageSnapshots
 from app.client_hangup import ClientHungUp, await_or_hangup
-from app.observability import (AuditMiddleware, observe_recovery, observe_route, observe_stream_mode,
+from app.observability import (observe_recovery, observe_route, observe_stream_mode,
                                observe_responses_projection, observe_usage, observe_attempt,
                                observe_failure, observe_failure_seq)
 from app.credential_io import (CredentialFileError, read_import_file, atomic_write_credential,
                                credential_file_lock)
 from app.upstream_io import (ChatSSEAccumulator, StreamOutputBudget, UpstreamHTTPError,
-                             UpstreamProtocolError, UpstreamResponseError, UpstreamTimeout,
+                             UpstreamResponseError, UpstreamTimeout,
                              open_backend_stream, parse_retry_after, read_bounded_error)
 from app.inference_resources import (AccountCapacity, InferenceResourcesMiddleware, inference_lifespan,
                                      request_resources, release_credential)
@@ -71,6 +86,8 @@ from app.reasoning import resolve_reasoning_effort, thinking_mode
 from app import model_capabilities
 from app.message_normalization import merge_intl_user_images
 from app.adapters.chat_input import normalize_chat_messages
+from app.tool_pairing import sanitize_tool_pairing
+from app import prompt_cache
 from app.model_catalog_view import INTERNATIONAL as SHARED_INTL_PROFILES, share_models
 from app.inference_auth import require_api_key
 from app.admin_auth import SessionStoreError
@@ -78,10 +95,12 @@ from app.content_filter import ContentFilterDetector, is_filter_error
 from app.request_limits import ImageLimitError, apply_image_policy
 from app.safe_logging import format_log_body, sanitize_log_text
 from app.startup import allows_open_noauth, load_startup_env, run_server
-from app.site_routing import (DOMESTIC, INTERNATIONAL, PROFILE_ENDPOINTS, site_for_auth, site_for_headers,
+from app.site_routing import (INTERNATIONAL, PROFILE_ENDPOINTS, site_for_headers,
                               profile_for_auth, profile_for_headers, profile_region, profile_product,
                               profile_site, chat_url_for_headers, refresh_url_for_auth)
-from app.client_profiles import CLI_VERSION, CLI_USER_AGENT, credential_headers, catalog_cache_key, account_key
+from app.client_profiles import (CLI_VERSION, CLI_USER_AGENT, credential_headers, catalog_cache_key,
+                                 account_key, canonical_uid, enterprise_id_of, identity_email,
+                                 is_enterprise_account, normalize_uid)
 try:
     from app import credits as credits_mod
 except ImportError:  # Disable credit maintenance when its module is unavailable.
@@ -98,7 +117,6 @@ CBC_VERSION = CLI_VERSION
 USER_AGENT = CLI_USER_AGENT
 
 _STREAM_MODES = ("compatible", "realtime")
-_REQUEST_POLICY_KEY = object()  # Process-local object key; never serializable or client injectable.
 
 
 @dataclass(frozen=True)
@@ -140,18 +158,6 @@ def managed_auth_dir() -> Path:
     env_dir = os.environ.get("CODEBUDDY_AUTH_DIR")
     return Path(env_dir) if env_dir else Path(__file__).resolve().parent / "auth"
 
-
-def auth_dirs() -> list[Path]:
-    """Locate desktop credentials used only as seed files."""
-    home = Path.home()
-    plat = sys.platform
-    if plat == "darwin":
-        return [home / "Library" / "Application Support" / "CodeBuddyExtension" / "Data" / "Public" / "auth"]
-    if plat == "win32":
-        local = Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
-        return [local / "CodeBuddyExtension" / "Data" / "Public" / "auth"]
-    xdg = Path(os.environ.get("XDG_DATA_HOME", home / ".local" / "share"))
-    return [xdg / "CodeBuddyExtension" / "Data" / "Public" / "auth"]
 
 
 def seed_credentials():
@@ -201,28 +207,44 @@ def find_auth_files() -> list[Path]:
 
 
 def _cred_uid(path) -> Optional[str]:
-    """Read the account UID for deduplication, or return None when unavailable."""
+    """Read the canonical account identity for deduplication, or return None."""
     try:
         d = json.loads(Path(path).read_text(encoding="utf-8"))
-        acct = d.get("account")
-        if not isinstance(acct, dict):
-            arr = d.get("accounts")
-            acct = arr[0] if isinstance(arr, list) and arr and isinstance(arr[0], dict) else {}
-        return acct.get("uid")
+        return _credential_account(d).get("uid")
     except Exception:
         return None
 
-def _credential_account(data: dict) -> dict:
-    account = data.get("account")
-    if not isinstance(account, dict):
-        accounts = data.get("accounts") or []
-        account = accounts[0] if isinstance(accounts, list) and accounts and isinstance(accounts[0], dict) else {}
-    return account
 
 
 def _credential_identity(data: dict) -> str:
+    """Hash the canonical account identity, falling back to a real email without a uid.
+
+    The uid is normalised through the shared helper so a numeric uid hashes exactly
+    like its string form and is never mistaken for a missing one.
+    """
     account = _credential_account(data)
-    return account_key(profile_for_auth(data.get("auth") or {}), account.get("uid"), account.get("enterpriseId"))
+    return account_key(profile_for_auth(data.get("auth") or {}), canonical_uid(account),
+                       enterprise_id_of(account))
+
+
+def _enterprise_dispatch_id(token: str, account: dict, *, uid: str = "", domain: str = "") -> str:
+    """Return the tenant id that selects the enterprise billing endpoint.
+
+    A stored tenant id is used directly. A credential that is enterprise by type
+    alone (historical backups) needs one lookup; if that lookup cannot confirm the
+    tenant the sync must fail with a readable error instead of quietly querying the
+    personal endpoint, which answers with an empty package list for enterprise
+    accounts and would surface as "no credits available".
+    """
+    enterprise_id = enterprise_id_of(account)
+    if enterprise_id is not None:
+        return enterprise_id
+    if not is_enterprise_account(account):
+        return ""
+    resolved = credits_mod.resolve_enterprise_id(token, uid=uid, domain=domain)
+    if not resolved:
+        raise RuntimeError("企业账号缺少企业 ID，无法查询企业配额（已跳过个人版接口以避免误报余额）")
+    return resolved
 
 
 def _cred_identity(path) -> str | None:
@@ -230,11 +252,6 @@ def _cred_identity(path) -> str | None:
         return _credential_identity(json.loads(Path(path).read_text(encoding="utf-8")))
     except (OSError, ValueError, TypeError, AttributeError):
         return None
-
-
-def find_auth_file() -> Path | None:
-    files = find_auth_files()
-    return files[0] if files else None
 
 
 # ---------------------------------------------------------------------------
@@ -373,13 +390,17 @@ class CredentialManager:
             auth = s.get("auth") or {}
             acct = _credential_account(s)
             profile = profile_for_auth(auth)
+            # ``uid`` here is the canonical identity value (a real email when no uid
+            # exists), identical to the input of ``account_key`` below, so callers that
+            # gate on it treat a uid-less account exactly like the pool does.
             result = {
-                "uid": str(acct.get("uid") or "") or None,
+                "uid": canonical_uid(acct) or None,
                 "account_key": _credential_identity(s),
                 "site": profile_site(profile),
                 "profile": profile, "region": profile_region(profile), "product": profile_product(profile),
                 "nickname": acct.get("nickname"),
                 "enterpriseName": acct.get("enterpriseName"),
+                "enterprise": is_enterprise_account(acct),
                 "token_expires_at": auth.get("expiresAt", 0),
                 "token_expired": self._is_expired(),
                 "last_refresh_time": auth.get("lastRefreshTime") or 0,
@@ -407,14 +428,6 @@ CRED_KEEPALIVE_S = 24 * 3600   # Maximum idle interval before refreshing
 CRED_KEEPALIVE_RETRY_S = 3600  # Keepalive retry interval, independent of expiry retries
 
 
-def _msg_text(m: dict) -> str:
-    c = m.get("content")
-    if isinstance(c, str):
-        return c
-    if isinstance(c, list):
-        return "\n".join(p.get("text", "") for p in c if isinstance(p, dict))
-    return ""
-
 
 def session_key(payload: dict) -> str | None:
     """Derive a stable session key from system instructions and the first user message."""
@@ -440,50 +453,8 @@ def session_key(payload: dict) -> str | None:
     return hashlib.sha256((system + "\x00" + first_user).encode("utf-8", "replace")).hexdigest()[:32]
 
 
-_RESET_DATETIME_RE = re.compile(
-    r"(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}:\d{2})\s*(?:UTC\s*([+-]?\d{1,2}))?",
-    re.IGNORECASE,
-)
-_RESET_DATE_TIME_JOIN_RE = re.compile(r"(\d{4}-\d{2}-\d{2})(\d{1,2}:\d{2}:\d{2})")
 # 文案未标时区时按东八区解释（中文形态来自国内站，实测不带 UTC 标记）。
-_RESET_DEFAULT_UTC_OFFSET = 8
 # 解析结果可信区间：已过期超过 1 分钟、或超过 30 天，都视为不可信并退回兜底冷却。
-_RESET_MIN_AHEAD_SECONDS = -60
-_RESET_MAX_AHEAD_SECONDS = 30 * 86400
-
-
-def _parse_reset_time(raw: bytes) -> float | None:
-    """Parse a quota reset timestamp from a 429 body and return epoch seconds.
-
-    Handles both observed upstream wordings: the English form ("... will reset at
-    2026-09-13 17:11:34 UTC+8 ...") and the Chinese form (可在2026-09-1322:05:37重置 —
-    full-width colons, no space between date and time, no timezone marker). Returns
-    None when nothing parses so callers fall back to the model cooldown default.
-    """
-    try:
-        text = raw.decode("utf-8", "replace")
-    except Exception:
-        return None
-    # Normalize: full-width colons/minus -> half-width; restore missing date-time space.
-    text = text.replace("：", ":").replace("－", "-")
-    text = _RESET_DATE_TIME_JOIN_RE.sub(r"\1 \2", text)
-    m = _RESET_DATETIME_RE.search(text)
-    if not m:
-        return None
-    try:
-        hour, minute, second = (int(part) for part in m.group(2).split(":"))
-        dt = datetime.strptime(
-            f"{m.group(1)} {hour:02d}:{minute:02d}:{second:02d}", "%Y-%m-%d %H:%M:%S"
-        )
-        offset = int(m.group(3)) if m.group(3) else _RESET_DEFAULT_UTC_OFFSET
-        stamp = dt.replace(tzinfo=timezone(timedelta(hours=offset))).timestamp()
-    except (ValueError, OverflowError):
-        return None
-    delta = stamp - time.time()
-    if delta < _RESET_MIN_AHEAD_SECONDS or delta > _RESET_MAX_AHEAD_SECONDS:
-        return None
-    return stamp
-
 
 
 
@@ -517,10 +488,6 @@ def _parse_not_servable(raw: bytes, status: int):
         return code or "11102", msg[:200]
     return None
 
-
-def _block_model(model: str | None) -> str | None:
-    """Track blocked models by public ID, normalizing the international auto alias."""
-    return "auto" if model == "default-model" else model
 
 
 def _dynamic_request_headers(skey: str | None) -> dict:
@@ -1033,6 +1000,9 @@ class CredentialPool:
         if not balance:
             return False
         try:
+            # An unlimited enterprise tenant holds no numeric balance and is never zero.
+            if balance.get("unlimited") and balance.get("enterprise"):
+                return False
             return (bool(balance.get("intl")) == (profile_region(profile) == "intl")
                     and float(balance.get("credits") or 0) <= 0)
         except (TypeError, ValueError):
@@ -1043,6 +1013,9 @@ class CredentialPool:
         if not balance:
             return profile_region(profile) == "cn"
         try:
+            # An unlimited enterprise tenant holds no numeric balance; it has credit on its own site.
+            if balance.get("unlimited") and balance.get("enterprise"):
+                return bool(balance.get("intl")) == (profile_region(profile) == "intl")
             return (bool(balance.get("intl")) == (profile_region(profile) == "intl")
                     and float(balance.get("credits") or 0) > 0)
         except (TypeError, ValueError):
@@ -1766,9 +1739,6 @@ CHECKIN_FIRST_DELAY = 30     # Initial check-in delay in seconds
 HOUSEKEEP_INTERVAL = 3600    # Account maintenance interval in seconds
 
 
-def _bearer_token(headers: dict) -> str:
-    return (headers.get("Authorization") or "").removeprefix("Bearer ").strip()
-
 
 _HOUSEKEEP_LOCK = threading.Lock()
 
@@ -1831,18 +1801,23 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
     try:
         with cm._lock:
             try:
-                if expected_identity is not None and cm.summary().get("account_key") != expected_identity:
+                # Read the identity from the credential itself, never rebuilt from headers: a
+                # uid-less account identified by email would otherwise hash to a different key
+                # here than the one the pool recorded, and its sync would be rejected forever.
+                summary = cm.summary()
+                if expected_identity is not None and summary.get("account_key") != expected_identity:
                     failed.add(cid)
                     return None
                 headers = cm.get_headers()
             finally:
                 generation = cm._generation
         profile = profile_for_headers(headers)
-        identity = account_key(profile, headers.get("X-User-Id"), headers.get("X-Enterprise-Id"))
+        identity = summary.get("account_key")
         if entry.get("account_key") and entry["account_key"] != identity:
             failed.add(cid)
             return None  # A path now owned by another account must be rescheduled with its own preferences.
         site = site_for_headers(headers)
+        # The upstream uid header is used verbatim; the local identity above is the key.
         token, uid, domain = _bearer_token(headers), headers.get("X-User-Id", ""), headers.get("X-Domain", "")
         day = daily_chat.today()
         if checkin and model_policy.credential_auto_checkin(CONFIG, entry) and not ledger.checkin_done(cid, day):
@@ -1898,13 +1873,22 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
                 _sync_error(pool, ledger, entry, generation, "dailychat", error)
         if not model_policy.credential_enabled(CONFIG, entry):
             return None
-        balance = credits_mod.fetch_credits(token, uid=uid, domain=domain)
+        # An enterprise account always bills through the enterprise endpoint, so an
+        # unresolvable tenant must fail loudly rather than silently fall back to the
+        # personal endpoint, which would report it as having no credits at all.
+        enterprise_id = _enterprise_dispatch_id(token, _credential_account(cm._session()),
+                                               uid=uid, domain=domain)
+        balance = credits_mod.fetch_credits(
+            token, uid=uid, domain=domain,
+            # The dispatch key travels from the credential so both views agree.
+            enterprise_id=enterprise_id or "")
         if bool(balance.get("intl")) != (site == INTERNATIONAL):
             raise ValueError("积分响应与凭据站点不一致")
         if not pool.apply_if_current(cm, generation, lambda: ledger.update_credits(cid, balance)):
             failed.add(cid)
             return None
-        _log(f"[credits] {Path(cid).name}: 站点 {site}，余额 {balance['credits']}")
+        shown = "无限" if balance.get("unlimited") and balance.get("enterprise") else balance["credits"]
+        _log(f"[credits] {Path(cid).name}: 站点 {site}，余额 {shown}")
         profile = profile_for_headers(headers)
         return entry, generation, headers, profile
     except Exception as error:
@@ -2295,18 +2279,32 @@ CONFIG: dict = {"api_key": "", "cred": None, "log_path": None, "ledger": None,
                 "stream_mode": "compatible", "model_capability_guard": True,
                 "responses_projection_mode": "balanced", "responses_projection_max_bytes": 40000,
                 "failover_max": 0,     # Credential failovers allowed before the first response byte
+                # Deliberately the CONSERVATIVE value here even though the CLI and the
+                # settings SCHEMA default to True (the local port's "60s of waiting beats
+                # a stuck write" tradeoff). This module-level default is what a direct
+                # importer sees when main() has not run — tests and embeddings — and
+                # silently gaining write-timeout replay there would mean replaying
+                # requests the upstream may already have billed. Production always
+                # overwrites this key from the CLI defaults, so the shipped behaviour is
+                # unchanged; tests/test_stream_failover.py pins the conservative value.
                 "retry_write_timeout": False,  # Opt-in replay after incomplete writes
                 "usage_daily": None,     # Usage aggregated by date and model
                 "usage_daily_accounts": None,  # Independent per-account usage snapshots
                 "usage_snapshots": None,  # On-disk cache of the per-account snapshots
                 "credit_price_cny": None, "credit_price_usd": None, "usd_rate": None,
                 "read_timeout": 300,     # Bounded upstream read timeout (adjacent bytes)
-                "ttfb_timeout": 45.0,    # Upstream first-byte timeout; 0 disables
+                "ttfb_timeout": 30.0,    # Upstream first-byte timeout; 0 disables
+                "write_timeout": 20.0,   # Upstream request-body write timeout; 0 disables
                 "stream_idle_timeout": 60.0,  # Max gap between upstream SSE lines; 0 disables
                 "stream_tools": False,   # Stream tool-bearing requests byte-by-byte (no aggregate retry)
                 "coalesce_reasoning": True,  # Merge reasoning into one client block (upstream v1.3.2); False streams it live
                 "thinking_pin_models": ",".join(THINKING_PIN_MODELS),  # Reasoning→thinking pin substrings
-                "desensitize": False, "no_compact": False, "keep_tool_metadata": False}  # None prices use module defaults.
+                "desensitize": False, "no_compact": False, "keep_tool_metadata": False,  # None prices use module defaults.
+                "prompt_cache_key_enabled": True,  # Generate an account-isolated upstream cache key.
+                # Fusion transport-failure demotion and credit floor: same defaults as the
+                # settings SCHEMA, so the pool behaves identically before main() runs.
+                "transport_fail_threshold": 5, "transport_penalty_seconds": 600,
+                "credit_floor": 0, "credit_floor_cost_alpha": 0.3, "credit_floor_cost_ttl_s": 21600}
 
 # In-memory OAuth sessions do not survive restarts.
 _OAUTH = auth_oauth.OAuthManager(user_agent=USER_AGENT)
@@ -2328,6 +2326,10 @@ def _log(msg: str):
         audit.event("runtime", component.group(1), {"code": code})
 
 
+# These two preview helpers are retired along with the text log: main() pins
+# CONFIG["log_path"] to None, so the guard below never opens in production. They are
+# kept because the redaction tests drive them directly to prove secrets cannot reach
+# a text file even if the retired setting were somehow set again.
 def _log_json(label: str, value):
     if CONFIG.get("log_path") and CONFIG.get("log_body_limit", 65536):
         _log(f"{label}\n{format_log_body(value, CONFIG.get('log_body_limit', 65536))}")
@@ -2337,12 +2339,6 @@ def _log_text_body(label: str, text: str):
     if CONFIG.get("log_path") and CONFIG.get("log_body_limit", 65536):
         _log(f"{label}\n{sanitize_log_text(text, CONFIG.get('log_body_limit', 65536))}")
 
-
-
-
-def _truncate(s: str, n: int = 80) -> str:
-    s = str(s).replace("\n", " ").strip()
-    return s[:n] + ("…" if len(s) > n else "")
 
 
 def _check_auth(authorization: Optional[str], x_api_key: Optional[str]):
@@ -2445,6 +2441,19 @@ def _route_chat(payload, body, rid, *, tried=()):
         if routed_model != body.get("model"):
             body = {**body, "model": routed_model}
         body, merged_runs, merged_messages = merge_intl_user_images(body, profile)
+        # prompt_cache_key injection (ported from the panel gateway, see app/prompt_cache.py).
+        # Runs after every body rebind above so the key lands on the payload that actually
+        # goes out, and inside _route_chat because only here are the selected credential
+        # (profile / uid / enterprise id) and the outgoing body available together. Placed
+        # before the failover callers snapshot `canonical`, so a replay re-derives the key
+        # for the replacement account instead of reusing the previous account's key.
+        # The switch controls generation only: an explicit client key is preserved verbatim
+        # by inject_prompt_cache_key, and the adapters forward it independently.
+        if CONFIG.get("prompt_cache_key_enabled", True):
+            body = prompt_cache.inject_prompt_cache_key(
+                body, profile,
+                account_key(profile, headers.get("X-User-Id"), headers.get("X-Enterprise-Id")),
+                prompt_cache.session_source(payload, context, session_key(payload)))
         if body is not canonical:
             _guard_request_size(body)
         if merged_runs:
@@ -2486,6 +2495,20 @@ def _note_cred_transport_failure(cred) -> None:
         pool.note_transport_failure(cm)
 
 
+def _note_cred_transport_ok(cred) -> None:
+    """Clear the transport-level fail counter after an upstream response arrives.
+
+    The counterpart to _note_cred_transport_failure: without it the counter only
+    ever grew, so a credential that recovered would still drift toward the
+    demotion threshold. A penalty already in force is not lifted early — it
+    expires on its own (see CredentialPool.note_transport_ok).
+    """
+    pool = CONFIG.get("cred_pool")
+    if pool is not None and cred is not None:
+        cm = cred[0] if isinstance(cred, tuple) else cred
+        pool.note_transport_ok(cm)
+
+
 def _note_cred_cost(cred, model: str | None, usage) -> None:
     """Feed the EMA charge ledger after an upstream completion (credit-floor cost signal)."""
     pool = CONFIG.get("cred_pool")
@@ -2502,7 +2525,14 @@ def health():
 @app.get("/admin/credentials")
 def admin_list_credentials(authorization: Optional[str] = Header(default=None),
                            x_api_key: Optional[str] = Header(default=None, alias="X-Api-Key")):
-    """Return account expiry, health and session-binding metadata."""
+    """Return account expiry, health and session-binding metadata.
+
+    NOTE: under the assembled app this route is shadowed. install_admin registers
+    AdminMiddleware, whose dispatch short-circuits GET /admin/credentials with the
+    field-filtered _public_credential view, so this handler is unreachable there.
+    It is kept as the bare-app fallback (tests and embeddings that mount converter.app
+    without the management layer); the two must agree on the response envelope.
+    """
     _check_admin_auth(authorization, x_api_key)
     pool = CONFIG.get("cred_pool")
     if CONFIG.get("management") is not None:
@@ -2773,6 +2803,17 @@ def admin_model_blocks(authorization: Optional[str] = Header(default=None),
     return {"model_blocks": pool.model_blocks_detail() if pool is not None else []}
 
 
+def _admin_credential_action(action, identity=None, *, consent_revision=None):
+    """Dispatch a credential action against THIS module.
+
+    Stays in converter.py on purpose: it hands sys.modules[__name__] to
+    credential_actions.run, which reads gateway.CONFIG and gateway.<helpers>.
+    From app/catalog_view.py that lookup would resolve to the wrong module.
+    """
+    from app.credential_actions import run
+    return run(sys.modules[__name__], action, identity, consent_revision=consent_revision)
+
+
 @app.post("/admin/checkin")
 def admin_checkin(authorization: Optional[str] = Header(default=None),
                   x_api_key: Optional[str] = Header(default=None, alias="X-Api-Key")):
@@ -2780,10 +2821,6 @@ def admin_checkin(authorization: Optional[str] = Header(default=None),
     _check_admin_auth(authorization, x_api_key)
     return _admin_credential_action("checkin")
 
-
-def _admin_credential_action(action, identity=None, *, consent_revision=None):
-    from app.credential_actions import run
-    return run(sys.modules[__name__], action, identity, consent_revision=consent_revision)
 
 
 @app.post("/admin/sync")
@@ -2864,6 +2901,8 @@ def _billing_totals() -> dict:
             "used_source": "official_usage_detail" if detail else "quota_delta",
             # Expose incomplete pagination or failed account synchronization.
             "partial": bool(agg.get("partial") or cache.get("partial")),
+            # Unlimited enterprise tenants stay outside the monetary conversion.
+            "unlimited_accounts": int(agg.get("unlimited_accounts") or 0),
             "groups": groups_out, "by_day": cache.get("by_day") or {}}
 
 
@@ -2973,9 +3012,6 @@ def _catalog_for(profile: str, scope: str = "models", *, model_id=None):
     return CONFIG.get(legacy[profile]) if profile in legacy else None
 
 
-def _in_region(profile: str, region: str | None) -> bool:
-    return region is None or profile_region(profile) == region
-
 
 def _configured_profiles(region: str | None) -> set[str]:
     pool = CONFIG.get("cred_pool")
@@ -2990,20 +3026,6 @@ def _configured_profiles(region: str | None) -> set[str]:
              if _in_region(profile, region) and _catalog_for(profile) is not None}
     return known or ({"intl-cli"} if region == "intl" else {"cn-cli"})
 
-
-def _usable_models(models):
-    return [model for model in models or [] if model.get("id") and model.get("supportsToolCall")
-            and not model.get("disabled")]
-
-
-def _account_scope(account: dict, scope: str = "models") -> list[dict] | None:
-    """Merge root candidates into selector models while retaining selector metadata."""
-    picker = account.get("models")
-    if scope == "models" or picker is None:
-        return picker
-    seen = {item.get("id") for item in picker}
-    # Root entries supply missing names without replacing selector metadata.
-    return picker + [item for item in account.get("serves") or [] if item.get("id") not in seen]
 
 
 def _shared_catalog_sources(scope="models"):
@@ -3044,25 +3066,11 @@ def _upstream_model(model: str | None, profile: str) -> str | None:
     return "default-model" if model == "auto" and profile_region(profile) == "intl" else model
 
 
-def _free_multiplier(credits) -> bool:
-    """Check whether the account's catalog explicitly declares a zero credit rate."""
-    if not isinstance(credits, str):
-        return False
-    match = re.fullmatch(r"x\s*0(?:\.0+)?\s*(?:credits?)?", credits.strip(), re.IGNORECASE)
-    return match is not None
 
-
-def _multiplier_value(credits):
-    """Parse an official model rate, returning None for missing or unknown formats."""
-    if not isinstance(credits, str):
-        return None
-    match = re.fullmatch(r"x\s*([0-9]+(?:\.[0-9]+)?)\s*(?:credits?)?", credits.strip(), re.IGNORECASE)
-    if match is None:
-        return None
-    try:
-        return float(match.group(1))
-    except ValueError:
-        return None
+# Kept as a module-level alias: app/model_policy.py, app/gateway_management.py and
+# app/model_capabilities.py reach this through the gateway object, and renaming it
+# would break those callers for no gain. The parser itself now lives in one place.
+_multiplier_value = multiplier_value
 
 
 def _model_free(models, model: str | None, profile: str) -> bool:
@@ -3110,9 +3118,16 @@ def _profile_has_credits(profile: str) -> bool:
         if profile_region(profile) == "cn":
             return True
         ledger = CONFIG.get("ledger")
-        return bool(ledger and any((entry.get("credits") or {}).get("intl")
-                                   and float((entry.get("credits") or {}).get("credits") or 0) > 0
-                                   for entry in ledger.snapshot().values()))
+
+        def _positive(entry):
+            c = entry.get("credits") or {}
+            if not c.get("intl"):
+                return False
+            if c.get("unlimited") and c.get("enterprise"):
+                return True  # Unlimited tenants hold no numeric balance.
+            return float(c.get("credits") or 0) > 0
+
+        return bool(ledger and any(_positive(entry) for entry in ledger.snapshot().values()))
     return any(pool._entry_profile(entry) == profile and pool._has_credit(entry, profile)
                for entry in pool.entries() if model_policy.credential_enabled(CONFIG, entry))
 
@@ -3218,14 +3233,6 @@ def current_model_details(region: str | None = None) -> list[dict]:
     return [{**item, **model_capabilities.describe_models(declarations.get(item["id"], []))} for item in details.values()]
 
 
-def _client_wants_stream(payload: dict) -> bool:
-    """Default stream to false and reject non-Boolean values."""
-    value = payload.get("stream", False)
-    if not isinstance(value, bool):
-        raise HTTPException(status_code=400, detail={"error": {
-            "message": "stream must be a boolean", "type": "invalid_request_error", "param": "stream"}})
-    return value
-
 
 def _prepare_payload(payload, field="messages") -> dict:
     """Apply request-wide image limits before adaptation, logging and credential selection."""
@@ -3244,45 +3251,6 @@ def _prepare_payload(payload, field="messages") -> dict:
         _log(f"[limit] 保留最新图片 | count={stats['count']} | retained={stats['retained']} | dropped={stats['dropped']}")
     return prepared
 
-
-def _normalize_tool_choice(body):
-    """Map named tool choice to a single required tool for string-only upstream selection."""
-    choice = body.get("tool_choice")
-    if not isinstance(choice, dict):
-        return
-    function = choice.get("function", choice)
-    name = function.get("name") if isinstance(function, dict) else None
-    tools = body.get("tools")
-    matches = [tool for tool in tools if isinstance(tool, dict) and tool.get("type") == "function"
-               and isinstance(tool.get("function"), dict) and tool["function"].get("name") == name] if isinstance(tools, list) else []
-    if choice.get("type") != "function" or not isinstance(name, str) or not name.strip() or len(matches) != 1:
-        raise HTTPException(status_code=400, detail={"error": {"message": "tool_choice must name exactly one declared function",
-                            "type": "invalid_request_error", "param": "tool_choice"}})
-    body["tools"], body["tool_choice"] = matches, "required"
-
-
-def _bind_request_session(payload, body):
-    context = current_context()
-    if context is not None and context.scoped:
-        try:
-            context.bind_session(payload, body.get("messages"))
-        except SessionIdentifierError as error:
-            raise HTTPException(status_code=400, detail={"error": {"message": str(error),
-                                "type": "invalid_request_error", "param": "session_id"}}) from None
-        except (ValueError, TypeError, UnicodeError, RecursionError):
-            raise HTTPException(status_code=400, detail={"error": {"message": "invalid session input",
-                                "type": "invalid_request_error"}}) from None
-
-
-def _request_id():
-    context = current_context()
-    return context.request_id if context is not None else uuid.uuid4().hex
-
-
-def _reasoning_requested(body: dict) -> bool:
-    """客户端是否显式要求推理输出：reasoning_effort 存在且不为 off。"""
-    effort = body.get("reasoning_effort")
-    return isinstance(effort, str) and effort.strip().lower() not in ("", "off", "none", "disabled")
 
 
 def _pin_thinking(body: dict) -> dict:
@@ -3335,6 +3303,12 @@ def _prepare_chat_body(body: dict, *, region=None, session_payload=None) -> dict
             messages = [messages[system_index], *messages[:system_index], *messages[system_index + 1:]]
             message_indices.insert(0, message_indices.pop(system_index))
     body["messages"] = normalize_chat_messages(messages, message_indices=message_indices)
+    # Outbound tool pairing cleanup (ported from the panel gateway, see app/tool_pairing.py).
+    # Applied to every model regardless of the desensitize switch: an incomplete
+    # tool_call/tool result pairing makes the upstream reject the request, and because
+    # clients replay the bad history each turn, one broken turn poisons the conversation.
+    # Order is fixed (merge -> repack -> cleanup) and every step is written back.
+    body["messages"] = sanitize_tool_pairing(body["messages"])
     _normalize_tool_choice(body)
     body = _pin_thinking(body)
     body["stream"] = True
@@ -3343,11 +3317,6 @@ def _prepare_chat_body(body: dict, *, region=None, session_payload=None) -> dict
     _guard_request_size(body)
     return body
 
-
-def _upstream_chat_body(body: dict) -> dict:
-    """Exclude process-local metadata from both wire JSON and its byte budget."""
-    return {key: value for key, value in body.items()
-            if key is not _REQUEST_POLICY_KEY and not (isinstance(key, str) and key.startswith("_"))}
 
 
 def _guard_request_size(body: dict) -> int:
@@ -3472,20 +3441,6 @@ async def chat_completions(request: Request,
     return JSONResponse(content=collected)
 
 
-def _last_user_text(messages: list) -> str:
-    """Extract the latest user text for bounded log previews."""
-    for m in reversed(messages):
-        if m.get("role") != "user":
-            continue
-        content = m.get("content", "")
-        if isinstance(content, list):
-            for blk in content:
-                if isinstance(blk, dict) and blk.get("type") == "text":
-                    return str(blk.get("text", ""))
-            return ""
-        return str(content)
-    return ""
-
 
 def _log_finish(model_name: str, t0: float, result: dict, rid: str = ""):
     """Log request timing, finish reason, usage, tools and bounded response previews."""
@@ -3506,25 +3461,6 @@ def _log_finish(model_name: str, t0: float, result: dict, rid: str = ""):
          + f" | tokens={usage.get('total_tokens', '?')}")
     _log_json(f"{prefix}RESPONSE BODY (预览)", result)
 
-
-def _chat_completion(merged: dict) -> dict:
-    message = {"role": "assistant", "content": merged["content"] or None}
-    for key in ("reasoning_content", "refusal", "tool_calls"):
-        if merged.get(key):
-            message[key] = merged[key]
-    return {
-        "id": "chatcmpl-" + os.urandom(12).hex(), "object": "chat.completion",
-        "created": int(time.time()), "model": merged.get("model") or "unknown",
-        "choices": [{"index": 0, "message": message,
-                     "finish_reason": merged.get("finish_reason") or ("tool_calls" if merged.get("tool_calls") else "stop")}],
-        "usage": merged.get("usage") or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-    }
-
-
-def _completion_to_merged(result: dict) -> dict:
-    choice = result["choices"][0]
-    return {**choice["message"], "finish_reason": choice["finish_reason"],
-            "model": result.get("model"), "usage": result.get("usage")}
 
 
 async def _collect_stream(response: httpx.Response, *, accumulator=None) -> dict:
@@ -3553,19 +3489,6 @@ def _tool_choice_satisfied(tool_calls, body):
         return bool(calls) and all(call.get("function", {}).get("name") == name for call in calls)
     return True
 
-
-def _declared_tool_names(body: dict) -> frozenset[str]:
-    """Extract declared function names for conservative realtime identity boundaries."""
-    names = set()
-    for tool in body.get("tools") or []:
-        if not isinstance(tool, dict):
-            continue
-        function = tool.get("function")
-        if isinstance(function, dict) and isinstance(function.get("name"), str):
-            names.add(function["name"])
-        elif isinstance(tool.get("name"), str):
-            names.add(tool["name"])
-    return frozenset(name for name in names if name)
 
 
 def _tool_calls_healthy(tool_calls, body: dict | None = None, *, require_declarations=False) -> bool:
@@ -3823,7 +3746,7 @@ def _public_sse_line(line, model_name):
 
 
 @asynccontextmanager
-async def _backend_stream(url, headers, body, *, timeout=300, rid="", model_name="?"):
+async def _backend_stream(url, headers, body, *, timeout=300, rid="", model_name="?", cred=None):
     started, opened = time.monotonic(), False
     context = current_context()
     if context is not None:
@@ -3844,6 +3767,10 @@ async def _backend_stream(url, headers, body, *, timeout=300, rid="", model_name
     def retry(error):
         """Record connection retries and flag possible billing after write timeouts."""
         timeout_on_write = isinstance(error, WRITE_TIMEOUT_TRANSPORT)
+        # A connection retry is a transport-level failure of this credential. It used
+        # to be observed only, so the demotion counter saw roughly half the real
+        # failure rate and a flapping credential stayed in rotation too long.
+        _note_cred_transport_failure(cred)
         observe_attempt("write_timeout_retry" if timeout_on_write else "connect_retry",
                         error_code=type(error).__name__,
                         duration_ms=(time.monotonic() - started) * 1000)
@@ -3929,12 +3856,14 @@ async def _fetch_checked_chat(url, headers, body, model_name, rid, cred=None, *,
     while True:
         accumulator = ChatSSEAccumulator(max_collect_bytes=collection_limit)
         rejection = None
-        async with _backend_stream(url, headers, body, rid=rid, model_name=model_name) as response:
+        async with _backend_stream(url, headers, body, rid=rid, model_name=model_name,
+                                   cred=cred) as response:
             if response.status_code != 200:
                 _check_upstream_status(response.status_code, await read_bounded_error(response), cred, body.get("model"),
                                        headers=response.headers)
             else:
                 _note_cred_model_ok(cred, body.get("model"))
+                _note_cred_transport_ok(cred)
             try:
                 result = await _collect_stream(response, accumulator=accumulator)
             except UpstreamResponseError as error:
@@ -3986,9 +3915,6 @@ async def _fetch_checked_chat(url, headers, body, model_name, rid, cred=None, *,
                         total_tokens=discarded.get("total_tokens"))
         _log(f"[{rid}] tool_calls 损坏，重试 {tool_attempt}/{budget} | {model_name}")
 
-def _strip_zwsp(text: str) -> str:
-    """响应侧剥离 U+200B：聊天输出里零宽字符没有语义，只会是提示词零宽的回声泄漏。"""
-    return text.replace("\u200b", "") if "\u200b" in text else text
 
 
 def _normalize_chat_event(chunk) -> bool:
@@ -4068,12 +3994,14 @@ async def _chat_sse_lines(url, headers, body, model_name, t0, rid, cred=None, *,
     budget = 0 if policy.realtime else (
         CONFIG["log_body_limit"] if CONFIG.get("log_path") else 0)
     try:
-        async with _backend_stream(url, headers, body, rid=rid, model_name=model_name) as response:
+        async with _backend_stream(url, headers, body, rid=rid, model_name=model_name,
+                                   cred=cred) as response:
             if response.status_code != 200:
                 _check_upstream_status(response.status_code, await read_bounded_error(response), cred, body.get("model"),
                                        headers=response.headers)
             else:
                 _note_cred_model_ok(cred, body.get("model"))
+                _note_cred_transport_ok(cred)
             async for line in response.aiter_lines():
                 tracker.feed_line(line)
                 if tracker.done or tracker.finish_reason:
@@ -4114,13 +4042,17 @@ async def _stream_upstream(url: str, headers: dict, body: dict,
         except (httpx.HTTPError, UpstreamResponseError) as error:
             if not sent:
                 raise      # Preserve the HTTP error while no response bytes have been sent.
+            # Bytes are already downstream, so this cannot be replayed; it is still a
+            # transport-level failure of this credential and must feed the demotion
+            # counter, otherwise a credential that reliably dies mid-stream keeps
+            # being picked. (The pre-first-byte path counts it in _backend_stream.)
+            _note_cred_transport_failure(cred)
             status, raw = _upstream_failure(error, model_name, t0, rid)
             yield _err_event(raw, status)
     finally:
         # The inner generator may be suspended at a yielded line when its
         # consumer reports an adapter error or a downstream disconnect.
         await _close_stream(upstream)
-
 
 
 
@@ -4250,9 +4182,6 @@ async def _close_stream(agen) -> None:
 
     await _teardown_finished(asyncio.ensure_future(close()))
 
-
-def _chunk_bytes(chunk, charset: str = "utf-8"):
-    return chunk if isinstance(chunk, (bytes, memoryview)) else chunk.encode(charset)
 
 
 class _DeferredStreamResponse(StreamingResponse):
@@ -4667,27 +4596,6 @@ async def count_tokens(request: Request,
     return {"input_tokens": _estimate_input_tokens(payload)}
 
 
-def _estimate_input_tokens(payload: dict) -> int:
-    """Estimate tokens from character counts and message overhead, not upstream billing."""
-
-    def measure(value) -> int:
-        if isinstance(value, str):
-            ascii_chars = sum(1 for ch in value if ord(ch) < 128)
-            return (ascii_chars + 3) // 4 + (len(value) - ascii_chars)
-        if isinstance(value, list):
-            return sum(measure(item) for item in value)
-        if isinstance(value, dict):
-            return sum(measure(item) for item in value.values())
-        return 0
-
-    total = measure(payload.get("system")) + measure(payload.get("tools"))
-    messages = payload.get("messages")
-    if isinstance(messages, list):
-        for message in messages:
-            if isinstance(message, dict):
-                total += measure(message.get("content")) + 4  # Message structure overhead.
-    return total
-
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -4764,12 +4672,6 @@ def login(site: str = "cn", open_browser: bool = True) -> int:
         return 1
 
 
-def _nonnegative_int(value):
-    number = int(value)
-    if number < 0:
-        raise argparse.ArgumentTypeError("必须为非负整数")
-    return number
-
 
 def _positive_int(value):
     number = _nonnegative_int(value)
@@ -4786,12 +4688,6 @@ def _projection_bytes_arg(value):
     return number
 
 
-def _nonnegative_number(value):
-    number = float(value)
-    if not number >= 0 or number != number:
-        raise argparse.ArgumentTypeError("必须为非负数")
-    return number
-
 
 def _positive_number(value):
     number = _nonnegative_number(value)
@@ -4799,24 +4695,6 @@ def _positive_number(value):
         raise argparse.ArgumentTypeError("必须为正数")
     return number
 
-
-def _origins_arg(value):
-    from app.settings import normalize_allowed_origins
-    try:
-        return normalize_allowed_origins(value)
-    except ValueError:
-        raise argparse.ArgumentTypeError("必须为逗号分隔的 http/https 来源或域名") from None
-
-
-def _boolean_arg(value):
-    if isinstance(value, bool):
-        return value
-    normalized = str(value).strip().lower()
-    if normalized in ("true", "1", "yes", "on"):
-        return True
-    if normalized in ("false", "0", "no", "off"):
-        return False
-    raise argparse.ArgumentTypeError("必须为 true 或 false")
 
 
 def main():

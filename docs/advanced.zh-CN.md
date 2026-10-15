@@ -127,7 +127,7 @@ WebUI 系统设置可配置这两项；环境变量为 `CODEBUDDY2API_UPSTREAM_K
 
 生成接口响应带网关生成的 `X-Request-ID`，可关联文本日志及可用的审计明细；正文响应 ID、工具调用 ID 不变，不采用客户端请求 ID 进行鉴权或去重。
 
-`request_context_mode` 默认 `legacy`，保留旧会话键和上游头。通过 WebUI、`--request-context-mode scoped` 或 `CODEBUDDY2API_REQUEST_CONTEXT_MODE=scoped` 启用新模式：每次客户端 HTTP 请求的根 ID 在既有重试／换号中保持不变，每次上游尝试生成独立 ID/span，会话 ID 按账号隔离。不增加重试，不保存服务端历史，不自动生成缓存键。
+`request_context_mode` 默认 `legacy`，保留旧会话键和上游头。通过 WebUI、`--request-context-mode scoped` 或 `CODEBUDDY2API_REQUEST_CONTEXT_MODE=scoped` 启用新模式：每次客户端 HTTP 请求的根 ID 在既有重试／换号中保持不变，每次上游尝试生成独立 ID/span，会话 ID 按账号隔离。不增加重试，不保存服务端历史。（`prompt_cache_key` 的自动生成是另一项独立行为，默认开启，见「请求边界」。）
 
 scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` / `metadata.conversationId` 或顶层 `conversation_id` / `conversationId`。多处值须一致；冲突、非字符串、控制字符或超过 512 UTF-8 字节时返回 400。空值回退为协议适配后的指令与首条用户输入指纹，包含图片引用但不抓取 URL；缺少可靠输入时使用临时会话。无显式 ID 的相同输入仍无法区分；`user`、`metadata.user_id`、`prompt_cache_key` 不是会话 ID。原始标识不记录、不转发上游。
 
@@ -262,7 +262,7 @@ Messages 的 `enabled` / `adaptive` 启用 Chat 推理，`output_config.effort` 
 - 省略 `stream` 时三个端点都按协议默认返回完整 JSON（非流式）；`stream` 必须是布尔值。默认 `stream_mode=compatible` 时，Responses 流式以及带工具的 Chat / Messages 流式先聚合校验再输出 SSE；`realtime` 则让三个协议都增量发送，省略/非流式请求仍返回完整的已校验 JSON。
 - 推理错误按客户端协议成形：OpenAI 路由为顶层 `error` 对象，Messages 路由为 `{"type": "error", ...}`；保留状态码，开流后的错误只用 SSE 报告，不重放。
 - 上游有效 `Retry-After`（0–86400 秒或对应 HTTP 日期）规范化为秒并在开流前返回；429 仅冷却对应账号/模型。无效或过期值回落正文重置时间或默认 600 秒；本地全凭据冷却的 429 返回剩余等待秒数。
-- Chat 与 Responses 保留客户端显式 `prompt_cache_key`，不自动生成；缓存命中和节费取决于上游。
+- 三条协议均**原值保留**客户端显式提供的 `prompt_cache_key`。客户端未提供（或提供空串/`null`）时，网关按 `account_key` + 会话标识自动生成，使连续请求命中上游前缀缓存；可用设置键 `prompt_cache_key_enabled`（`CODEBUDDY2API_PROMPT_CACHE_KEY`）关闭自动生成。该开关不影响客户端显式键。缓存命中和节费取决于上游。
 - 不支持的能力显式拒绝而非静默降级：Chat 的 `n≠1`、Responses 的 `previous_response_id`/`conversation`（本网关不保存服务端响应状态）返回 400；长度截断或审核过滤的 Responses 标记为 `incomplete`，不伪装为 `completed`。
 - SQLite 审计只保留有界、脱敏诊断，不是完整原始请求。日志、凭证导出和备份仍须按私有数据保管。
 

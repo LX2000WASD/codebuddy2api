@@ -115,6 +115,12 @@ def service_name(config):
 
 def install(app, config, *, version=""):
     """Register the health probes; the unauthenticated route stays public by design."""
+    # Idempotent: main() is re-entered by tests and a reloading server, and a
+    # second registration would stack duplicate routes and OpenAPI operation ids.
+    # The flag is per module so the three fusion installs stay independent.
+    if getattr(app.state, "health_endpoints_installed", False):
+        return
+    app.state.health_endpoints_installed = True
     started = time.monotonic()
 
     @app.get("/healthz")

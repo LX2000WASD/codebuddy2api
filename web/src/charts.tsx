@@ -5,6 +5,7 @@
 import { useId, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { metric, number, type RecordValue } from "./api";
 import { Empty } from "./components";
+import { t } from "./i18n";
 import s from "./ui.module.scss";
 
 export type ChartBucket = RecordValue & {
@@ -151,7 +152,7 @@ function ChartFrame({
         {children}
       </svg>
       <p className={s.srOnly} id={hintId}>
-        指向或点按查看时段；键盘左右方向键逐点查看，Home 和 End 跳到首尾，Esc 关闭提示。
+        {t("fusion.charts.keyboardHint")}
       </p>
     </div>
   );
@@ -252,7 +253,7 @@ export function StackedBars({
 }) {
   const id = useId();
   const selection = useSelection(rows);
-  if (!rows.length) return <Empty title={emptyTitle ?? "当前时间范围内暂无请求"} />;
+  if (!rows.length) return <Empty title={emptyTitle ?? t("fusion.charts.noRequestsInRange")} />;
   const box = inner();
   const layout = timeLayout(rows);
   const values = rows.map((row) => ({
@@ -274,7 +275,11 @@ export function StackedBars({
   return (
     <>
       <ChartFrame
-        label={granularity === "hour" ? "按小时请求量" : "按日请求量"}
+        label={
+          granularity === "hour"
+            ? t("fusion.charts.hourlyRequests")
+            : t("fusion.charts.dailyRequests")
+        }
         hintId={`${id}-hint`}
         onPointer={selection.pointer}
         onKeyDown={selection.keyDown}
@@ -303,7 +308,12 @@ export function StackedBars({
           return (
             <g key={index}>
               <title>
-                {`${row.date} 请求 ${metric(total)} / 成功 ${metric(values[index]!.success)} / 失败 ${metric(values[index]!.error)}`}
+                {t("fusion.charts.bucketTooltip", {
+                  date: row.date,
+                  requests: metric(total),
+                  success: metric(values[index]!.success),
+                  error: metric(values[index]!.error),
+                })}
               </title>
               {successHeight > 0 && (
                 <rect
@@ -339,7 +349,7 @@ export function StackedBars({
               strokeDasharray="7 6"
             />
             <text x={PLOT.left + 6} y={yOf(mean) - 5} textAnchor="start" className={s.chartMean}>
-              均值 {metric(mean)}
+              {t("fusion.charts.mean", { value: metric(mean) })}
             </text>
           </>
         )}
@@ -350,7 +360,7 @@ export function StackedBars({
             textAnchor={layout.xOf(peakIndex) > PLOT.width - PLOT.right - 90 ? "end" : "middle"}
             className={s.chartPeak}
           >
-            峰值 {metric(totals[peakIndex]!)}
+            {t("fusion.charts.peak", { value: metric(totals[peakIndex]!) })}
           </text>
         )}
         {active !== null && (
@@ -379,9 +389,9 @@ export function StackedBars({
         <div className={s.chartDetailRow} role="status">
           <div>
             <strong>{selected.date}</strong>
-            <span>请求 {metric(selected.requests)}</span>
-            <span>成功 {metric(selected.success)}</span>
-            <span>失败 {metric(selected.error)}</span>
+            <span>{t("fusion.charts.detail.requests", { value: metric(selected.requests) })}</span>
+            <span>{t("fusion.charts.detail.success", { value: metric(selected.success) })}</span>
+            <span>{t("fusion.charts.detail.error", { value: metric(selected.error) })}</span>
             <span>Token {metric(selected.total_tokens)}</span>
             {number(selected.tokens_per_s) !== null && (
               <span>{metric(selected.tokens_per_s)} tok/s</span>
@@ -426,14 +436,14 @@ export function LineChart({
   const id = useId();
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
   const selection = useSelection(rows);
-  if (!rows.length) return <Empty title={emptyTitle ?? "当前时间范围内暂无样本"} />;
+  if (!rows.length) return <Empty title={emptyTitle ?? t("fusion.charts.noSamplesInRange")} />;
   const box = inner();
   const layout = timeLayout(rows);
   const values = rows.map((row) =>
     metrics.map((metricDef) => (number(row[metricDef.key]) ?? null) as number | null),
   );
   const observed = values.flat().filter((value): value is number => value !== null);
-  if (!observed.length) return <Empty title="当前样本不足，无法计算分位数" />;
+  if (!observed.length) return <Empty title={t("fusion.charts.insufficientForPercentiles")} />;
   const max = Math.max(1, ...observed);
   const yOf = (value: number) => PLOT.top + box.height - box.height * (value / max);
   const active = selection.active;
@@ -456,7 +466,7 @@ export function LineChart({
 
   return (
     <>
-      <div className={s.legend} role="group" aria-label="曲线图例">
+      <div className={s.legend} role="group" aria-label={t("fusion.charts.legendAria")}>
         {metrics.map((metricDef, metricIndex) => {
           const off = hidden.has(metricDef.key);
           const known = values.filter((row) => row[metricIndex] !== null).length;
@@ -482,13 +492,13 @@ export function LineChart({
             >
               <span style={{ background: COLORS[metricDef.color] }} />
               {metricDef.label}
-              <small>已知 {known} 桶</small>
+              <small>{t("fusion.charts.knownBuckets", { count: known })}</small>
             </button>
           );
         })}
       </div>
       <ChartFrame
-        label="延迟分位数曲线"
+        label={t("fusion.charts.latencyPercentiles")}
         hintId={`${id}-hint`}
         onPointer={selection.pointer}
         onKeyDown={selection.keyDown}
@@ -550,7 +560,10 @@ export function LineChart({
                   key={metricDef.key}
                   style={{ color: hidden.has(metricDef.key) ? "var(--muted)" : undefined }}
                 >
-                  {metricDef.label} {value === null ? "未知" : `${metric(value)} ${metricDef.unit}`}
+                  {metricDef.label}{" "}
+                  {value === null
+                    ? t("fusion.common.unknown")
+                    : `${metric(value)} ${metricDef.unit}`}
                 </span>
               );
             })}

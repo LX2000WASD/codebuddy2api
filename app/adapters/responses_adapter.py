@@ -483,12 +483,6 @@ def _build_tool_registry_and_chat_tools(raw_tools: list, *, input_items: list | 
     return registry, result
 
 
-def _convert_tools_for_chat(tools: list) -> list:
-    """Backwards-compatible helper for converting Responses tools."""
-    _, chat_tools = _build_tool_registry_and_chat_tools(tools)
-    return chat_tools
-
-
 def _convert_tool_choice_for_chat(choice: Any, tool_registry: ToolRegistry | None = None) -> Any:
     """Convert Responses tool_choice to Chat Completions format."""
     if not isinstance(choice, dict) or choice.get("type") != "function":

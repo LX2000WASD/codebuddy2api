@@ -10,7 +10,7 @@
 //     pointing the vite dev proxy at a real backend while keeping DEV=true.
 // No page code reads this flag; only the request seam below does.
 import { api, errorMessage } from "../api";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { mockDelay, mockRequest } from "./mock";
 
 // Mock in dev/test, live endpoints in production builds, unless overridden.
@@ -117,6 +117,11 @@ export function useFusionResource<T>(
   }>({ data: null, loading: true, error: null });
   const [revision, setRevision] = useState(0);
   const query = params?.toString() ?? "";
+  // The parser is pinned in a ref: callers pass an inline function, so depending on
+  // it directly would refetch on every render. The ref keeps the effect deps exact
+  // (path/query/revision/enabled) without an eslint suppression.
+  const normalizeRef = useRef(normalize);
+  normalizeRef.current = normalize;
   useEffect(() => {
     if (!enabled || path === null) {
       setState({ data: null, loading: false, error: null });
@@ -128,7 +133,7 @@ export function useFusionResource<T>(
       .then((raw) => {
         if (controller.signal.aborted) return;
         try {
-          setState({ data: normalize(raw), loading: false, error: null });
+          setState({ data: normalizeRef.current(raw), loading: false, error: null });
         } catch (error) {
           setState({
             data: null,
@@ -143,7 +148,6 @@ export function useFusionResource<T>(
         setState({ data: null, loading: false, error: errorMessage(error) });
       });
     return () => controller.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, query, revision, enabled]);
   const reload = useCallback(() => setRevision((value) => value + 1), []);
   return { ...state, reload };

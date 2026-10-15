@@ -251,9 +251,15 @@ class ManagedRoutingTests(fixtures.RegionRoutingTests):
             response = self.client.get(path, follow_redirects=False)
             self.assertEqual(response.status_code, 302)
             self.assertEqual(response.headers["location"], "/dashboard")
-        for path in ("/dashboard", "/dashboard/models", "/dashboard/login"):
-            response = self.client.get(path)
-            self.assertEqual(response.status_code, 200)
+        # Every route in web/src/App.tsx must be reachable as a deep link. A page
+        # missing from install_pages' whitelist is redirected to /dashboard, so a
+        # bookmark or a browser refresh would bounce the user to the home page.
+        for path in ("/dashboard", "/dashboard/models", "/dashboard/login",
+                     "/dashboard/credentials", "/dashboard/logs", "/dashboard/settings",
+                     "/dashboard/storage", "/dashboard/trends", "/dashboard/diagnostics",
+                     "/dashboard/alerts", "/dashboard/credits"):
+            response = self.client.get(path, follow_redirects=False)
+            self.assertEqual(response.status_code, 200, f"{path} -> {response.status_code}")
             self.assertIn("isolated management shell", response.text)
         for path in ("/v1/unknown", "/admin/unknown", "/dashboard/assets/missing.js"):
             response = self.client.get(path)

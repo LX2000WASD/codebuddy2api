@@ -522,6 +522,46 @@ class AdminApiTests(unittest.TestCase):
             200)
         self.gateway.admin_delete_guard.assert_not_called()
 
+    def test_stats_days_defaults_match_the_contract_per_endpoint(self):
+        """docs/fusion-api.md §4.1/§4.2 default to 7 days, §4.3 (dimensions) to 30."""
+        self.audit.dimension_query.return_value = {"summary": {}, "series": [], "range": None}
+        self.audit.dimension_keys.return_value = {"keys": {}}
+
+        self.client.get("/admin/stats/summary", headers=self.headers)
+        self.assertEqual(self.audit.dimension_query.call_args.args[2], 7)
+        self.client.get("/admin/stats/series", headers=self.headers)
+        self.assertEqual(self.audit.dimension_query.call_args.args[2], 7)
+
+        body = self.client.get("/admin/stats/dimensions?dimension=model", headers=self.headers).json()
+        self.assertEqual(body["days"], 30)
+        self.assertEqual(self.audit.dimension_keys.call_args.args[1], 30)
+
+        # An explicit days value still wins, and the window stays validated.
+        explicit = self.client.get("/admin/stats/dimensions?dimension=model&days=1", headers=self.headers).json()
+        self.assertEqual(explicit["days"], 1)
+        self.assertEqual(
+            self.client.get("/admin/stats/dimensions?dimension=model&days=8", headers=self.headers).status_code, 400)
+
+    def test_credentials_expose_the_fusion_pool_fields_the_contract_promises(self):
+        """docs/fusion-api.md §3/§10: paused reaches /admin/credentials, plus the
+        pool failure counters the diagnostic view already reports."""
+        self.credentials[0].update(paused=True, auth_fails=2, transport_fails=3,
+                                   transport_penalty_until=1234.5,
+                                   model_cooldowns={"deepseek-chat": "10-15 20:30:00"},
+                                   in_flight=1, max_in_flight=4)
+        row = self.client.get("/admin/credentials", headers=self.headers).json()["credentials"][0]
+        self.assertIs(row["paused"], True)
+        self.assertEqual(row["auth_fails"], 2)
+        self.assertEqual(row["transport_fails"], 3)
+        self.assertEqual(row["transport_penalty_until"], 1234.5)
+        # model_cooldowns stays withheld: pool.snapshot() emits it as a dict while the
+        # contract and web/src/fusion/types.ts declare an array; the array-shaped data
+        # reaches the UI through "cooldowns" instead.
+        self.assertNotIn("model_cooldowns", row)
+        # Internal capacity gauges stay unpublished (no contract promise).
+        self.assertNotIn("in_flight", row)
+        self.assertNotIn("max_in_flight", row)
+
     def test_upload_limits_paths_and_secret_errors(self):
         for files in ([{"name": "../first.info", "content": "{}"}], [{"name": "db.sqlite3", "content": "{}"}],
                       [{"name": "first.info", "content": "x" * (1024**2 + 1)}], [{"name": "first.info", "content": "{}"}] * 101):
@@ -665,6 +705,36 @@ class AdminApiTests(unittest.TestCase):
         response = self.client.post("/admin/models/upstream/preview", headers=self.headers, json={})
         self.assertEqual(response.status_code, 400)
         self.assertNotIn("synthetic-secret-token", response.text)
+
+
+class StorageAdminTests(AdminApiTests):
+    def test_storage_reports_sizes_and_archive_listing(self):
+        self.audit.storage.return_value = {"db_bytes": 10, "wal_bytes": 0, "reclaimable_bytes": 4096,
+                                           "degraded": False}
+        self.audit.path = self.root / "logs.sqlite3"
+        (self.root / "archives").mkdir()
+        (self.root / "archives" / "audit-20260101-000000-deadbeef.jsonl").write_text("{}\n")
+        response = self.client.get("/admin/storage", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["reclaimable_bytes"], 4096)
+        self.assertEqual(data["archives"], ["audit-20260101-000000-deadbeef.jsonl"])
+
+    def test_storage_archive_validates_window_and_reports_result(self):
+        self.audit.archive.return_value = {"ok": True, "archived_requests": 2,
+                                           "archived_events": 1, "file": "audit-x.jsonl"}
+        response = self.client.post("/admin/storage/archive", headers=self.headers, json={"days": 30})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["archived_requests"], 2)
+        self.audit.archive.assert_called_once_with(30)
+        for bad in (0, 3651, "30", 1.5, True):
+            self.assertEqual(
+                self.client.post("/admin/storage/archive", headers=self.headers,
+                                 json={"days": bad}).status_code, 400)
+        self.audit.archive.return_value = {"ok": False}
+        self.assertEqual(
+            self.client.post("/admin/storage/archive", headers=self.headers,
+                             json={"days": 30}).status_code, 503)
 
 
 if __name__ == "__main__":

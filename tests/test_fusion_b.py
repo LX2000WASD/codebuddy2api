@@ -219,7 +219,10 @@ class AggregationTests(unittest.TestCase):
 
     def test_legacy_payloads_merge_without_histogram(self):
         # Rows written before the fusion keys exist must not corrupt the merge.
-        self.store._run(lambda: self.store._db.execute(
+        # _run hands the callback the connection inside the write transaction
+        # (upstream contract); a zero-argument callback is called with one
+        # positional argument, raises, and silently returns the fallback.
+        self.store._run(lambda db: db.execute(
             "INSERT OR REPLACE INTO stats_daily VALUES(?,?,?,?)",
             (int(time.time() // 86400) * 86400, "global", "",
              json.dumps({"requests": 3, "duration_ms_sum": 900, "duration_ms_known": 3}))),

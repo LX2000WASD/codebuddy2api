@@ -24,6 +24,7 @@ import queue
 import re
 import secrets
 import smtplib
+import tempfile
 import threading
 import time
 from email.mime.text import MIMEText
@@ -36,7 +37,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from .admin_auth import error_response
-from .health_endpoints import int_param, float_param, service_name
+from .health_endpoints import int_param, float_param
 
 BARK_DEFAULT_SERVER = "https://api.day.app"
 KIND_SEVERITY = {
@@ -287,22 +288,38 @@ class AlertBus:
         """Persist under the lock; a failure is reported, never raised."""
         if not self.path:
             return True
+        temporary = None
         try:
             document = {"version": 1, "channels": self._channels,
                         "events": self._events[-self._history_limit():],
                         "suppressed": {key: value for key, value in self._suppressed.items()
                                        if value > self._clock()}}
-            candidate = Path(str(self.path) + ".tmp")
-            candidate.parent.mkdir(parents=True, exist_ok=True)
-            candidate.write_text(json.dumps(document, ensure_ascii=False, separators=(",", ":")),
-                                 encoding="utf-8")
-            os.replace(candidate, self.path)
-            os.chmod(self.path, 0o600)
+            content = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            directory = os.path.dirname(str(self.path)) or "."
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+            name = os.path.basename(str(self.path)) or "alerts-state"
+            # mkstemp opens the temporary owner-only, so the webhook token, Bark key
+            # and SMTP password are never briefly group/world readable the way
+            # write_text followed by chmod left them.
+            fd, temporary = tempfile.mkstemp(prefix="." + name + "-", suffix=".tmp", dir=directory)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(content)
+            try:
+                os.chmod(temporary, 0o600)
+            except OSError:
+                pass    # chmod does not establish owner-only ACLs on Windows.
+            os.replace(temporary, self.path)
             self.storage_error = None
             return True
         except (OSError, ValueError, RecursionError, TypeError) as error:
             self.storage_error = str(error)[:200]
             return False
+        finally:
+            if temporary:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
     # -- events ------------------------------------------------------------
 
@@ -767,6 +784,11 @@ def ensure_evaluator(bus, config):
 
 def install(app, config, *, state_path=None, version=""):
     """Register the alert endpoints; the evaluator starts lazily behind management auth."""
+    # Idempotent: see app/health_endpoints.py. The bus itself is already shared
+    # through get_bus; this guard stops the route table from growing per call.
+    if getattr(app.state, "alerting_installed", False):
+        return
+    app.state.alerting_installed = True
     bus = get_bus(config, state_path=state_path, version=version)
     # Only spin the probe loop when alerting is actually on; otherwise the first
     # alerting request raises it (ensure_evaluator in the handlers below).

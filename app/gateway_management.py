@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.staticfiles import StaticFiles
 
 from . import checkin, daily_chat, model_policy, travel, trial_management
+from .client_profiles import inventory_identity
 
 
 class Management:
@@ -33,7 +34,7 @@ class Management:
             for row in pool.snapshot():
                 path = row.pop("auth_file", "")
                 entry = entries[path]
-                identity = entry.get("account_key") or hashlib.sha256(path.encode()).hexdigest()
+                identity = inventory_identity(entry, path)
                 ledger = self.CONFIG.get("ledger")
                 balance = ledger.entry(path) if ledger else {}
                 enabled = model_policy.credential_enabled(self.CONFIG, entry)
@@ -248,7 +249,11 @@ class Management:
 def install_pages(app, directory):
     """Fallback only applies to pages; management/client APIs never serve HTML."""
     root = Path(directory).resolve()
-    pages = {"", "models", "credentials", "logs", "settings", "login"}
+    # Keep in step with the routes in web/src/App.tsx: a page missing here is
+    # redirected to /dashboard, so a deep link (bookmark, refresh, shared URL)
+    # would silently bounce the user to the home page.
+    pages = {"", "models", "credentials", "logs", "settings", "login",
+             "storage", "trends", "diagnostics", "alerts", "credits"}
     assets = StaticFiles(directory=root / "assets", check_dir=False)
 
     @app.api_route("/dashboard/assets/{asset_path:path}", methods=["GET", "HEAD"], include_in_schema=False)

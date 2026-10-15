@@ -83,8 +83,10 @@ def anthropic_request_to_chat(body: dict) -> dict:
                 chat["parallel_tool_calls"] = not tc["disable_parallel_tool_use"]
         elif isinstance(tc, str):
             chat["tool_choice"] = tc if tc in ("none", "auto", "required") else {"type": "function", "function": {"name": tc}}
-    # Forward supported parameters.
-    for key in ("temperature", "top_p", "stop", "top_k"):
+    # Forward supported parameters. Membership is tested with `in` rather than a truthy
+    # check so an explicit empty string or None is preserved verbatim, matching Chat and
+    # Responses (see tests/test_api_flow.py::CacheKeyTests).
+    for key in ("temperature", "top_p", "stop", "top_k", "prompt_cache_key"):
         if key in body:
             chat[key] = body[key]
     # Explicit stop takes precedence over Anthropic stop_sequences.

@@ -5,16 +5,17 @@ import { Badge, Empty, ErrorNotice, Icon, PageTitle, Panel, Skeleton } from "../
 import { useFusionResource } from "../fusion/client";
 import { FUSION_DEVELOPMENT } from "../fusion/client";
 import type { StatsSeriesResponse } from "../fusion/types";
+import { t, useT } from "../i18n";
 import s from "../ui.module.scss";
 
 type Dimension = "global" | "model" | "profile" | "credential";
 type MetricMode = "requests" | "latency" | "rate";
 
 function normalizeSeries(value: unknown): StatsSeriesResponse {
-  const data = object(value, "统计序列");
-  if (!Array.isArray(data.series)) throw new Error("统计序列缺失");
-  const series = list(data.series, "统计序列").map((row) => {
-    if (number(row.bucket) === null) throw new Error("统计时段缺失");
+  const data = object(value, t("fusion.trends.seriesContext"));
+  if (!Array.isArray(data.series)) throw new Error(t("fusion.trends.seriesMissing"));
+  const series = list(data.series, t("fusion.trends.seriesContext")).map((row) => {
+    if (number(row.bucket) === null) throw new Error(t("fusion.trends.bucketMissing"));
     return row;
   });
   return { ...(data as StatsSeriesResponse), series: series as StatsSeriesResponse["series"] };
@@ -23,9 +24,10 @@ function normalizeSeries(value: unknown): StatsSeriesResponse {
 function normalizeDimensions(value: unknown): {
   items: Array<{ key: string; label: string | null }>;
 } {
-  const data = object(value, "维度列表");
-  const items = list(data.items, "维度列表").map((item) => {
-    if (typeof item.key !== "string" || !item.key) throw new Error("维度条目缺少 key");
+  const data = object(value, t("fusion.trends.dimensionsContext"));
+  const items = list(data.items, t("fusion.trends.dimensionsContext")).map((item) => {
+    if (typeof item.key !== "string" || !item.key)
+      throw new Error(t("fusion.trends.dimensionKeyMissing"));
     return { key: item.key, label: typeof item.label === "string" ? item.label : null };
   });
   return { items };
@@ -36,11 +38,18 @@ const percentiles = [
   { key: "latency_p95_ms", label: "P95", unit: "ms", color: "strong" as const },
   { key: "latency_p99_ms", label: "P99", unit: "ms", color: "error" as const },
 ];
-const rateMetric = [
-  { key: "tokens_per_s", label: "生成速率", unit: "tok/s", color: "accent" as const },
+// Resolved through the module-level t() so the label follows the active language.
+const rateMetric = () => [
+  {
+    key: "tokens_per_s",
+    label: t("fusion.trends.metric.rate"),
+    unit: "tok/s",
+    color: "accent" as const,
+  },
 ];
 
 export function Trends() {
+  const t = useT();
   const [days, setDays] = useState("7");
   const [granularity, setGranularity] = useState("auto");
   const [dimension, setDimension] = useState<Dimension>("global");
@@ -77,77 +86,83 @@ export function Trends() {
   return (
     <>
       <PageTitle
-        title="趋势分析"
-        description="按账号、模型或产品切分的请求量趋势与延迟分位曲线，数据来自审计聚合。"
+        title={t("nav.trends")}
+        description={t("fusion.trends.pageDesc")}
         actions={
           <>
-            {FUSION_DEVELOPMENT && <Badge tone="warn">本地演示数据</Badge>}
+            {FUSION_DEVELOPMENT && <Badge tone="warn">{t("fusion.common.demoData")}</Badge>}
             <button onClick={() => series.reload()} disabled={series.loading}>
               <Icon name="refresh" />
-              刷新
+              {t("fusion.common.refresh")}
             </button>
           </>
         }
       />
-      <Panel title="切分维度" hint="仅在此页打开时请求统计接口">
+      <Panel title={t("fusion.trends.dimensionPanel")} hint={t("fusion.trends.dimensionPanelHint")}>
         <div className={s.fusionControls}>
           <label className={s.field}>
-            时间范围
+            {t("fusion.trends.range")}
             <select
-              aria-label="统计时间范围"
+              aria-label={t("fusion.trends.rangeAria")}
               value={days}
               onChange={(e) => setDays(e.target.value)}
             >
               {["1", "7", "30", "90"].map((value) => (
                 <option value={value} key={value}>
-                  最近 {value} 天
+                  {t("fusion.trends.lastDays", { days: value })}
                 </option>
               ))}
             </select>
           </label>
           <label className={s.field}>
-            粒度
+            {t("fusion.trends.granularity")}
             <select
-              aria-label="统计粒度"
+              aria-label={t("fusion.trends.granularityAria")}
               value={granularity}
               onChange={(e) => setGranularity(e.target.value)}
             >
-              <option value="auto">自动粒度</option>
-              <option value="hour">按小时</option>
-              <option value="day">按天</option>
+              <option value="auto">{t("fusion.trends.grain.auto")}</option>
+              <option value="hour">{t("fusion.trends.grain.hour")}</option>
+              <option value="day">{t("fusion.trends.grain.day")}</option>
             </select>
           </label>
           <label className={s.field}>
-            维度
+            {t("fusion.trends.dimension")}
             <select
-              aria-label="切分维度"
+              aria-label={t("fusion.trends.dimensionAria")}
               value={dimension}
               onChange={(e) => {
                 setDimension(e.target.value as Dimension);
                 setKey("");
               }}
             >
-              <option value="global">全局汇总</option>
-              <option value="model">按模型</option>
-              <option value="profile">按产品</option>
-              <option value="credential">按账号</option>
+              <option value="global">{t("fusion.trends.dim.global")}</option>
+              <option value="model">{t("fusion.trends.dim.model")}</option>
+              <option value="profile">{t("fusion.trends.dim.profile")}</option>
+              <option value="credential">{t("fusion.trends.dim.credential")}</option>
             </select>
           </label>
           {dimension !== "global" && (
             <label className={s.field}>
-              {dimension === "credential" ? "账号" : dimension === "profile" ? "产品" : "模型"}
+              {dimension === "credential"
+                ? t("fusion.trends.dim.credential")
+                : dimension === "profile"
+                  ? t("fusion.trends.dim.profile")
+                  : t("fusion.trends.dim.model")}
               {dimensions.loading ? (
-                <select aria-label="切分对象" disabled>
-                  <option>加载中…</option>
+                <select aria-label={t("fusion.trends.objectAria")} disabled>
+                  <option>{t("fusion.common.loading")}</option>
                 </select>
               ) : (
                 <select
-                  aria-label="切分对象"
+                  aria-label={t("fusion.trends.objectAria")}
                   value={key}
                   onChange={(e) => setKey(e.target.value)}
                   disabled={!dimensions.data?.items.length}
                 >
-                  {!dimensions.data?.items.length && <option value="">暂无可用对象</option>}
+                  {!dimensions.data?.items.length && (
+                    <option value="">{t("fusion.trends.noObjects")}</option>
+                  )}
                   {dimensions.data?.items.map((item) => (
                     <option value={item.key} key={item.key}>
                       {item.label ?? item.key}
@@ -157,12 +172,12 @@ export function Trends() {
               )}
             </label>
           )}
-          <div className={s.tabs} role="tablist" aria-label="指标">
+          <div className={s.tabs} role="tablist" aria-label={t("fusion.trends.metricAria")}>
             {(
               [
-                ["requests", "请求量"],
-                ["latency", "延迟分位"],
-                ["rate", "生成速率"],
+                ["requests", t("fusion.trends.metric.requests")],
+                ["latency", t("fusion.trends.metric.latency")],
+                ["rate", t("fusion.trends.metric.rate")],
               ] as const
             ).map(([value, label]) => (
               <button
@@ -183,19 +198,27 @@ export function Trends() {
       {summary && (
         <div className={s.stats}>
           {[
-            ["窗口请求", metric(summary.requests), "arrow"],
-            ["成功率", successRate === null ? "未知" : `${successRate.toFixed(1)}%`, "shield"],
+            [t("fusion.trends.summary.requests"), metric(summary.requests), "arrow"],
             [
-              "P95 延迟",
-              summary.latency_p95_ms === null ? "样本不足" : `${metric(summary.latency_p95_ms)} ms`,
+              t("fusion.trends.summary.successRate"),
+              successRate === null ? t("fusion.common.unknown") : `${successRate.toFixed(1)}%`,
+              "shield",
+            ],
+            [
+              t("fusion.trends.summary.p95"),
+              summary.latency_p95_ms === null
+                ? t("fusion.trends.insufficientSamples")
+                : `${metric(summary.latency_p95_ms)} ms`,
               "pulse",
             ],
             [
-              "生成速率",
-              summary.tokens_per_s === null ? "未知" : `${metric(summary.tokens_per_s)} tok/s`,
+              t("fusion.trends.summary.rate"),
+              summary.tokens_per_s === null
+                ? t("fusion.common.unknown")
+                : `${metric(summary.tokens_per_s)} tok/s`,
               "model",
             ],
-            ["Credit", metric(summary.credit), "leaf"],
+            [t("fusion.trends.summary.credit"), metric(summary.credit), "leaf"],
           ].map(([label, value, icon]) => (
             <section className={s.stat} key={label}>
               <div>
@@ -211,47 +234,61 @@ export function Trends() {
       )}
 
       <Panel
-        title="趋势曲线"
+        title={t("fusion.trends.chartPanel")}
         hint={
           series.data
-            ? `${actualGrain === "hour" ? "按小时" : "按天"} · ${selection?.label ?? key ?? "全局"}`
-            : "等待数据"
+            ? t("fusion.trends.chartHint", {
+                grain:
+                  actualGrain === "hour"
+                    ? t("fusion.trends.grain.hour")
+                    : t("fusion.trends.grain.day"),
+                selection: selection?.label ?? key ?? t("fusion.trends.dim.global"),
+              })
+            : t("fusion.trends.awaitingData")
         }
-        className={s.trend}
       >
         {series.error ? (
           <ErrorNotice message={series.error} retry={series.reload} />
         ) : series.loading ? (
-          <Skeleton variant="chart" label="趋势图加载中" />
+          <Skeleton variant="chart" label={t("fusion.trends.chartLoading")} />
         ) : !rows.length ? (
-          <Empty title="当前范围内没有样本" />
+          <Empty title={t("fusion.trends.noSamples")} />
         ) : metricMode === "requests" ? (
           <StackedBars rows={buckets} granularity={actualGrain} />
         ) : (
           <LineChart
             rows={buckets}
             granularity={actualGrain}
-            metrics={metricMode === "latency" ? percentiles : rateMetric}
-            emptyTitle={metricMode === "latency" ? "样本不足，无法计算分位" : "暂无生成速率样本"}
+            metrics={metricMode === "latency" ? percentiles : rateMetric()}
+            emptyTitle={
+              metricMode === "latency"
+                ? t("fusion.trends.noPercentileSamples")
+                : t("fusion.trends.noRateSamples")
+            }
           />
         )}
       </Panel>
 
-      <Panel title="分桶明细" hint={series.data ? `${rows.length} 个时段` : undefined}>
+      <Panel
+        title={t("fusion.trends.buckets")}
+        hint={series.data ? t("fusion.trends.bucketCount", { count: rows.length }) : undefined}
+      >
         {series.loading ? (
-          <Skeleton variant="table" label="明细加载中" />
+          <Skeleton variant="table" label={t("fusion.trends.bucketsLoading")} />
         ) : series.error ? (
-          <Empty title="明细暂不可用">请在上方查看错误详情。</Empty>
+          <Empty title={t("fusion.trends.bucketsUnavailable")}>
+            {t("fusion.trends.bucketsUnavailableHint")}
+          </Empty>
         ) : rows.length ? (
           <div className={s.tableWrap}>
             <table>
               <thead>
                 <tr>
-                  <th>时段（UTC）</th>
-                  <th>请求</th>
-                  <th>成功 / 失败</th>
+                  <th>{t("fusion.trends.colBucket")}</th>
+                  <th>{t("fusion.trends.colRequests")}</th>
+                  <th>{t("fusion.trends.colSuccessError")}</th>
                   <th>P50 / P95 / P99</th>
-                  <th>生成速率</th>
+                  <th>{t("fusion.trends.metric.rate")}</th>
                   <th>Token</th>
                 </tr>
               </thead>
@@ -282,7 +319,7 @@ export function Trends() {
             </table>
           </div>
         ) : (
-          <Empty title="暂无分桶数据" />
+          <Empty title={t("fusion.trends.noBuckets")} />
         )}
       </Panel>
     </>

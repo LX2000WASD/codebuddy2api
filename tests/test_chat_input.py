@@ -91,9 +91,13 @@ class ChatInputTests(unittest.TestCase):
         self.assertEqual(messages, before)
 
     def test_thinking_is_reasoning_not_visible_content(self):
+        # The tool result is required: outbound pairing cleanup (app/tool_pairing.py) now
+        # drops an assistant.tool_calls entry that has no matching result, so a truncated
+        # history would lose tool_calls before these assertions run.
         messages = [{"role": "assistant", "content": [
             {"type": "thinking", "thinking": "first", "signature": "private-synthetic-signature"},
-            {"type": "thinking", "thinking": "second"}, {"type": "text", "text": "answer"}, call()]}]
+            {"type": "thinking", "thinking": "second"}, {"type": "text", "text": "answer"}, call()]},
+            {"role": "user", "content": [result()]}]
         prepared = self.prepare(messages)
         self.assertEqual(prepared[0]["reasoning_content"], "firstsecond")
         self.assertEqual(prepared[0]["content"], [{"type": "text", "text": "answer"}])
@@ -212,7 +216,10 @@ class ChatInputTests(unittest.TestCase):
         native = self.prepare(history())[1]
         native["reasoning_content"] = ""
         native["content"] = [{"type": "thinking", "thinking": "reason"}]
-        prepared = self.prepare([native])[0]
+        # Pair the native call with its result so outbound pairing cleanup keeps it; an
+        # unpaired assistant.tool_calls is dropped by design (see app/tool_pairing.py).
+        prepared = self.prepare([native, {"role": "tool", "tool_call_id": "call_1",
+                                          "content": "synthetic result"}])[0]
         self.assertEqual(prepared["tool_calls"], native["tool_calls"])
         self.assertEqual(prepared["reasoning_content"], "reason")
         self.assertIsNone(prepared["content"])

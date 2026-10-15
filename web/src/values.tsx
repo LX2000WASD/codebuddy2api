@@ -1,4 +1,5 @@
 import { metric, type RecordValue } from "./api";
+import { t as translate } from "./i18n";
 import s from "./ui.module.scss";
 
 const labels: Record<string, string> = {
@@ -143,8 +144,13 @@ const labels: Record<string, string> = {
   schema_version: "存储版本",
   epoch: "统计代次",
   degraded: "存储降级",
+  client_ip: "客户端 IP",
+  user_agent: "客户端 UA",
   failure_count: "失败次数",
   dropped_records: "未写入记录数",
+  recent_failures: "近期失败次数",
+  transient_contention: "近期锁竞争次数",
+  transient_count: "锁竞争累计次数",
   closed: "存储已关闭",
   budget_scope: "容量统计范围",
   fault_counter_scope: "故障计数范围",
@@ -241,12 +247,92 @@ const ownLabel = (map: Record<string, string>, key: string) =>
 export function profileLabel(value: string) {
   return ownLabel(profiles, value) ?? value;
 }
+const eventKinds: Record<string, string> = {
+  runtime: "logs.kind.runtime",
+  admin: "logs.kind.admin",
+};
+const eventActions: Record<string, string> = {
+  credits: "logs.action.credits",
+  cred: "logs.action.cred",
+  models: "logs.action.models",
+  usage: "logs.action.usage",
+  checkin: "logs.action.checkin",
+  dailychat: "logs.action.dailychat",
+  buddy: "logs.action.buddy",
+  "buddy.attention_required": "logs.action.buddy_attention",
+  "buddy.consent": "logs.action.buddy_consent",
+  "buddy.agreement": "logs.action.buddy_agreement",
+  "buddy.departure": "logs.action.buddy_departure",
+  "buddy.departure_requested": "logs.action.buddy_departure_requested",
+  "buddy.first": "logs.action.buddy_first",
+  "buddy.task_accept": "logs.action.buddy_task_accept",
+  "buddy.task_chat": "logs.action.buddy_task_chat",
+  "buddy.task_completed": "logs.action.buddy_task_completed",
+  "buddy.authorization_used": "logs.action.buddy_authorization_used",
+  "credential.sync": "logs.action.credential_sync",
+  "credential.travel": "logs.action.credential_travel",
+  "credential.travel-status": "logs.action.credential_travel_status",
+  "credential.refresh": "logs.action.credential_refresh",
+  "credential.checkin": "logs.action.credential_checkin",
+  "credential.daily-chat": "logs.action.credential_daily_chat",
+  "credential.auto_daily_chat": "logs.action.credential_auto_daily_chat",
+  "credential.auto_checkin": "logs.action.credential_auto_checkin",
+  "credential.auto_travel": "logs.action.credential_auto_travel",
+  "credential.trial": "logs.action.credential_trial",
+  "credential.enabled": "logs.action.credential_enabled",
+  "credential.reset-cooldown": "logs.action.credential_reset_cooldown",
+  "oauth.saved": "logs.action.oauth_saved",
+  "settings.updated": "logs.action.settings_updated",
+  "model.created": "logs.action.model_created",
+  "model.updated": "logs.action.model_updated",
+  "model.deleted": "logs.action.model_deleted",
+  "session.revoke_failed": "logs.action.session_revoke_failed",
+  "credentials.uploaded": "logs.action.credentials_uploaded",
+  "credentials.exported": "logs.action.credentials_exported",
+  storage_archive: "logs.action.storage_archive",
+};
+export function eventActionLabel(action: unknown) {
+  return typeof action === "string" ? ownLabel(eventActions, action) : undefined;
+}
+export function eventKindLabel(kind: unknown) {
+  return typeof kind === "string" ? ownLabel(eventKinds, kind) : undefined;
+}
 export function bytes(value: number) {
   if (value < 1024) return `${metric(value)} B`;
   if (value < 1048576) return `${(value / 1024).toFixed(1)} KiB`;
   if (value < 1073741824) return `${(value / 1048576).toFixed(1)} MiB`;
   return `${(value / 1073741824).toFixed(2)} GiB`;
 }
+const valueKeys: Record<string, string> = {
+  success: "val.success",
+  error: "val.error",
+  cancelled: "val.cancelled",
+  invalid_request_error: "val.e.invalid_request",
+  upstream_error: "val.e.upstream",
+  upstream_timeout: "val.e.upstream_timeout",
+  incomplete_stream: "val.e.incomplete_stream",
+  incomplete_response: "val.e.incomplete_response",
+  application_error: "val.e.application",
+  content_filter: "val.e.content_filter",
+  model_disabled: "val.e.model_disabled",
+  sse_error: "val.e.sse",
+  compatible: "val.mode.compatible",
+  realtime: "val.mode.realtime",
+  mixed: "val.usage.mixed",
+  wire_sse: "val.usage.wire_sse",
+  upstream_hook: "val.usage.upstream_hook",
+  shared: "val.catalog.shared",
+  direct: "val.catalog.direct",
+  cooldown: "val.code.cooldown",
+  failure: "val.code.failure",
+  updated: "val.code.updated",
+  route: "val.stage.route",
+  send: "val.stage.send",
+  collect: "val.stage.collect",
+  refresh: "val.stage.refresh",
+  info: "val.level.info",
+};
+
 export function DataValue({
   value,
   name = "",
@@ -256,7 +342,14 @@ export function DataValue({
   name?: string;
   depth?: number;
 }) {
-  if (value === null || value === undefined) return <span className={s.valueMuted}>未知</span>;
+  if (value === null || value === undefined) return <span className={s.valueMuted}>—</span>;
+  if (typeof value === "string" && Object.hasOwn(valueKeys, value)) {
+    return (
+      <span className={s.valueMuted} title={value}>
+        {translate(valueKeys[value] as string)}
+      </span>
+    );
+  }
   if (typeof value === "boolean") {
     const warning = ["partial", "degraded", "token_expired", "closed"].includes(name);
     return (
@@ -266,7 +359,7 @@ export function DataValue({
     );
   }
   if (typeof value === "number") {
-    if (!Number.isFinite(value)) return <span className={s.valueMuted}>未知</span>;
+    if (!Number.isFinite(value)) return <span className={s.valueMuted}>—</span>;
     if (times.has(name)) {
       if (value === 0) return <>未设置</>;
       const date = new Date(value > 1e11 ? value : value * 1000);

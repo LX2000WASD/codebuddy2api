@@ -7,33 +7,39 @@ import { Models } from "./pages/Models";
 import { Credentials } from "./pages/Credentials";
 import { Logs } from "./pages/Logs";
 import { Settings } from "./pages/Settings";
+import { Storage } from "./pages/Storage";
 import { Trends } from "./pages/Trends";
 import { Diagnostics } from "./pages/Diagnostics";
 import { Alerts } from "./pages/Alerts";
 import { Credits } from "./pages/Credits";
 import { Appearance } from "./appearance";
 import s from "./ui.module.scss";
+import { LanguageProvider, useT } from "./i18n";
 
-const workspaceNav = [
-  ["", "概览", "grid"],
-  ["/models", "模型路由", "model"],
-  ["/credentials", "凭证管理", "key"],
-  ["/logs", "日志审计", "logs"],
-  ["/settings", "系统设置", "settings"],
-] as const;
-const observabilityNav = [
-  ["/trends", "趋势分析", "chart"],
-  ["/diagnostics", "诊断", "pulse"],
-  ["/alerts", "告警中心", "bell"],
-  ["/credits", "积分到期", "coin"],
-] as const;
+// Navigation groups: upstream's workspace entries (now i18n keys) plus the local
+// observability section. Both render through one mapping in Shell.
+const workspaceNav: [string, string, string][] = [
+  ["", "nav.overview", "grid"],
+  ["/models", "nav.models", "model"],
+  ["/credentials", "nav.credentials", "key"],
+  ["/logs", "nav.logs", "logs"],
+  ["/storage", "nav.storage", "database"],
+  ["/settings", "nav.settings", "settings"],
+];
+const observabilityNav: [string, string, string][] = [
+  ["/trends", "nav.trends", "chart"],
+  ["/diagnostics", "nav.diagnostics", "pulse"],
+  ["/alerts", "nav.alerts", "bell"],
+  ["/credits", "nav.credits", "coin"],
+];
 const navigation = [...workspaceNav, ...observabilityNav];
 export function Guard() {
+  const t = useT();
   const { status, error } = useSession();
   if (status === "checking")
     return (
       <div className={s.center} role="status">
-        正在验证登录状态…
+        {t("app.verifying")}
       </div>
     );
   if (status === "error")
@@ -45,12 +51,13 @@ export function Guard() {
             void establishSession();
           }}
         />
-        <NavLink to="/dashboard/login">返回登录</NavLink>
+        <NavLink to="/dashboard/login">{t("app.backToSignIn")}</NavLink>
       </div>
     );
   return status === "authenticated" ? <Outlet /> : <Navigate to="/dashboard/login" replace />;
 }
 function Shell() {
+  const t = useT();
   const location = useLocation();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -70,81 +77,78 @@ function Shell() {
       /* Session-only preference when storage is unavailable. */
     }
   };
+  // One renderer for both navigation groups; the entries differ only by data.
+  const renderNav = (items: [string, string, string][]) =>
+    items.map(([path, labelKey, icon]) => {
+      const label = t(labelKey);
+      return (
+        <NavLink
+          key={path}
+          to={`/dashboard${path}`}
+          end={path === ""}
+          aria-label={label}
+          title={collapsed ? label : undefined}
+          data-label={label}
+          className={({ isActive }) => `${s.navItem} ${isActive ? s.active : ""}`}
+        >
+          <Icon name={icon} />
+          <span className={s.navText}>{label}</span>
+          <span className={s.navArrow}>
+            <Icon name="arrow" />
+          </span>
+        </NavLink>
+      );
+    });
   return (
     <div className={`${s.app} ${collapsed ? s.collapsed : ""}`}>
       <a href="#main" className={s.skip}>
-        跳转到内容
+        {t("app.skip")}
       </a>
       <aside className={s.sidebar}>
         <div className={s.sidebarHead}>
-          <NavLink className={s.brand} to="/dashboard" aria-label="CodeBuddy 概览">
+          <NavLink className={s.brand} to="/dashboard" aria-label={t("app.brandAria")}>
             <span className={s.brandIcon}>
               <Icon name="leaf" />
             </span>
             <span className={s.brandText}>
-              CodeBuddy<small>个人管理工作台</small>
+              CodeBuddy<small>{t("app.brandSubtitle")}</small>
             </span>
           </NavLink>
-          <button
-            className={s.sidebarToggle}
-            onClick={toggleSidebar}
-            aria-label={collapsed ? "展开侧栏" : "收起侧栏"}
-            aria-expanded={!collapsed}
-            aria-controls="workspace-navigation"
-            title={collapsed ? "展开侧栏" : "收起侧栏"}
-          >
-            <Icon name={collapsed ? "expand" : "collapse"} />
-          </button>
         </div>
-        <p className={s.navLabel}>工作空间</p>
-        <nav id="workspace-navigation" aria-label="主导航">
-          {workspaceNav.map(([path, label, icon]) => (
-            <NavLink
-              key={path}
-              to={`/dashboard${path}`}
-              end={path === ""}
-              aria-label={label}
-              title={collapsed ? label : undefined}
-              data-label={label}
-              className={({ isActive }) => `${s.navItem} ${isActive ? s.active : ""}`}
-            >
-              <Icon name={icon} />
-              <span className={s.navText}>{label}</span>
-              <span className={s.navArrow}>
-                <Icon name="arrow" />
-              </span>
-            </NavLink>
-          ))}
-          <p className={s.navLabel}>可观测性</p>
-          {observabilityNav.map(([path, label, icon]) => (
-            <NavLink
-              key={path}
-              to={`/dashboard${path}`}
-              aria-label={label}
-              title={collapsed ? label : undefined}
-              data-label={label}
-              className={({ isActive }) => `${s.navItem} ${isActive ? s.active : ""}`}
-            >
-              <Icon name={icon} />
-              <span className={s.navText}>{label}</span>
-              <span className={s.navArrow}>
-                <Icon name="arrow" />
-              </span>
-            </NavLink>
-          ))}
+        <p className={s.navLabel}>{t("app.workspace")}</p>
+        <nav id="workspace-navigation" aria-label={t("app.primaryNav")}>
+          {renderNav(workspaceNav)}
+          <p className={s.navLabel}>{t("app.observability")}</p>
+          {renderNav(observabilityNav)}
         </nav>
+        <button
+          className={s.sidebarBar}
+          onClick={toggleSidebar}
+          aria-label={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
+          aria-expanded={!collapsed}
+          aria-controls="workspace-navigation"
+          title={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
+        >
+          <span className={s.sidebarBarText}>
+            {collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
+          </span>
+          <Icon name={collapsed ? "expand" : "collapse"} />
+        </button>
       </aside>
       <div className={s.workspace}>
         <header className={s.header}>
           <span>
-            工作空间 <span className={s.separator}>/</span>{" "}
-            {navigation.find(([path]) => `/dashboard${path}` === location.pathname)?.[1] ?? "概览"}
+            {t("app.workspace")} <span className={s.separator}>/</span>{" "}
+            {t(
+              navigation.find(([path]) => `/dashboard${path}` === location.pathname)?.[1] ??
+                "nav.overview",
+            )}
           </span>
           <div className={s.actions}>
             <Appearance />
             <span className={s.session}>
               <span />
-              会话已认证
+              {t("app.sessionActive")}
             </span>
             <button
               disabled={busy}
@@ -157,7 +161,7 @@ function Shell() {
                   .finally(() => setBusy(false));
               }}
             >
-              退出登录
+              {t("app.signOut")}
             </button>
           </div>
         </header>
@@ -175,6 +179,7 @@ function Shell() {
   );
 }
 function Login() {
+  const t = useT();
   const status = useSession((state) => state.status);
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
@@ -192,14 +197,14 @@ function Login() {
           </span>
           CodeBuddy
         </div>
-        <h1>网关管理</h1>
+        <h1>{t("login.subtitle")}</h1>
         <div className={s.loginOrbit}>
           <Icon name="leaf" />
         </div>
       </section>
       <section className={s.loginCard}>
         <Icon name="shield" />
-        <h2>登录管理控制台</h2>
+        <h2>{t("login.title")}</h2>
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -221,12 +226,12 @@ function Login() {
               required
               value={key}
               onChange={(e) => setKey(e.target.value)}
-              placeholder="输入当前生效的 API key"
+              placeholder={t("login.keyPlaceholder")}
             />
           </label>
           <ErrorNotice message={error} />
           <button className={s.primary} disabled={busy || !key.trim()}>
-            {busy ? "正在验证…" : "进入工作台"}
+            {busy ? t("login.verifying") : t("login.enter")}
             <Icon name="arrow" />
           </button>
         </form>
@@ -245,6 +250,7 @@ export function AppRoutes() {
           <Route path="credentials" element={<Credentials />} />
           <Route path="logs" element={<Logs />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="storage" element={<Storage />} />
           <Route path="trends" element={<Trends />} />
           <Route path="diagnostics" element={<Diagnostics />} />
           <Route path="alerts" element={<Alerts />} />
@@ -259,5 +265,9 @@ export default function App() {
   useEffect(() => {
     void establishSession();
   }, []);
-  return <AppRoutes />;
+  return (
+    <LanguageProvider>
+      <AppRoutes />
+    </LanguageProvider>
+  );
 }

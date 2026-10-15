@@ -292,13 +292,15 @@ export const ALERT_KINDS = [
 ] as const;
 export type AlertKind = (typeof ALERT_KINDS)[number];
 
+// i18n keys, not display text: consumers resolve them through t() so the alert
+// vocabulary follows the active language like the rest of the fusion UI.
 export const ALERT_KIND_LABELS: Record<AlertKind, string> = {
-  balance_exhausted: "余额耗尽",
-  credits_expiring: "积分将到期",
-  token_circuit: "认证熔断",
-  catalog_sync_failed: "目录同步失败",
-  audit_degraded: "审计降级",
-  pool_exhausted: "全池触底",
+  balance_exhausted: "fusion.alertKind.balance_exhausted",
+  credits_expiring: "fusion.alertKind.credits_expiring",
+  token_circuit: "fusion.alertKind.token_circuit",
+  catalog_sync_failed: "fusion.alertKind.catalog_sync_failed",
+  audit_degraded: "fusion.alertKind.audit_degraded",
+  pool_exhausted: "fusion.alertKind.pool_exhausted",
 };
 
 export const CHANNEL_KINDS = ["webhook", "bark", "email"] as const;

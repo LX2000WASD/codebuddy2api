@@ -495,3 +495,7 @@ class AcpClientTests(unittest.TestCase):
             b": heartbeat\n\n")
         self.assertEqual(channel._events(), [{"sessionUpdate": "usage_update",
                                               "cost": {"amount": 7, "currency": "credits"}}])
+
+
+if __name__ == "__main__":
+    unittest.main()

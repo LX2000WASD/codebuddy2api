@@ -33,6 +33,23 @@ def normalize_allowed_origins(value):
     return ",".join(normalized)
 
 
+def normalize_trusted_proxies(value):
+    """Normalize a comma/space separated list of trusted proxy IPs or CIDRs."""
+    import ipaddress
+    entries = [entry for entry in re.split(r"[\s,]+", value.strip()) if entry]
+    if len(entries) > 32:
+        raise ValueError("trusted_proxies: 代理数量超出上限")
+    normalized = []
+    for entry in entries:
+        try:
+            network = str(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            raise ValueError(f"trusted_proxies: 地址无效 {entry!r}") from None
+        if network not in normalized:
+            normalized.append(network)
+    return ",".join(normalized)
+
+
 def validate_projection_max_bytes(value):
     """Allow zero or enough room for a bounded head/tail warning."""
     if value != 0 and value < 256:
@@ -41,9 +58,10 @@ def validate_projection_max_bytes(value):
 
 
 def _item(default, type_, label, *, mode="hot", env=None, minimum=None, maximum=None,
-          choices=None, sensitive=False, allow_empty=False, max_length=255, validator=None):
+          choices=None, sensitive=False, allow_empty=False, max_length=255, validator=None,
+          hidden=False):
     value = {"default": default, "type": type_, "label": label, "mode": mode,
-             "env": env, "sensitive": sensitive}
+             "env": env, "sensitive": sensitive, "hidden": hidden}
     if minimum is not None:
         value["min"] = minimum
     if maximum is not None:
@@ -66,7 +84,12 @@ SCHEMA = {
     "auth_file": _item(None, "paths", "显式凭证文件", mode="startup", sensitive=True),
     "auth_dir": _item(None, "path", "凭证目录", mode="startup", env="CODEBUDDY_AUTH_DIR", sensitive=True),
     "import_dir": _item(None, "path", "导入目录", mode="startup", env="CODEBUDDY_IMPORT_DIR", sensitive=True),
-    "log_path": _item(None, "path", "旧文本日志（已停用）", mode="startup", env="CODEBUDDY2API_LOG", sensitive=True),
+    # DEPRECATED: text-file logging was retired in favour of the SQLite audit store.
+    # The key is kept only so an old control-database snapshot or CODEBUDDY2API_LOG
+    # still parses instead of failing validation; main() forces it back to None and
+    # warns (converter.py). Nothing in the serving path writes a text log.
+    "log_path": _item(None, "path", "旧文本日志（已停用，保留仅为兼容旧配置）", mode="startup",
+                      env="CODEBUDDY2API_LOG", sensitive=True, hidden=True),
     "admin_allowed_origins": _item("", "string", "管理页额外信任来源", env="CODEBUDDY2API_ADMIN_ORIGINS",
                                    allow_empty=True, max_length=2000, validator=normalize_allowed_origins),
     "desensitize": _item(False, "boolean", "提示词脱敏"),
@@ -115,7 +138,7 @@ SCHEMA = {
     "max_images": _item(16, "integer", "单请求图片上限", env="CODEBUDDY2API_MAX_IMAGES", minimum=0, maximum=10000),
     "image_policy": _item("truncate", "string", "超额图片策略", env="CODEBUDDY2API_IMAGE_POLICY", choices=["truncate", "error"]),
     "max_request_bytes": _item(32 * 1024 * 1024, "integer", "请求字节上限", env="CODEBUDDY2API_MAX_REQUEST_BYTES", minimum=1, maximum=1024**3),
-    "log_body_limit": _item(65536, "integer", "旧文本预览（已停用）", env="CODEBUDDY2API_LOG_BODY_LIMIT", minimum=0, maximum=1024**2),
+    "log_body_limit": _item(65536, "integer", "旧文本预览（已停用）", env="CODEBUDDY2API_LOG_BODY_LIMIT", minimum=0, maximum=1024**2, hidden=True),
     "failover_max": _item(0, "integer", "换凭证重放次数", env="CODEBUDDY2API_FAILOVER_MAX",
                           minimum=0, maximum=10),
     # 写超时重放默认开：卡在"上游不读请求体"阶段时请求尚未被处理，重复计费风险极低；
@@ -156,6 +179,9 @@ SCHEMA = {
     "audit_max_bytes": _item(256 * 1024 * 1024, "integer", "审计明细预算", minimum=1024**2, maximum=1024**4),
     "audit_retention_days": _item(30, "integer", "审计明细保留天数", minimum=1, maximum=36500),
     "audit_diagnostic_bytes": _item(8192, "integer", "失败诊断最大字节", minimum=0, maximum=8192),
+    "trusted_proxies": _item("", "string", "可信代理地址（IP/CIDR，逗号分隔）",
+                             env="CODEBUDDY2API_TRUSTED_PROXIES", allow_empty=True,
+                             max_length=2000, validator=normalize_trusted_proxies),
     # -- 融合层：可观测性、告警与健康 --------------------------------------
 
     "alert_enabled": _item(False, "boolean", "告警总开关", env="CODEBUDDY2API_ALERT_ENABLED"),
@@ -179,6 +205,10 @@ SCHEMA = {
                                        env="CODEBUDDY2API_STATS_TOKENS_RATE_TTFB_MS", minimum=0, maximum=60000),
     "health_service_name": _item("codebuddy2api", "string", "服务身份（/healthz 与告警头）",
                                  env="CODEBUDDY2API_HEALTH_SERVICE_NAME", max_length=64),
+    # prompt_cache_key 自动生成（借鉴 workbuddy2api-panel，P0 费用优化）。仅控制"网关自动生成"：
+    # 客户端显式传入的 key 无论开关如何都原值透传（两条独立行为）。
+    "prompt_cache_key_enabled": _item(True, "boolean", "自动生成 prompt_cache_key（按账号隔离，省前缀缓存费用）",
+                                      env="CODEBUDDY2API_PROMPT_CACHE_KEY"),
 }
 
 
@@ -249,6 +279,8 @@ def resolve_settings(config):
     sources = config.get("settings_sources", {})
     result = []
     for key, spec in SCHEMA.items():
+        if spec.get("hidden"):  # Retired knobs stay out of the management UI.
+            continue
         source = sources.get(key, "default")
         locked = spec["sensitive"] or source in ("cli", "environment", "env", "dotenv")
         item = {"key": key, "value": None if spec["sensitive"] else (config[key] if config.get(key) is not None else spec["default"]),

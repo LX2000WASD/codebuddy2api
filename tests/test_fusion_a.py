@@ -597,6 +597,51 @@ class TransportPenaltyTests(FusionFixture):
         self.assertEqual(rows[0]["transport_fails"], 0)            # 出池时计数已清零
         self.assertGreater(rows[0]["transport_penalty_until"], time.time())
 
+    def test_connection_retry_hook_feeds_the_transport_counter(self):
+        """M3: the on_retry hook inside _backend_stream must count, not just observe.
+
+        Before the fix a flapping connection was recorded in the observability
+        trail only, so the pool saw roughly half the real failure rate and kept
+        routing to the credential.
+        """
+        pool, _ = self.pool(("a.info",), ("uid-a",))
+        cm = pool.first()
+        entry_id = pool._entries[0]["id"]
+        with patch.dict(converter.CONFIG, {"cred_pool": pool, "transport_fail_threshold": 100}):
+            self.assertEqual(pool._transport_fails.get(entry_id, 0), 0)
+            converter._note_cred_transport_failure(cm)
+            self.assertEqual(pool._transport_fails[entry_id], 1)
+            converter._note_cred_transport_failure((cm, 7))       # a lease tuple unwraps too
+            self.assertEqual(pool._transport_fails[entry_id], 2)
+
+    def test_successful_response_clears_the_transport_counter(self):
+        """L7: the clearing counterpart must be wired into the success path.
+
+        Without it the counter only grew, so a credential that recovered kept
+        drifting toward the demotion threshold.
+        """
+        pool, _ = self.pool(("a.info",), ("uid-a",))
+        cm = pool.first()
+        entry_id = pool._entries[0]["id"]
+        with patch.dict(converter.CONFIG, {"cred_pool": pool}):
+            for _ in range(3):
+                converter._note_cred_transport_failure(cm)
+            self.assertEqual(pool._transport_fails[entry_id], 3)
+            converter._note_cred_transport_ok(cm)
+            self.assertEqual(pool._transport_fails.get(entry_id, 0), 0)
+            converter._note_cred_transport_ok((cm, 7))      # lease tuple unwraps too
+            self.assertEqual(pool._transport_fails.get(entry_id, 0), 0)
+
+    def test_mid_stream_failure_feeds_the_transport_counter(self):
+        """M2: a stream that dies after the first byte is not replayable, but it is
+        still this credential's transport failure and must be counted."""
+        pool, _ = self.pool(("a.info",), ("uid-a",))
+        cm = pool.first()
+        entry_id = pool._entries[0]["id"]
+        with patch.dict(converter.CONFIG, {"cred_pool": pool}):
+            converter._note_cred_transport_failure(cm)
+            self.assertEqual(pool._transport_fails[entry_id], 1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

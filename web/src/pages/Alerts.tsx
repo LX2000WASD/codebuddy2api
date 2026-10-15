@@ -19,25 +19,32 @@ import {
   type ChannelsResponse,
   type ChannelTestResult,
 } from "../fusion/types";
+import { t, useT } from "../i18n";
 import s from "../ui.module.scss";
 
 function normalizeEvents(value: unknown): AlertEventsResponse {
-  const data = object(value, "告警事件");
-  if (!Array.isArray(data.items)) throw new Error("告警事件列表缺失");
+  const data = object(value, t("fusion.alerts.eventsContext"));
+  if (!Array.isArray(data.items)) throw new Error(t("fusion.alerts.eventsMissing"));
   return data as AlertEventsResponse;
 }
 function normalizeChannels(value: unknown): ChannelsResponse {
-  const data = object(value, "告警通道");
-  if (!data.channels || typeof data.channels !== "object") throw new Error("告警通道缺失");
+  const data = object(value, t("fusion.alerts.channelsContext"));
+  if (!data.channels || typeof data.channels !== "object")
+    throw new Error(t("fusion.alerts.channelsMissing"));
   return data as ChannelsResponse;
 }
 
 const severityTone = (severity: string) =>
   severity === "critical" ? "bad" : severity === "warning" ? "warn" : "neutral";
 const severityLabel = (severity: string) =>
-  severity === "critical" ? "严重" : severity === "warning" ? "警告" : "信息";
+  severity === "critical"
+    ? t("fusion.severity.critical")
+    : severity === "warning"
+      ? t("fusion.severity.warning")
+      : t("fusion.severity.info");
 
 function EventsPanel() {
+  const t = useT();
   const [kinds, setKinds] = useState<Set<AlertKind>>(() => new Set());
   const [severity, setSeverity] = useState("");
   const [items, setItems] = useState<AlertEventsResponse["items"]>([]);
@@ -69,7 +76,7 @@ function EventsPanel() {
       })
       .catch((err: unknown) => {
         if (err instanceof FusionAbortError) return;
-        setError(err instanceof Error ? err.message : "告警事件加载失败");
+        setError(err instanceof Error ? err.message : t("fusion.alerts.eventsLoadFailed"));
       })
       .finally(() => setLoading(false));
     return controller;
@@ -84,8 +91,8 @@ function EventsPanel() {
   }, [params.toString(), reloadRevision]);
 
   return (
-    <Panel title="告警事件流" hint="按触发时间倒序">
-      <div className={s.filterChips} role="group" aria-label="事件类型筛选">
+    <Panel title={t("fusion.alerts.eventsPanel")} hint={t("fusion.alerts.eventsPanelHint")}>
+      <div className={s.filterChips} role="group" aria-label={t("fusion.alerts.filterKinds")}>
         {ALERT_KINDS.map((kind) => (
           <button
             key={kind}
@@ -101,24 +108,24 @@ function EventsPanel() {
               })
             }
           >
-            {ALERT_KIND_LABELS[kind]}
+            {t(ALERT_KIND_LABELS[kind])}
           </button>
         ))}
         <select
-          aria-label="事件级别"
+          aria-label={t("fusion.alerts.severityFilter")}
           value={severity}
           onChange={(e) => setSeverity(e.target.value)}
           className={s.severitySelect}
         >
-          <option value="">全部级别</option>
-          <option value="critical">严重</option>
-          <option value="warning">警告</option>
-          <option value="info">信息</option>
+          <option value="">{t("fusion.alerts.allSeverities")}</option>
+          <option value="critical">{t("fusion.severity.critical")}</option>
+          <option value="warning">{t("fusion.severity.warning")}</option>
+          <option value="info">{t("fusion.severity.info")}</option>
         </select>
       </div>
       {error && <ErrorNotice message={error} retry={() => setReloadRevision((v) => v + 1)} />}
       {loading && !items.length ? (
-        <Skeleton variant="table" label="事件流加载中" />
+        <Skeleton variant="table" label={t("fusion.alerts.eventsLoading")} />
       ) : items.length ? (
         <>
           <div className={s.eventList}>
@@ -129,16 +136,25 @@ function EventsPanel() {
                   <Badge tone={severityTone(event.severity)}>{severityLabel(event.severity)}</Badge>
                 </div>
                 <small>
-                  {ALERT_KIND_LABELS[event.kind as AlertKind] ?? event.kind} ·{" "}
-                  {new Date(event.fired_at * 1000).toLocaleString("zh-CN")}
+                  {event.kind in ALERT_KIND_LABELS
+                    ? t(ALERT_KIND_LABELS[event.kind as AlertKind])
+                    : event.kind}{" "}
+                  · {new Date(event.fired_at * 1000).toLocaleString("zh-CN")}
                 </small>
                 <p>{event.detail}</p>
                 {event.delivered.length > 0 && (
                   <small>
-                    投递：
+                    {t("fusion.alerts.delivery")}
                     {event.delivered
-                      .map((d) => `${d.channel} ${d.ok ? "成功" : "失败"}`)
-                      .join("、")}
+                      .map((d) =>
+                        t("fusion.alerts.deliveryEntry", {
+                          channel: d.channel,
+                          outcome: d.ok
+                            ? t("fusion.alerts.deliveryOk")
+                            : t("fusion.alerts.deliveryFailed"),
+                        }),
+                      )
+                      .join(t("fusion.common.listSeparator"))}
                   </small>
                 )}
               </article>
@@ -146,27 +162,27 @@ function EventsPanel() {
           </div>
           {hasMore && (
             <div className={s.pagination}>
-              <span>共显示 {items.length} 条</span>
+              <span>{t("fusion.alerts.shownCount", { count: items.length })}</span>
               <button disabled={loading} onClick={() => load("older")}>
-                加载更早的事件
+                {t("fusion.alerts.loadOlder")}
               </button>
             </div>
           )}
         </>
       ) : (
-        <Empty title="暂无告警事件">
-          触发条件（余额耗尽、积分将到期、认证熔断等）满足时自动记录。
-        </Empty>
+        <Empty title={t("fusion.alerts.noEvents")}>{t("fusion.alerts.noEventsHint")}</Empty>
       )}
     </Panel>
   );
 }
 
+// Brand names stay literal; only the localised channel name goes through t().
 const channelLabels: Record<ChannelKind, string> = {
   webhook: "Webhook",
   bark: "Bark",
-  email: "邮件",
+  email: "fusion.channel.email",
 };
+const channelLabel = (channel: ChannelKind) => t(channelLabels[channel]);
 
 function ChannelEditor({
   channels,
@@ -177,6 +193,7 @@ function ChannelEditor({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const t = useT();
   const [form, setForm] = useState(() => ({
     webhook_enabled: Boolean(channels.channels.webhook?.enabled),
     webhook_url: String(channels.channels.webhook?.url_masked ?? ""),
@@ -196,9 +213,9 @@ function ChannelEditor({
   const [error, setError] = useState<string | null>(null);
   const [test, setTest] = useState<ChannelTestResult | null>(null);
   const maskedHints: Record<ChannelKind, string | null> = {
-    webhook: channels.channels.webhook?.has_secret ? "原地址包含密钥信息，需重新完整输入" : null,
-    bark: channels.channels.bark?.key_masked ? "原 Key 已脱敏，需重新完整输入" : null,
-    email: channels.channels.email?.password_masked ? "原密码已脱敏，需重新完整输入" : null,
+    webhook: channels.channels.webhook?.has_secret ? t("fusion.alerts.maskedWebhook") : null,
+    bark: channels.channels.bark?.key_masked ? t("fusion.alerts.maskedBark") : null,
+    email: channels.channels.email?.password_masked ? t("fusion.alerts.maskedEmail") : null,
   };
   // The read endpoint never returns secrets; saving a masked value back would drop
   // them, so required secret fields must be re-typed when the channel is enabled.
@@ -239,33 +256,35 @@ function ChannelEditor({
   const validate = () => {
     if (form.webhook_enabled) {
       const url = form.webhook_url.trim();
-      if (!url) return "启用 Webhook 时必须填写完整回调地址";
-      if (looksMasked(url)) return "Webhook 地址需重新完整输入（读端点只返回脱敏地址）";
-      if (!/^https?:\/\/[^/\s@]+/i.test(url)) return "Webhook 地址必须为 http/https 且包含主机名";
-      if (url.length > 500) return "Webhook 地址过长（≤500 字符）";
+      if (!url) return t("fusion.alerts.invalidWebhookEmpty");
+      if (looksMasked(url)) return t("fusion.alerts.invalidWebhookMasked");
+      if (!/^https?:\/\/[^/\s@]+/i.test(url)) return t("fusion.alerts.invalidWebhookScheme");
+      if (url.length > 500) return t("fusion.alerts.invalidWebhookTooLong");
     }
     if (form.bark_enabled) {
       const key = form.bark_key.trim();
-      if (!key) return "启用 Bark 时必须填写完整 Key";
-      if (looksMasked(key)) return "Bark Key 需重新完整输入（读端点只返回脱敏 Key）";
-      if (key.length > 128) return "Bark Key 过长（≤128 字符）";
+      if (!key) return t("fusion.alerts.invalidBarkEmpty");
+      if (looksMasked(key)) return t("fusion.alerts.invalidBarkMasked");
+      if (key.length > 128) return t("fusion.alerts.invalidBarkTooLong");
       const server = form.bark_server.trim();
-      if (server && !/^https:\/\//i.test(server)) return "Bark 服务地址必须为 https";
+      if (server && !/^https:\/\//i.test(server)) return t("fusion.alerts.invalidBarkServer");
     }
     if (form.email_enabled) {
-      if (!form.email_host.trim()) return "启用邮件时必须填写 SMTP 主机";
+      if (!form.email_host.trim()) return t("fusion.alerts.invalidEmailHost");
       const port = Number(form.email_port);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) return "SMTP 端口须为 1..65535";
-      if (!/^[^@\s]+@[^@\s]+$/.test(form.email_from.trim())) return "发件地址格式不正确";
+      if (!Number.isInteger(port) || port < 1 || port > 65535)
+        return t("fusion.alerts.invalidEmailPort");
+      if (!/^[^@\s]+@[^@\s]+$/.test(form.email_from.trim()))
+        return t("fusion.alerts.invalidEmailFrom");
       const recipients = form.email_to
         .split(",")
         .map((address) => address.trim())
         .filter(Boolean);
-      if (!recipients.length || recipients.length > 8) return "收件地址须为 1..8 个";
+      if (!recipients.length || recipients.length > 8)
+        return t("fusion.alerts.invalidEmailToCount");
       if (recipients.some((address) => !/^[^@\s]+@[^@\s]+$/.test(address)))
-        return "收件地址格式不正确";
-      if (looksMasked(form.email_password))
-        return "SMTP 密码需重新完整输入（读端点只返回脱敏占位）";
+        return t("fusion.alerts.invalidEmailToFormat");
+      if (looksMasked(form.email_password)) return t("fusion.alerts.invalidEmailPasswordMasked");
     }
     return null;
   };
@@ -276,23 +295,20 @@ function ChannelEditor({
     setTest(null);
     void fusionMutate("POST", "/admin/alerts/test", undefined, new URLSearchParams({ channel }))
       .then((raw) => {
-        const data = object(raw, "通道测试");
-        if (typeof data.ok !== "boolean") throw new Error("通道测试结果不完整");
+        const data = object(raw, t("fusion.alerts.testContext"));
+        if (typeof data.ok !== "boolean") throw new Error(t("fusion.alerts.testIncomplete"));
         setTest(data as ChannelTestResult);
       })
       .catch((err: unknown) => {
         if (err instanceof FusionAbortError) return;
-        setError(err instanceof Error ? err.message : "通道测试失败");
+        setError(err instanceof Error ? err.message : t("fusion.alerts.testFailed"));
       })
       .finally(() => setBusy(false));
   };
 
   return (
-    <Drawer title="通知通道配置" onClose={onClose} dismissDisabled={busy}>
-      <p className={s.note}>
-        读端点只返回脱敏的密钥与地址；启用某通道时，对应密钥字段必须重新完整输入，否则保存会拒绝。
-        保存为全量覆盖：未编辑的通道需按原样保留启用状态。
-      </p>
+    <Drawer title={t("fusion.alerts.editorTitle")} onClose={onClose} dismissDisabled={busy}>
+      <p className={s.note}>{t("fusion.alerts.editorNote")}</p>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -310,7 +326,7 @@ function ChannelEditor({
             })
             .catch((err: unknown) => {
               if (err instanceof FusionAbortError) return;
-              setError(err instanceof Error ? err.message : "保存失败");
+              setError(err instanceof Error ? err.message : t("fusion.alerts.saveFailed"));
             })
             .finally(() => setBusy(false));
         }}
@@ -324,10 +340,10 @@ function ChannelEditor({
               checked={form.webhook_enabled}
               onChange={(e) => set("webhook_enabled", e.target.checked)}
             />
-            启用 Webhook
+            {t("fusion.alerts.enableWebhook")}
           </label>
           <label className={s.field}>
-            回调地址（完整 URL）
+            {t("fusion.alerts.webhookUrl")}
             <input
               type="url"
               value={form.webhook_url}
@@ -349,10 +365,10 @@ function ChannelEditor({
               checked={form.bark_enabled}
               onChange={(e) => set("bark_enabled", e.target.checked)}
             />
-            启用 Bark
+            {t("fusion.alerts.enableBark")}
           </label>
           <label className={s.field}>
-            服务地址（留空使用默认）
+            {t("fusion.alerts.barkServer")}
             <input
               value={form.bark_server}
               onChange={(e) => set("bark_server", e.target.value)}
@@ -361,7 +377,7 @@ function ChannelEditor({
             />
           </label>
           <label className={s.field}>
-            Key
+            {t("fusion.alerts.barkKey")}
             <input
               value={form.bark_key}
               onChange={(e) => set("bark_key", e.target.value)}
@@ -373,7 +389,7 @@ function ChannelEditor({
           )}
         </fieldset>
         <fieldset className={s.fieldset}>
-          <legend>邮件（SMTP）</legend>
+          <legend>{t("fusion.alerts.emailLegend")}</legend>
           <label className={s.check}>
             <input
               type="checkbox"
@@ -381,10 +397,10 @@ function ChannelEditor({
               checked={form.email_enabled}
               onChange={(e) => set("email_enabled", e.target.checked)}
             />
-            启用邮件
+            {t("fusion.alerts.enableEmail")}
           </label>
           <label className={s.field}>
-            SMTP 主机
+            {t("fusion.alerts.emailHost")}
             <input
               value={form.email_host}
               onChange={(e) => set("email_host", e.target.value)}
@@ -392,7 +408,7 @@ function ChannelEditor({
             />
           </label>
           <label className={s.field}>
-            端口
+            {t("fusion.alerts.emailPort")}
             <input
               type="number"
               min={1}
@@ -403,7 +419,7 @@ function ChannelEditor({
             />
           </label>
           <label className={s.field}>
-            用户名
+            {t("fusion.alerts.emailUsername")}
             <input
               value={form.email_username}
               onChange={(e) => set("email_username", e.target.value)}
@@ -411,7 +427,7 @@ function ChannelEditor({
             />
           </label>
           <label className={s.field}>
-            密码（中继可留空）
+            {t("fusion.alerts.emailPassword")}
             <input
               type="password"
               value={form.email_password}
@@ -421,7 +437,7 @@ function ChannelEditor({
             />
           </label>
           <label className={s.field}>
-            发件地址
+            {t("fusion.alerts.emailFrom")}
             <input
               type="email"
               value={form.email_from}
@@ -430,7 +446,7 @@ function ChannelEditor({
             />
           </label>
           <label className={s.field}>
-            收件地址（逗号分隔，至多 8 个）
+            {t("fusion.alerts.emailTo")}
             <input
               value={form.email_to}
               onChange={(e) => set("email_to", e.target.value)}
@@ -445,7 +461,7 @@ function ChannelEditor({
               onChange={(e) => set("email_tls", e.target.checked)}
               disabled={!form.email_enabled}
             />
-            使用 TLS
+            {t("fusion.alerts.emailTls")}
           </label>
           {maskedHints.email && form.email_enabled && (
             <small className={s.mutedInline}>{maskedHints.email}</small>
@@ -454,7 +470,7 @@ function ChannelEditor({
         <ErrorNotice message={error} />
         <div className={s.actions}>
           <button className={s.primary} disabled={busy}>
-            {busy ? "保存中…" : "保存通道配置"}
+            {busy ? t("fusion.alerts.saving") : t("fusion.alerts.save")}
           </button>
           <button
             type="button"
@@ -464,12 +480,12 @@ function ChannelEditor({
               setTest(null);
             }}
           >
-            清空提示
+            {t("fusion.alerts.clearNotice")}
           </button>
         </div>
       </form>
-      <Panel title="通道测试">
-        <p className={s.note}>测试发送绕过去重并同步返回结果；请先用真实配置保存再测试。</p>
+      <Panel title={t("fusion.alerts.testPanel")}>
+        <p className={s.note}>{t("fusion.alerts.testNote")}</p>
         <div className={s.actions}>
           {CHANNEL_KINDS.map((channel) => (
             <button
@@ -477,20 +493,25 @@ function ChannelEditor({
               type="button"
               disabled={busy}
               onClick={() => runTest(channel)}
-              aria-label={`测试 ${channelLabels[channel]} 通道`}
+              aria-label={t("fusion.alerts.testChannelAria", { channel: channelLabel(channel) })}
             >
-              测试 {channelLabels[channel]}
+              {t("fusion.alerts.testChannel", { channel: channelLabel(channel) })}
             </button>
           ))}
         </div>
         {test && (
           <div className={s.eventItem} data-severity={test.ok ? "info" : "critical"}>
             <div className={s.eventHead}>
-              <strong>{channelLabels[test.channel as ChannelKind] ?? test.channel}</strong>
-              <Badge tone={test.ok ? "good" : "bad"}>{test.ok ? "投递成功" : "投递失败"}</Badge>
+              <strong>{channelLabel(test.channel as ChannelKind)}</strong>
+              <Badge tone={test.ok ? "good" : "bad"}>
+                {test.ok ? t("fusion.alerts.deliveryOk") : t("fusion.alerts.deliveryFailed")}
+              </Badge>
             </div>
             <small>
-              尝试 {metric(test.attempts)} 次 · 耗时 {metric(test.duration_ms)} ms
+              {t("fusion.alerts.testResult", {
+                attempts: metric(test.attempts),
+                duration: metric(test.duration_ms),
+              })}
             </small>
             {test.error && <p>{test.error}</p>}
           </div>
@@ -501,6 +522,7 @@ function ChannelEditor({
 }
 
 export function Alerts() {
+  const t = useT();
   const channels = useFusionResource("/admin/alerts/channels", null, normalizeChannels);
   const [editing, setEditing] = useState(false);
   const status = channels.data;
@@ -513,53 +535,54 @@ export function Alerts() {
   return (
     <>
       <PageTitle
-        title="告警中心"
-        description="余额耗尽、积分将到期、认证熔断等事件的统一出口；开关与阈值在系统设置中热更新。"
+        title={t("nav.alerts")}
+        description={t("fusion.alerts.pageDesc")}
         actions={
           <>
-            {FUSION_DEVELOPMENT && <Badge tone="warn">本地演示数据</Badge>}
+            {FUSION_DEVELOPMENT && <Badge tone="warn">{t("fusion.common.demoData")}</Badge>}
             <button onClick={channels.reload} disabled={channels.loading}>
               <Icon name="refresh" />
-              刷新通道
+              {t("fusion.alerts.refreshChannels")}
             </button>
             <button className={s.primary} disabled={!status} onClick={() => setEditing(true)}>
               <Icon name="bell" />
-              配置通道
+              {t("fusion.alerts.configureChannels")}
             </button>
           </>
         }
       />
-      <Panel title="通道总览">
+      <Panel title={t("fusion.alerts.channelsPanel")}>
         {channels.error ? (
           <ErrorNotice message={channels.error} retry={channels.reload} />
         ) : channels.loading ? (
-          <Skeleton variant="card" label="通道状态加载中" />
+          <Skeleton variant="card" label={t("fusion.alerts.channelsLoading")} />
         ) : status ? (
-          <div className={s.channelGrid}>
+          <div className={s.alertsChannelGrid}>
             {CHANNEL_KINDS.map((kind) => {
               const channels = status.channels;
               const enabled = Boolean(channels[kind]?.enabled);
               return (
-                <section className={s.channelCard} key={kind}>
+                <section className={s.alertsChannelCard} key={kind}>
                   <div>
-                    <strong>{channelLabels[kind]}</strong>
+                    <strong>{channelLabel(kind)}</strong>
                     <Badge tone={enabled ? "good" : "neutral"}>
-                      {enabled ? "已启用" : "未启用"}
+                      {enabled ? t("fusion.common.enabled") : t("fusion.common.disabled")}
                     </Badge>
                   </div>
                   {kind === "webhook" && (
-                    <small>{channels.webhook?.url_masked ?? "未配置地址"}</small>
+                    <small>{channels.webhook?.url_masked ?? t("fusion.alerts.noUrl")}</small>
                   )}
                   {kind === "bark" && (
                     <small>
                       {channels.bark?.server ?? "https://api.day.app"} ·{" "}
-                      {channels.bark?.key_masked ?? "未配置 Key"}
+                      {channels.bark?.key_masked ?? t("fusion.alerts.noKey")}
                     </small>
                   )}
                   {kind === "email" && (
                     <small>
                       {channels.email?.smtp_host}:{channels.email?.smtp_port} ·{" "}
-                      {(channels.email?.to ?? []).join("、") || "未配置收件人"}
+                      {(channels.email?.to ?? []).join(t("fusion.common.listSeparator")) ||
+                        t("fusion.alerts.noRecipients")}
                     </small>
                   )}
                 </section>
@@ -567,12 +590,16 @@ export function Alerts() {
             })}
           </div>
         ) : (
-          <Empty title="通道状态未知" />
+          <Empty title={t("fusion.alerts.channelsUnknown")} />
         )}
         {status && (
           <p className={s.note}>
-            告警总开关当前 {status.alert_enabled ? "已启用" : "未启用"}；已启用通道{" "}
-            {enabledList.length} 个。 阈值（到期天数、节流窗口、评估周期等）请在系统设置中调整。
+            {t("fusion.alerts.summary", {
+              state: status.alert_enabled
+                ? t("fusion.common.enabled")
+                : t("fusion.common.disabled"),
+              count: enabledList.length,
+            })}
           </p>
         )}
       </Panel>

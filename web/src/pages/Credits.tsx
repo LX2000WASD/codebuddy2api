@@ -13,26 +13,18 @@ import {
 import { useFusionResource, FUSION_DEVELOPMENT } from "../fusion/client";
 import type { CreditExpiryResponse } from "../fusion/types";
 import { profileLabel } from "../values";
+import { t, useT } from "../i18n";
 import s from "../ui.module.scss";
 
 function normalizeExpiry(value: unknown): CreditExpiryResponse {
-  const data = object(value, "积分到期");
-  if (!Array.isArray(data.items)) throw new Error("积分到期列表缺失");
+  const data = object(value, t("fusion.credits.context"));
+  if (!Array.isArray(data.items)) throw new Error(t("fusion.credits.itemsMissing"));
   return data as CreditExpiryResponse;
 }
 
-const WINDOWS = [
-  ["7", "7 天"],
-  ["14", "14 天"],
-  ["30", "30 天"],
-  ["90", "90 天"],
-] as const;
-const BURNS = [
-  ["1", "1 天"],
-  ["7", "7 天"],
-  ["14", "14 天"],
-  ["30", "30 天"],
-] as const;
+// Values are day counts; labels resolve through t("fusion.credits.days") at render.
+const WINDOWS = ["7", "14", "30", "90"] as const;
+const BURNS = ["1", "7", "14", "30"] as const;
 
 function StatCard({
   label,
@@ -61,12 +53,14 @@ function StatCard({
 
 /** Expiry distribution across the displayed items: credits by days-to-expiry band. */
 function distribution(items: CreditExpiryResponse["items"]) {
+  // `label` holds an i18n key: it doubles as the React key and the aria-label
+  // source, so it must stay stable across language switches.
   const bands = [
-    { label: "已过期", max: 0, credits: 0, accounts: new Set<string>() },
-    { label: "3 天内", max: 3, credits: 0, accounts: new Set<string>() },
-    { label: "7 天内", max: 7, credits: 0, accounts: new Set<string>() },
-    { label: "30 天内", max: 30, credits: 0, accounts: new Set<string>() },
-    { label: "90 天内", max: 90, credits: 0, accounts: new Set<string>() },
+    { label: "fusion.credits.band.expired", max: 0, credits: 0, accounts: new Set<string>() },
+    { label: "fusion.credits.band.d3", max: 3, credits: 0, accounts: new Set<string>() },
+    { label: "fusion.credits.band.d7", max: 7, credits: 0, accounts: new Set<string>() },
+    { label: "fusion.credits.band.d30", max: 30, credits: 0, accounts: new Set<string>() },
+    { label: "fusion.credits.band.d90", max: 90, credits: 0, accounts: new Set<string>() },
   ];
   for (const item of items) {
     for (const segment of item.segments) {
@@ -81,6 +75,7 @@ function distribution(items: CreditExpiryResponse["items"]) {
 }
 
 export function Credits() {
+  const t = useT();
   const [days, setDays] = useState("30");
   const [burnDays, setBurnDays] = useState("7");
   const params = new URLSearchParams({ days, burn_days: burnDays });
@@ -91,40 +86,47 @@ export function Credits() {
   return (
     <>
       <PageTitle
-        title="积分到期提醒"
-        description="FEFO 批次明细、日均需耗与到期分布；仅展示到期日落入窗口内的批次。"
+        title={t("fusion.credits.pageTitle")}
+        description={t("fusion.credits.pageDesc")}
         actions={
           <>
-            {FUSION_DEVELOPMENT && <Badge tone="warn">本地演示数据</Badge>}
+            {FUSION_DEVELOPMENT && <Badge tone="warn">{t("fusion.common.demoData")}</Badge>}
             <button onClick={resource.reload} disabled={resource.loading}>
               <Icon name="refresh" />
-              刷新
+              {t("fusion.common.refresh")}
             </button>
           </>
         }
       />
-      <Panel title="提醒窗口" hint={`阈值 ${data?.threshold_days ?? 3} 天内为紧急`}>
+      <Panel
+        title={t("fusion.credits.windowPanel")}
+        hint={t("fusion.credits.windowHint", { days: data?.threshold_days ?? 3 })}
+      >
         <div className={s.fusionControls}>
           <label className={s.field}>
-            展示窗口
-            <select aria-label="展示窗口" value={days} onChange={(e) => setDays(e.target.value)}>
-              {WINDOWS.map(([value, label]) => (
+            {t("fusion.credits.displayWindow")}
+            <select
+              aria-label={t("fusion.credits.displayWindow")}
+              value={days}
+              onChange={(e) => setDays(e.target.value)}
+            >
+              {WINDOWS.map((value) => (
                 <option value={value} key={value}>
-                  {label}
+                  {t("fusion.credits.days", { days: value })}
                 </option>
               ))}
             </select>
           </label>
           <label className={s.field}>
-            日均需耗窗口
+            {t("fusion.credits.burnWindow")}
             <select
-              aria-label="日均需耗窗口"
+              aria-label={t("fusion.credits.burnWindow")}
               value={burnDays}
               onChange={(e) => setBurnDays(e.target.value)}
             >
-              {BURNS.map(([value, label]) => (
+              {BURNS.map((value) => (
                 <option value={value} key={value}>
-                  {label}
+                  {t("fusion.credits.days", { days: value })}
                 </option>
               ))}
             </select>
@@ -135,51 +137,60 @@ export function Credits() {
       {resource.error ? (
         <ErrorNotice message={resource.error} retry={resource.reload} />
       ) : resource.loading ? (
-        <Skeleton variant="card" label="积分提醒加载中" />
+        <Skeleton variant="card" label={t("fusion.credits.loading")} />
       ) : data ? (
         <>
           <div className={s.stats}>
             <StatCard
-              label="窗口内到期积分"
+              label={t("fusion.credits.expiringCredits")}
               value={metric(data.summary.expiring_credits)}
-              hint={`${data.summary.expiring_accounts} 个账号`}
+              hint={t("fusion.credits.accountCount", { count: data.summary.expiring_accounts })}
               icon="coin"
             />
             <StatCard
-              label="紧急账号"
+              label={t("fusion.credits.urgentAccounts")}
               value={String(data.summary.urgent_accounts)}
-              hint={`${data.threshold_days} 天内到期`}
+              hint={t("fusion.credits.expiringWithin", { days: data.threshold_days })}
               icon="alert"
             />
             <StatCard
-              label="全部剩余"
+              label={t("fusion.credits.totalRemaining")}
               value={metric(data.summary.total_credits)}
-              hint="全部账号合计"
+              hint={t("fusion.credits.allAccounts")}
               icon="leaf"
             />
             <StatCard
-              label="日均需耗"
+              label={t("fusion.credits.dailyBurn")}
               value={
-                data.summary.daily_burn_known ? `${metric(data.summary.daily_burn)} / 天` : "未知"
+                data.summary.daily_burn_known
+                  ? t("fusion.credits.perDay", { value: metric(data.summary.daily_burn) })
+                  : t("fusion.common.unknown")
               }
-              hint={`按最近 ${data.burn_window_days} 天消耗估算`}
+              hint={t("fusion.credits.burnEstimate", { days: data.burn_window_days })}
               icon="chart"
             />
           </div>
 
           {dist && dist.total > 0 && (
-            <Panel title="到期分布" hint="按批次剩余积分聚合">
+            <Panel
+              title={t("fusion.credits.distribution")}
+              hint={t("fusion.credits.distributionHint")}
+            >
               <div className={s.distribution}>
                 {dist.bands.map((band) => (
                   <div key={band.label}>
                     <div>
-                      <strong>{band.label}</strong>
+                      <strong>{t(band.label)}</strong>
                       <span>{metric(band.credits)}</span>
                     </div>
                     <progress
                       max={dist.peak || 1}
                       value={band.credits}
-                      aria-label={`${band.label}到期积分 ${metric(band.credits)}，${band.accounts.size} 个账号`}
+                      aria-label={t("fusion.credits.bandAria", {
+                        band: t(band.label),
+                        credits: metric(band.credits),
+                        accounts: band.accounts.size,
+                      })}
                     />
                   </div>
                 ))}
@@ -201,35 +212,45 @@ export function Credits() {
                       <small>{profileLabel(item.profile)}</small>
                     </div>
                     <Badge tone={item.urgent ? "bad" : "warn"}>
-                      {item.urgent ? "紧急" : `${metric(item.days_remaining)} 天后到期`}
+                      {item.urgent
+                        ? t("fusion.credits.urgent")
+                        : t("fusion.credits.expiresInDays", {
+                            days: metric(item.days_remaining),
+                          })}
                     </Badge>
                   </div>
                   <dl className={s.creditMetrics}>
                     <div>
-                      <dt>账号剩余</dt>
+                      <dt>{t("fusion.credits.accountRemaining")}</dt>
                       <dd>
-                        {item.remaining_credits === null ? "未知" : metric(item.remaining_credits)}
+                        {item.remaining_credits === null
+                          ? t("fusion.common.unknown")
+                          : metric(item.remaining_credits)}
                       </dd>
                     </div>
                     <div>
-                      <dt>日均需耗</dt>
+                      <dt>{t("fusion.credits.dailyBurn")}</dt>
                       <dd>
-                        {item.daily_burn === null ? "未知" : `${metric(item.daily_burn)} / 天`}
+                        {item.daily_burn === null
+                          ? t("fusion.common.unknown")
+                          : t("fusion.credits.perDay", { value: metric(item.daily_burn) })}
                       </dd>
                     </div>
                     <div>
-                      <dt>预计耗尽</dt>
+                      <dt>{t("fusion.credits.projectedExhaustion")}</dt>
                       <dd>
                         {item.projected_exhaustion_days === null
-                          ? "未知"
-                          : `${metric(item.projected_exhaustion_days)} 天`}
+                          ? t("fusion.common.unknown")
+                          : t("fusion.credits.daysValue", {
+                              days: metric(item.projected_exhaustion_days),
+                            })}
                       </dd>
                     </div>
                     <div>
-                      <dt>最近到期</dt>
+                      <dt>{t("fusion.credits.soonestExpiry")}</dt>
                       <dd>
                         {item.soonest_expiry === null ? (
-                          "未知"
+                          t("fusion.common.unknown")
                         ) : (
                           <>
                             <Countdown until={item.soonest_expiry} fallback="" />
@@ -245,9 +266,9 @@ export function Credits() {
                     <table>
                       <thead>
                         <tr>
-                          <th>批次（FEFO 序）</th>
-                          <th>剩余 / 总量</th>
-                          <th>到期</th>
+                          <th>{t("fusion.credits.colBatch")}</th>
+                          <th>{t("fusion.credits.colRemainingTotal")}</th>
+                          <th>{t("fusion.credits.colExpiry")}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -255,14 +276,16 @@ export function Credits() {
                           <tr key={index}>
                             <td>
                               <strong>{text(segment.source)}</strong>
-                              <small>{segment.package_code ?? "无批次号"}</small>
+                              <small>
+                                {segment.package_code ?? t("fusion.credits.noPackageCode")}
+                              </small>
                             </td>
                             <td>
                               {metric(segment.remaining)} / {metric(segment.total)}
                             </td>
                             <td>
                               {number(segment.expires_at) === null
-                                ? "未知"
+                                ? t("fusion.common.unknown")
                                 : new Date(segment.expires_at * 1000).toLocaleDateString("zh-CN")}
                             </td>
                           </tr>
@@ -274,15 +297,15 @@ export function Credits() {
               ))}
             </div>
           ) : (
-            <Panel title="到期批次">
-              <Empty title="窗口内没有到期批次">
-                当前窗口 {days} 天内没有积分到期；可放宽窗口查看更远批次。
+            <Panel title={t("fusion.credits.batches")}>
+              <Empty title={t("fusion.credits.noBatches")}>
+                {t("fusion.credits.noBatchesHint", { days })}
               </Empty>
             </Panel>
           )}
         </>
       ) : (
-        <Empty title="暂无积分快照" />
+        <Empty title={t("fusion.credits.noSnapshot")} />
       )}
     </>
   );

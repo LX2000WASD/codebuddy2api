@@ -401,10 +401,15 @@ class DeltaNormalizationTests(GatewayFixture, unittest.TestCase):
         self.assertFalse(gateway._normalize_chat_event({"choices": []}))
 
 
-class AuditDegradationHealTests(unittest.TestCase):
-    """一次成功的记录写入应清除 sticky 降级标记(统计实际完整时不永久置灰)。"""
+class AuditDegradationWindowTests(unittest.TestCase):
+    """降级横幅只在窗口内可见（上游 24h 窗口口径，取代本地 _heal 自愈）。
 
-    def test_successful_ingest_heals_transient_fault(self):
+    sqlite 忙等是真实存储故障（非 TimeoutError），按上游语义会置位 degraded；
+    上游删除了本地"成功写入即清除标记"的 _heal 钩子，改为按 DEGRADED_WINDOW_SECONDS
+    过期自动消失，因此这里断言"成功写入不清除、窗口过期才清除"。
+    """
+
+    def test_degradation_clears_only_outside_the_window(self):
         import tempfile
         from contextlib import closing
         import sqlite3
@@ -419,12 +424,22 @@ class AuditDegradationHealTests(unittest.TestCase):
                 store.record_request(record)   # 成功写入
                 with closing(sqlite3.connect(path)) as other:
                     other.execute("BEGIN IMMEDIATE")
-                    store.record_request(dict(record, id="r2"))  # 制造一次锁超时故障
-                self.assertTrue(store.storage()["degraded"])     # 故障可见
+                    store.record_request(dict(record, id="r2"))  # 制造一次 sqlite 忙等故障
+                health = store.storage()
+                self.assertTrue(health["degraded"])              # 真实存储故障可见
+                self.assertEqual(health["recent_failures"], 1)
                 ok = store.record_request(dict(record, id="r3"))  # 再次成功写入
                 self.assertTrue(ok["ok"])
-                self.assertFalse(store.storage()["degraded"])    # 自愈
+                # 上游语义：成功写入不清除窗口内的失败记录，横幅不"自愈"。
+                self.assertTrue(store.storage()["degraded"])
                 self.assertEqual(store.storage()["dropped_records"], 1)  # 累计丢失仍如实保留
+                # 把失败事件推出 24h 窗口：横幅消失，终身计数仍保留。
+                store.failure_events = [time.monotonic() - 25 * 3600]
+                health = store.storage()
+                self.assertFalse(health["degraded"])
+                self.assertEqual(health["recent_failures"], 0)
+                self.assertEqual(health["failure_count"], 1)
+                self.assertEqual(health["dropped_records"], 1)
             finally:
                 store.close()
 

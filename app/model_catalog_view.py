@@ -1,7 +1,7 @@
 """Derive a shared international catalog without changing account-owned source caches."""
 from copy import deepcopy
-import math
-import re
+
+from .model_rates import multiplier_value
 
 
 INTERNATIONAL = frozenset(("intl-cli", "intl-work"))
@@ -16,14 +16,9 @@ class SharedModel(dict):
         self.catalog_sources = tuple(sources)
 
 
-def _rate(value):
-    if not isinstance(value, str):
-        return None
-    match = re.fullmatch(r"x\s*([0-9]+(?:\.[0-9]+)?)\s*(?:credits?)?", value.strip(), re.IGNORECASE)
-    if not match:
-        return None
-    number = float(match.group(1))
-    return number if math.isfinite(number) else None
+# Delegates to the single shared parser: this module used to carry a fourth copy of
+# the same regex. The name is kept because the module's own callers use it.
+_rate = multiplier_value
 
 
 def _flag(values, *, restrictive=False):

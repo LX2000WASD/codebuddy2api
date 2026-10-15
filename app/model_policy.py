@@ -132,10 +132,6 @@ def sticky_scope(config, key, model):
     return key
 
 
-def public_name(fallback):
-    return (_request_policy.get() or {}).get("public_model", fallback)
-
-
 def public_details(gateway, region=None):
     """Publish each route using only its upstream capabilities and allowed accounts."""
     config = gateway.CONFIG

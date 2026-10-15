@@ -207,19 +207,24 @@ test("daily range uses hourly points, with desktop and mobile glass layouts", as
   await experienceAPI(page);
   await page.goto("/dashboard");
   await page.getByLabel("统计时间范围").selectOption("1");
-  await expect(page.getByRole("img", { name: "按小时请求量趋势" }).locator("circle")).toHaveCount(
-    24,
-  );
+  await expect(
+    page.getByRole("img", { name: "按小时用量趋势" }).locator('[data-series="requests"] circle'),
+  ).toHaveCount(24);
   await page.getByRole("button", { name: "收起侧栏" }).click();
   await expect(page.locator("aside")).toHaveCSS("width", "76px");
   await page.screenshot({ path: "test-results/glass-overview-hourly.png" });
   await page.getByLabel("统计粒度").selectOption("day");
-  await expect(page.getByRole("img", { name: "按日请求量趋势" }).locator("circle")).toHaveCount(1);
+  await expect(
+    page.getByRole("img", { name: "按日用量趋势" }).locator('[data-series="requests"] circle'),
+  ).toHaveCount(1);
   await page.getByLabel("统计粒度").selectOption("hour");
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByRole("img", { name: "按小时请求量趋势" })).toBeVisible();
+  await expect(page.getByRole("img", { name: "按小时用量趋势" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: "test-results/glass-overview-mobile.png" });
+  // The collapsed mobile sidebar stows the nav strip; only the expand bar remains.
+  await expect(page.getByRole("link", { name: "模型路由", exact: true })).toBeHidden();
+  await page.getByRole("button", { name: "展开侧栏" }).click();
   await page.getByRole("link", { name: "模型路由", exact: true }).click();
   await page.getByRole("button", { name: "新增模型" }).click();
   await page.getByRole("radio", { name: /指定账号/ }).check();

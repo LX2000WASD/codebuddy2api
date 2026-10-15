@@ -5,6 +5,7 @@ import { lockPage } from "./modal";
 import { useExiting } from "./presence";
 export { DrawerPresence } from "./presence";
 import s from "./ui.module.scss";
+import { useT } from "./i18n";
 
 export function Icon({ name = "grid" }: { name?: string }) {
   const paths: Record<string, string> = {
@@ -17,7 +18,7 @@ export function Icon({ name = "grid" }: { name?: string }) {
     plus: "M12 5v14M5 12h14",
     collapse: "M4 4h16v16H4zM9 4v16m7-12-3 4 3 4",
     expand: "M4 4h16v16H4zM9 4v16m4-12 3 4-3 4",
-    refresh: "M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1",
+    refresh: "M23 4v6h-6M1 20v-6h6M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15",
     close: "m6 6 12 12M6 18 18 6",
     shield: "m12 2 8 3v6c0 5-8 11-8 11S4 16 4 11V5l8-3Zm-4 9 3 3 5-6",
     leaf: "M20 3C7 2 1 8 5 16s17 4 15-13ZM5 20 16 8",
@@ -27,10 +28,18 @@ export function Icon({ name = "grid" }: { name?: string }) {
     sun: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5",
     moon: "M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11Z",
     system: "M3 4h18v13H3zM8 21h8m-4-4v4",
+    // Local fusion icons (chart/pulse/bell/coin) and upstream's trend/storage icons
+    // (down/up/cache/database) are disjoint names — union, no collisions.
     chart: "M4 20h16M7 20v-6M12 20V6M17 20v-10",
     pulse: "M2 12h4l3-8 4 16 3-8h6",
     bell: "M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8M10.3 21a2 2 0 0 0 3.4 0",
     coin: "M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6",
+    down: "M12 3v12m0 0 4-4m-4 4-4-4M5 21h14",
+    up: "M12 21V9m0 0 4 4m-4-4-4 4M5 3h14",
+    cache:
+      "M12 3c4.4 0 8 1.3 8 3s-3.6 3-8 3-8-1.3-8-3 3.6-3 8-3Zm8 3v12c0 1.7-3.6 3-8 3s-8-1.3-8-3V6m16 6c0 1.7-3.6 3-8 3s-8-1.3-8-3",
+    database:
+      "M12 8c4.4 0 8-1.3 8-3s-3.6-3-8-3-8 1.3-8 3 3.6 3 8 3Zm-8 2v9c0 1.7 3.6 3 8 3s8-1.3 8-3v-9M4 14.5c0 1.7 3.6 3 8 3s8-1.3 8-3",
   };
   return (
     <svg
@@ -57,10 +66,11 @@ export function PageTitle({
   description?: string;
   actions?: ReactNode;
 }) {
+  // The header breadcrumb already names the page; keep the h1 for screen readers only.
   return (
     <div className={s.pageTitle}>
       <div>
-        <h1>{title}</h1>
+        <h1 className={s.srOnly}>{title}</h1>
         {description && <p>{description}</p>}
       </div>
       <div className={s.actions}>{actions}</div>
@@ -68,19 +78,22 @@ export function PageTitle({
   );
 }
 export function ErrorNotice({ message, retry }: { message: string | null; retry?: () => void }) {
+  const t = useT();
   return message ? (
     <div className={s.error} role="alert">
       <Icon name="alert" />
       <span>{message}</span>
-      {retry && <button onClick={retry}>重试</button>}
+      {retry && <button onClick={retry}>{t("common.retry")}</button>}
     </div>
   ) : null;
 }
-export function Empty({ title = "暂无数据", children }: { title?: string; children?: ReactNode }) {
+export function Empty({ title, children }: { title?: string; children?: ReactNode }) {
+  const t = useT();
+  const heading = title ?? t("common.empty");
   return (
     <div className={s.empty}>
       <Icon name="leaf" />
-      <h3>{title}</h3>
+      <h3>{heading}</h3>
       {children && <p>{children}</p>}
     </div>
   );
@@ -94,12 +107,13 @@ export function ResourceState({
   error: string | null;
   reload: () => void;
 }) {
+  const t = useT();
   return (
     <>
       {loading && (
         <div className={s.loading} role="status">
           <span />
-          加载中…
+          {t("common.loading")}
         </div>
       )}
       <ErrorNotice message={error} retry={reload} />
@@ -150,6 +164,7 @@ export function Drawer({
   dismissDisabled?: boolean;
   className?: string;
 }) {
+  const t = useT();
   const exiting = useExiting();
   const ref = useRef<HTMLDialogElement>(null);
   const outside = useRef(false);
@@ -189,7 +204,12 @@ export function Drawer({
       <section className={`${s.drawer} ${className}`} inert={exiting}>
         <div className={s.drawerHead}>
           <h2 id={id}>{title}</h2>
-          <button type="button" aria-label="关闭抽屉" disabled={dismissDisabled} onClick={onClose}>
+          <button
+            type="button"
+            aria-label={t("common.closeDrawer")}
+            disabled={dismissDisabled}
+            onClick={onClose}
+          >
             <Icon name="close" />
           </button>
         </div>
@@ -269,13 +289,14 @@ export function Countdown({
 
 export const CLEAR_CONFIRMATION = "清空全部日志与统计";
 export function ClearLogs({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const t = useT();
   const [scope, setScope] = useState<"details" | "all">("details");
   const [confirmation, setConfirmation] = useState("");
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
-    <Drawer title="清理日志" onClose={onClose} dismissDisabled={busy}>
+    <Drawer title={t("logs.clear")} onClose={onClose} dismissDisabled={busy}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -290,8 +311,7 @@ export function ClearLogs({ onClose, onDone }: { onClose: () => void; onDone: ()
               ...(scope === "all" ? { api_key: currentKey } : {}),
             })
             .then((response) => {
-              if (object(response.data).ok !== true)
-                throw new Error("后端未确认清理成功，请检查存储状态");
+              if (object(response.data).ok !== true) throw new Error(t("logs.clear.unconfirmed"));
               onDone();
               onClose();
             })
@@ -300,7 +320,7 @@ export function ClearLogs({ onClose, onDone }: { onClose: () => void; onDone: ()
         }}
       >
         <label className={s.field}>
-          清理范围
+          {t("logs.clear.scope")}
           <select
             value={scope}
             onChange={(e) => {
@@ -309,19 +329,15 @@ export function ClearLogs({ onClose, onDone }: { onClose: () => void; onDone: ()
               setKey("");
             }}
           >
-            <option value="details">仅清空明细 · 保留统计</option>
-            <option value="all">全部日志与统计</option>
+            <option value="details">{t("logs.clear.detailsOnly")}</option>
+            <option value="all">{t("logs.clear.everything")}</option>
           </select>
         </label>
         <div className={s.warning}>
           <Icon name="alert" />
           <div>
-            <strong>{scope === "all" ? CLEAR_CONFIRMATION : "仅清空日志明细，保留累计统计"}</strong>
-            <p>
-              {scope === "all"
-                ? "将永久删除全部请求明细、事件日志和历史统计，不可撤销。建议先备份；凭证及网关配置不受影响。"
-                : "将删除请求明细和事件日志，保留历史统计。不可撤销，建议先备份。"}
-            </p>
+            <strong>{scope === "all" ? CLEAR_CONFIRMATION : t("logs.clear.detailsStrong")}</strong>
+            <p>{scope === "all" ? t("logs.clear.allWarning") : t("logs.clear.detailsWarning")}</p>
           </div>
         </div>
         {scope === "all" && (
@@ -335,7 +351,7 @@ export function ClearLogs({ onClose, onDone }: { onClose: () => void; onDone: ()
               />
             </label>
             <label className={s.field}>
-              当前 API key
+              {t("common.currentApiKey")}
               <input
                 type="password"
                 value={key}
@@ -351,7 +367,7 @@ export function ClearLogs({ onClose, onDone }: { onClose: () => void; onDone: ()
           className={s.danger}
           disabled={busy || (scope === "all" && (confirmation !== CLEAR_CONFIRMATION || !key))}
         >
-          {busy ? "正在清理…" : "确认不可撤销的清理"}
+          {busy ? t("logs.clear.busy") : t("logs.clear.confirm")}
         </button>
       </form>
     </Drawer>

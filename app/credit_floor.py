@@ -31,6 +31,8 @@ import tempfile
 import threading
 import time
 
+from .model_rates import multiplier_value as _multiplier_value
+
 VERSION = 1
 MAX_ACCOUNTS = 256          # Bounded table, matching the credential pool's practical size.
 MAX_MODELS = 64             # Bounded per-account model rows.
@@ -42,7 +44,6 @@ _IDENTITY = re.compile(r"[0-9a-f]{64}")
 # Model and profile identifiers may contain slashes (vendor-qualified names), so allow the
 # punctuation seen in routing rather than assuming a bare token.
 _TOKEN = re.compile(r"[A-Za-z0-9_.:/\-]{1,128}")
-_RATE = re.compile(r"x\s*([0-9]+(?:\.[0-9]+)?)\s*(?:credits?)?", re.IGNORECASE)
 _FIELDS = {"cost_per_1k", "samples", "last_seen"}
 
 
@@ -67,17 +68,9 @@ def _valid_model(value):
     return isinstance(value, str) and _TOKEN.fullmatch(value) is not None
 
 
-def multiplier_value(credits):
-    """Parse an official model rate, returning None for missing or unknown formats."""
-    if not isinstance(credits, str):
-        return None
-    match = _RATE.fullmatch(credits.strip())
-    if match is None:
-        return None
-    try:
-        return float(match.group(1))
-    except ValueError:
-        return None
+# Re-exported so existing callers (and tests) keep importing the name from here,
+# while the accepted grammar lives in one place: app/model_rates.py.
+multiplier_value = _multiplier_value
 
 
 class CostLedger:

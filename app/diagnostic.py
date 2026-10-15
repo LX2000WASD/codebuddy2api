@@ -14,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from .admin_auth import error_response
+from .client_profiles import inventory_identity
 from .health_endpoints import pool_counts
 from .site_routing import DOMAIN_PROFILES
 
@@ -30,7 +31,7 @@ def _safe_text(value, limit=_REASON_LIMIT):
 
 def _identity(entry, path):
     """Same identity formula as Management.admin_credential_inventory."""
-    return entry.get("account_key") or hashlib.sha256(str(path).encode()).hexdigest()
+    return inventory_identity(entry, path)
 
 
 def _account_view(row, identity, now):
@@ -170,6 +171,11 @@ def diagnostic(config):
 
 def install(app, config):
     """Register the diagnostic endpoint behind management authentication."""
+    # Idempotent: see app/health_endpoints.py. Kept per module so a repeated
+    # install of one fusion surface cannot suppress another's registration.
+    if getattr(app.state, "diagnostic_installed", False):
+        return
+    app.state.diagnostic_installed = True
 
     @app.get("/admin/diagnostic")
     async def admin_diagnostic(request: Request):

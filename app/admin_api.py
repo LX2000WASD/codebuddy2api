@@ -58,12 +58,20 @@ def _public_credential(item):
     fields = {"id", "account_key", "name", "filename", "enabled", "label", "profile", "region", "site",
               "uid", "nickname", "expires_at", "expiresAt", "health", "cooldown", "cooldowns", "credits",
               "credits_by_profile", "catalog", "catalog_sync", "sync", "generation", "auth_broken",
-              "models", "remaining", "enterprise_id", "product", "status", "sync_pending", "sync_error",
+              "models", "remaining", "enterprise_id", "enterprise", "enterpriseName", "product", "status", "sync_pending", "sync_error",
               "fail_until", "cooldown_until", "cooldown_remaining", "last_failure_at", "catalog_ready", "bindings",
               "auto_checkin", "auto_travel", "travel_supported", "checkin", "travel",
               "trial_supported", "trial",
               "daily_chat_supported", "auto_daily_chat", "daily_chat",
               "token_expired", "token_expires_at", "last_refresh_time", "sessions", "sticky_sessions", "last_error_code",
+              "usage_stats",
+              # Fusion pool state promised by the contract: paused (§3 accounts[].paused,
+              # §10 pool.snapshot) plus the failure counters the diagnostic view already
+              # reports. model_cooldowns is deliberately NOT listed: pool.snapshot()
+              # emits it as a {model: "MM-DD HH:MM:SS"} dict while the contract (§3) and
+              # web/src/fusion/types.ts declare an array; the array-shaped data reaches
+              # the UI through "cooldowns" (app/gateway_management.py) instead.
+              "paused", "auth_fails", "transport_fails", "transport_penalty_until",
               # Legacy companions consumed by non-WebUI clients (cpa-plugin status page).
               "healthy", "enterpriseName", "auth_file"}
     result = {key: value for key, value in item.items() if key in fields}
@@ -187,7 +195,21 @@ def install_admin(app, config, gateway):
         if (path, method) in (("/admin/oauth/start", "POST"), ("/admin/oauth/poll", "GET")):
             return await run_in_threadpool(oauth_dispatch, request)
         if path == "/admin/credentials" and method == "GET":
-            return JSONResponse({"credentials": [_public_credential(item) for item in await run_in_threadpool(inventory)]})
+            def list_credentials():
+                items = inventory()
+                stats_map = audit.credential_stats() if hasattr(audit, "credential_stats") else None
+                if not isinstance(stats_map, dict):
+                    stats_map = {}
+                out = []
+                for item in items:
+                    pub = _public_credential(item)
+                    if stats_map and "usage_stats" not in pub:
+                        stats = stats_map.get(pub.get("id")) or stats_map.get(pub.get("name"))
+                        if stats:
+                            pub["usage_stats"] = stats
+                    out.append(pub)
+                return out
+            return JSONResponse({"credentials": await run_in_threadpool(list_credentials)})
         if path.startswith("/admin/credentials/") and method == "DELETE":
             name = path.removeprefix("/admin/credentials/")
             if not _valid_name(name):
@@ -292,8 +314,14 @@ def install_admin(app, config, gateway):
                     rule = snapshot["models"].get(source, {"public_id": source, "enabled": True, "keep_original": False,
                                                            "region": None, "profile": None, "credential_ids": []})
                     models.append({**item, **rule})
-                return JSONResponse({"revision": snapshot["revision"], "models": models,
-                                     "model_capability_guard": config.get("model_capability_guard", True)})
+                resolved = {item["key"]: item for item in resolve_settings(config)}
+                return JSONResponse({
+                    "revision": snapshot["revision"], "models": models,
+                    "model_guard": config.get("model_guard", True),
+                    "model_guard_locked": bool(resolved.get("model_guard", {}).get("locked")),
+                    "model_capability_guard": config.get("model_capability_guard", True),
+                    "model_capability_guard_locked": bool(resolved.get("model_capability_guard", {}).get("locked")),
+                })
         return await run_in_threadpool(build_models)
 
     def checked_rule(source, data, *, creating=False):
@@ -506,7 +534,7 @@ def install_admin(app, config, gateway):
             raise ValueError("limit 必须为整数") from None
         if not 1 <= limit <= 200:
             raise ValueError("limit 必须为 1 至 200")
-        filters = {key: params[key] for key in ("model", "credential", "profile", "status", "search") if key in params}
+        filters = {key: params[key] for key in ("model", "credential", "profile", "status", "search", "client_ip") if key in params}
         if any(len(value) > 256 for value in filters.values()) or len(params.get("cursor", "")) > 2048:
             raise ValueError("日志筛选参数过长")
         result = await run_in_threadpool(audit.list_records, kind, limit, params.get("cursor"), **filters)
@@ -532,6 +560,35 @@ def install_admin(app, config, gateway):
         result = await run_in_threadpool(audit.clear, scope)
         if isinstance(result, dict) and result.get("ok") is False:
             return error_response(503, "日志清理未完成，请检查审计存储状态")
+        return JSONResponse(result)
+
+    @route("GET", "/admin/storage")
+    async def storage_get(request):
+        # A degraded store still reports its own health; a 503 here would hide
+        # the diagnostics this endpoint exists to surface.
+        result = await run_in_threadpool(audit.storage)
+        archives = []
+        path = getattr(audit, "path", None)
+        if path:
+            try:
+                directory = Path(str(path)).parent / "archives"
+                archives = sorted((entry.name for entry in directory.glob("audit-*.jsonl")), reverse=True)[:20]
+            except OSError as exc:
+                audit._fault(exc)
+        return JSONResponse({**result, "archives": archives})
+
+    @route("POST", "/admin/storage/archive")
+    async def storage_archive(request):
+        body = await _body(request, 8192)
+        days = body.get("days")
+        if not isinstance(days, int) or isinstance(days, bool) or not 1 <= days <= 3650:
+            raise ValueError("归档窗口必须为 1 至 3650 天")
+        result = await run_in_threadpool(audit.archive, days)
+        if not result.get("ok"):
+            return error_response(503, "归档未完成，请检查审计存储状态")
+        event("storage_archive", {"days": days, "file": result.get("file"),
+                                  "requests": result.get("archived_requests"),
+                                  "events": result.get("archived_events")})
         return JSONResponse(result)
 
     @route("GET", "/admin/dashboard")
@@ -563,9 +620,14 @@ def install_admin(app, config, gateway):
 
     # -- 融合层：分位数 / 维度切分 / 生成速率与积分到期视图 ----------------
 
-    def _stats_days(request):
-        """Shared window validation for the fusion statistics endpoints."""
-        days = request.query_params.get("days", "7")
+    def _stats_days(request, default="7"):
+        """Shared window validation for the fusion statistics endpoints.
+
+        The default differs per endpoint by contract: summary/series use 7 days,
+        while /admin/stats/dimensions is a ranking view where a 7-day window is
+        too short, so it passes default="30" (docs/fusion-api.md §4.1-§4.3).
+        """
+        days = request.query_params.get("days", default)
         try:
             days = int(str(days).strip())
         except ValueError:
@@ -631,7 +693,7 @@ def install_admin(app, config, gateway):
         dimension = request.query_params.get("dimension")
         if dimension not in ("model", "profile", "credential"):
             raise ValueError("dimension 必须为 model、profile 或 credential")
-        days = _stats_days(request)
+        days = _stats_days(request, default="30")
         # The credential list mirrors /admin/credentials so the picker can reuse labels.
         rows = {str(item.get("id")): item for item in inventory()} if dimension == "credential" else {}
 

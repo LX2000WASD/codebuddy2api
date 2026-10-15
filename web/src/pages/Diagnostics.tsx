@@ -1,4 +1,5 @@
 import { object, text } from "../api";
+import { t, useT } from "../i18n";
 import {
   Badge,
   Countdown,
@@ -16,14 +17,15 @@ import type { DiagnosticResponse, ServiceStatus } from "../fusion/types";
 import s from "../ui.module.scss";
 
 function normalizeStatus(value: unknown): ServiceStatus {
-  const data = object(value, "服务状态");
-  if (typeof data.service !== "string") throw new Error("服务状态缺少 service");
+  const data = object(value, t("fusion.diagnostics.statusContext"));
+  if (typeof data.service !== "string")
+    throw new Error(t("fusion.diagnostics.statusMissingService"));
   return data as ServiceStatus;
 }
 function normalizeDiagnostic(value: unknown): DiagnosticResponse {
-  const data = object(value, "诊断");
+  const data = object(value, t("fusion.diagnostics.context"));
   if (!Array.isArray(data.accounts) || !Array.isArray(data.model_locks))
-    throw new Error("诊断响应缺少账号或锁池列表");
+    throw new Error(t("fusion.diagnostics.missingLists"));
   return data as DiagnosticResponse;
 }
 
@@ -45,6 +47,7 @@ function StatCard({ label, value, icon }: { label: string; value: string; icon: 
 }
 
 export function Diagnostics() {
+  const t = useT();
   const status = useFusionResource("/admin/status", null, normalizeStatus);
   const diagnostic = useFusionResource("/admin/diagnostic", null, normalizeDiagnostic);
   const accounts = diagnostic.data?.accounts ?? [];
@@ -53,11 +56,11 @@ export function Diagnostics() {
   return (
     <>
       <PageTitle
-        title="诊断"
-        description="聚合服务状态、逐账号冷却与禁用原因、模型锁全池视图，仅在打开本页时拉取。"
+        title={t("nav.diagnostics")}
+        description={t("fusion.diagnostics.pageDesc")}
         actions={
           <>
-            {FUSION_DEVELOPMENT && <Badge tone="warn">本地演示数据</Badge>}
+            {FUSION_DEVELOPMENT && <Badge tone="warn">{t("fusion.common.demoData")}</Badge>}
             <button
               onClick={() => {
                 status.reload();
@@ -66,7 +69,7 @@ export function Diagnostics() {
               disabled={status.loading || diagnostic.loading}
             >
               <Icon name="refresh" />
-              刷新
+              {t("fusion.common.refresh")}
             </button>
           </>
         }
@@ -74,42 +77,47 @@ export function Diagnostics() {
       <ErrorNotice message={status.error} retry={status.reload} />
       <ErrorNotice message={diagnostic.error} retry={diagnostic.reload} />
       {status.loading && !status.data ? (
-        <Skeleton variant="card" label="服务状态加载中" />
+        <Skeleton variant="card" label={t("fusion.diagnostics.statusLoading")} />
       ) : status.data ? (
         <>
           <div className={s.stats}>
             <StatCard
-              label="凭证池"
-              value={`${status.data.pool.healthy}/${status.data.pool.total} 可用`}
+              label={t("fusion.diagnostics.pool")}
+              value={t("fusion.diagnostics.poolValue", {
+                healthy: status.data.pool.healthy,
+                total: status.data.pool.total,
+              })}
               icon="key"
             />
             <StatCard
-              label="冷却 / 停用"
+              label={t("fusion.diagnostics.coolingDisabled")}
               value={`${status.data.pool.cooling} / ${status.data.pool.disabled}`}
               icon="pulse"
             />
             <StatCard
-              label="可服务"
-              value={status.data.pool.servable ? "是" : "否"}
+              label={t("fusion.diagnostics.servable")}
+              value={status.data.pool.servable ? t("fusion.common.yes") : t("fusion.common.no")}
               icon="shield"
             />
             <StatCard
-              label="运行时长"
-              value={`${Math.floor(status.data.uptime_seconds / 3600)} 小时`}
+              label={t("fusion.diagnostics.uptime")}
+              value={t("fusion.diagnostics.uptimeHours", {
+                hours: Math.floor(status.data.uptime_seconds / 3600),
+              })}
               icon="chart"
             />
           </div>
           <div className={s.dashboardGrid}>
-            <Panel title="按产品分布">
+            <Panel title={t("fusion.diagnostics.byProfile")}>
               {Object.entries(status.data.by_profile).length ? (
                 <div className={s.tableWrap}>
                   <table>
                     <thead>
                       <tr>
-                        <th>产品</th>
-                        <th>账号</th>
-                        <th>可用</th>
-                        <th>可服务</th>
+                        <th>{t("fusion.diagnostics.colProduct")}</th>
+                        <th>{t("fusion.diagnostics.colAccounts")}</th>
+                        <th>{t("fusion.diagnostics.colHealthy")}</th>
+                        <th>{t("fusion.diagnostics.colServable")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -122,7 +130,7 @@ export function Diagnostics() {
                           <td>{row.healthy}</td>
                           <td>
                             <Badge tone={row.servable ? "good" : "bad"}>
-                              {row.servable ? "是" : "否"}
+                              {row.servable ? t("fusion.common.yes") : t("fusion.common.no")}
                             </Badge>
                           </td>
                         </tr>
@@ -131,22 +139,36 @@ export function Diagnostics() {
                   </table>
                 </div>
               ) : (
-                <Empty title="暂无产品分布" />
+                <Empty title={t("fusion.diagnostics.noProfile")} />
               )}
             </Panel>
-            <Panel title="子系统状态">
+            <Panel title={t("fusion.diagnostics.subsystems")}>
               <div className={s.subsystems}>
                 {[
-                  ["审计存储", status.data.audit, ["degraded", "failure_count"]],
-                  ["冷却存储", status.data.cooldown_storage, ["degraded", "rows"]],
-                  ["告警", status.data.alerts, ["enabled", "pending_deliveries"]],
+                  [
+                    t("fusion.diagnostics.sub.audit"),
+                    status.data.audit,
+                    ["degraded", "failure_count"],
+                  ],
+                  [
+                    t("fusion.diagnostics.sub.cooldown"),
+                    status.data.cooldown_storage,
+                    ["degraded", "rows"],
+                  ],
+                  [
+                    t("fusion.diagnostics.sub.alerts"),
+                    status.data.alerts,
+                    ["enabled", "pending_deliveries"],
+                  ],
                 ].map(([label, data]) => {
-                  const row = object(data, "子系统状态");
+                  const row = object(data, t("fusion.diagnostics.subsystems"));
                   const degraded = row.degraded === true;
                   return (
                     <div key={label as string}>
                       <strong>{label as string}</strong>
-                      <Badge tone={degraded ? "bad" : "good"}>{degraded ? "降级" : "正常"}</Badge>
+                      <Badge tone={degraded ? "bad" : "good"}>
+                        {degraded ? t("fusion.common.degraded") : t("fusion.common.normal")}
+                      </Badge>
                       {row.last_error ? <small>{text(row.last_error)}</small> : null}
                     </div>
                   );
@@ -157,19 +179,26 @@ export function Diagnostics() {
         </>
       ) : null}
 
-      <Panel title="账号诊断" hint={accounts.length ? `${accounts.length} 个账号` : undefined}>
+      <Panel
+        title={t("fusion.diagnostics.accounts")}
+        hint={
+          accounts.length
+            ? t("fusion.diagnostics.accountCount", { count: accounts.length })
+            : undefined
+        }
+      >
         {diagnostic.loading ? (
-          <Skeleton variant="table" label="账号诊断加载中" />
+          <Skeleton variant="table" label={t("fusion.diagnostics.accountsLoading")} />
         ) : accounts.length ? (
           <div className={s.tableWrap}>
             <table>
               <thead>
                 <tr>
-                  <th>账号 / 产品</th>
-                  <th>状态</th>
-                  <th>认证熔断</th>
-                  <th>模型冷却</th>
-                  <th>禁用原因 / 最近错误</th>
+                  <th>{t("fusion.diagnostics.colAccountProduct")}</th>
+                  <th>{t("fusion.diagnostics.colStatus")}</th>
+                  <th>{t("fusion.diagnostics.colCircuit")}</th>
+                  <th>{t("fusion.diagnostics.colModelCooldown")}</th>
+                  <th>{t("fusion.diagnostics.colDisabledReason")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -181,7 +210,7 @@ export function Diagnostics() {
                     </td>
                     <td>
                       <Badge tone={healthTone(account.health)}>{text(account.health)}</Badge>
-                      {account.paused && <Badge tone="neutral">已暂停</Badge>}
+                      {account.paused && <Badge tone="neutral">{t("fusion.common.paused")}</Badge>}
                     </td>
                     <td>
                       {account.cooldown && account.cooldown.fail_until > 0 ? (
@@ -190,7 +219,7 @@ export function Diagnostics() {
                           <small>{account.cooldown.reason}</small>
                         </>
                       ) : (
-                        <Badge>无熔断</Badge>
+                        <Badge>{t("fusion.diagnostics.noCircuit")}</Badge>
                       )}
                     </td>
                     <td>
@@ -201,24 +230,36 @@ export function Diagnostics() {
                           </small>
                         ))
                       ) : (
-                        <span>无</span>
+                        <span>{t("fusion.common.none")}</span>
                       )}
                     </td>
                     <td>
                       {account.disabled_reason && <small>{account.disabled_reason}</small>}
-                      {account.sync_error && <small>同步失败：{account.sync_error}</small>}
+                      {account.sync_error && (
+                        <small>
+                          {t("fusion.diagnostics.syncFailed", { message: account.sync_error })}
+                        </small>
+                      )}
                       {account.transport_penalty_remaining > 0 && (
                         <Badge tone="warn">
-                          传输连败出池 {Math.ceil(account.transport_penalty_remaining)}s
+                          {t("fusion.diagnostics.transportPenalty", {
+                            seconds: Math.ceil(account.transport_penalty_remaining),
+                          })}
                         </Badge>
                       )}
                       {account.transport_fails > 0 && account.transport_penalty_remaining <= 0 && (
-                        <small>传输连败 {account.transport_fails} 次</small>
+                        <small>
+                          {t("fusion.diagnostics.transportFails", {
+                            count: account.transport_fails,
+                          })}
+                        </small>
                       )}
                       {!account.disabled_reason &&
                         !account.sync_error &&
                         account.transport_penalty_remaining <= 0 &&
-                        account.transport_fails <= 0 && <span className={s.muted}>正常</span>}
+                        account.transport_fails <= 0 && (
+                          <span className={s.muted}>{t("fusion.common.normal")}</span>
+                        )}
                     </td>
                   </tr>
                 ))}
@@ -226,23 +267,26 @@ export function Diagnostics() {
             </table>
           </div>
         ) : (
-          <Empty title="暂无账号诊断" />
+          <Empty title={t("fusion.diagnostics.noAccounts")} />
         )}
       </Panel>
 
-      <Panel title="模型锁池" hint={locks.length ? `${locks.length} 组锁定` : undefined}>
+      <Panel
+        title={t("fusion.diagnostics.locks")}
+        hint={locks.length ? t("fusion.diagnostics.lockCount", { count: locks.length }) : undefined}
+      >
         {diagnostic.loading ? (
-          <Skeleton variant="table" label="锁池视图加载中" />
+          <Skeleton variant="table" label={t("fusion.diagnostics.locksLoading")} />
         ) : locks.length ? (
           <div className={s.tableWrap}>
             <table>
               <thead>
                 <tr>
-                  <th>产品 / 模型</th>
-                  <th>锁定账号</th>
-                  <th>全池解锁</th>
-                  <th>类型</th>
-                  <th>原因</th>
+                  <th>{t("fusion.diagnostics.colProductModel")}</th>
+                  <th>{t("fusion.diagnostics.colLocked")}</th>
+                  <th>{t("fusion.diagnostics.colPoolUnlock")}</th>
+                  <th>{t("fusion.diagnostics.colKind")}</th>
+                  <th>{t("fusion.diagnostics.colReason")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -254,25 +298,31 @@ export function Diagnostics() {
                     </td>
                     <td>
                       <Badge tone={lock.kind === "model_block" ? "warn" : "bad"}>
-                        {lock.locked_accounts} 个
+                        {t("fusion.diagnostics.lockedAccounts", { count: lock.locked_accounts })}
                       </Badge>
-                      <small>{lock.account_ids.join("、")}</small>
+                      <small>{lock.account_ids.join(t("fusion.common.listSeparator"))}</small>
                     </td>
                     <td>
                       {lock.all_unlock_in_seconds !== null && lock.all_unlock_in_seconds > 0 ? (
-                        <Countdown until={lock.latest_unlock_at} fallback="未知" />
+                        <Countdown
+                          until={lock.latest_unlock_at}
+                          fallback={t("fusion.common.unknown")}
+                        />
                       ) : (
-                        <Badge tone="good">已解锁</Badge>
+                        <Badge tone="good">{t("fusion.diagnostics.unlocked")}</Badge>
                       )}
                       {lock.earliest_unlock_at !== null && (
                         <small>
-                          最早解锁 <Countdown until={lock.earliest_unlock_at} />
+                          {t("fusion.diagnostics.earliestUnlock")}{" "}
+                          <Countdown until={lock.earliest_unlock_at} />
                         </small>
                       )}
                     </td>
                     <td>
                       <Badge tone={lock.kind === "model_block" ? "warn" : "neutral"}>
-                        {lock.kind === "model_block" ? "模型不可用" : "额度冷却"}
+                        {lock.kind === "model_block"
+                          ? t("fusion.diagnostics.kindModelBlock")
+                          : t("fusion.diagnostics.kindQuotaCooldown")}
                       </Badge>
                     </td>
                     <td>
@@ -284,7 +334,9 @@ export function Diagnostics() {
             </table>
           </div>
         ) : (
-          <Empty title="当前没有模型级锁定">模型 429 冷却与后端不可用锁定都会聚合在这里。</Empty>
+          <Empty title={t("fusion.diagnostics.noLocks")}>
+            {t("fusion.diagnostics.noLocksHint")}
+          </Empty>
         )}
       </Panel>
     </>

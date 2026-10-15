@@ -6,6 +6,7 @@ from fastapi import HTTPException
 
 from . import buddy, checkin, daily_chat, model_policy, travel, trial_management
 from .credential_io import credential_file_lock
+from .observability import observe_failure
 
 
 def run(gateway, action, identity=None, *, consent_revision=None):
@@ -100,7 +101,9 @@ def _audit(config, result, started=None):
                            consent_source=trip.get("consent_source"))
         audit.event("admin", "credential." + str(action), details)
     except Exception:
-        pass
+        # Never let auditing break the action, but do not swallow it silently either:
+        # an operator needs to learn that a credential action left no audit trail.
+        observe_failure("audit_event")
 
 
 def _reset_cooldowns(gateway, identity):
