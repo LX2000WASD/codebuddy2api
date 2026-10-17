@@ -11,9 +11,10 @@ import {
   Skeleton,
 } from "../components";
 import { profileLabel } from "../values";
+import { useNow } from "../hooks";
 import { useFusionResource } from "../fusion/client";
 import { FUSION_DEVELOPMENT } from "../fusion/client";
-import type { DiagnosticResponse, ServiceStatus } from "../fusion/types";
+import type { DiagnosticAccount, DiagnosticResponse, ServiceStatus } from "../fusion/types";
 import s from "../ui.module.scss";
 
 function normalizeStatus(value: unknown): ServiceStatus {
@@ -31,6 +32,19 @@ function normalizeDiagnostic(value: unknown): DiagnosticResponse {
 
 const healthTone = (health: string) =>
   health === "ready" ? "good" : health === "disabled" ? "neutral" : "warn";
+
+/**
+ * The live breaker deadline, or null when there is none.
+ *
+ * `fail_until` is an absolute epoch (seconds). A past deadline is a cooldown that
+ * already lifted, and 0 means "no breaker at all" — neither may render a badge, and
+ * the truthiness test alone kept an expired timestamp on screen forever.
+ */
+function coolingUntil(account: DiagnosticAccount, now: number): number | null {
+  const until = account.cooldown?.fail_until;
+  if (typeof until !== "number" || !Number.isFinite(until)) return null;
+  return until * 1000 > now ? until : null;
+}
 
 function StatCard({ label, value, icon }: { label: string; value: string; icon: string }) {
   return (
@@ -52,6 +66,9 @@ export function Diagnostics() {
   const diagnostic = useFusionResource("/admin/diagnostic", null, normalizeDiagnostic);
   const accounts = diagnostic.data?.accounts ?? [];
   const locks = diagnostic.data?.model_locks ?? [];
+  // One shared clock for every row: a deadline that has already passed is not a
+  // live breaker, so the badge must disappear instead of counting down from 0.
+  const now = useNow();
 
   return (
     <>
@@ -213,10 +230,12 @@ export function Diagnostics() {
                       {account.paused && <Badge tone="neutral">{t("fusion.common.paused")}</Badge>}
                     </td>
                     <td>
-                      {account.cooldown && account.cooldown.fail_until > 0 ? (
+                      {coolingUntil(account, now) !== null ? (
                         <>
-                          <Countdown until={account.cooldown.fail_until} />
-                          <small>{account.cooldown.reason}</small>
+                          <Countdown until={coolingUntil(account, now)} />
+                          {account.cooldown?.reason ? (
+                            <small>{account.cooldown.reason}</small>
+                          ) : null}
                         </>
                       ) : (
                         <Badge>{t("fusion.diagnostics.noCircuit")}</Badge>

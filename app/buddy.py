@@ -42,13 +42,16 @@ _MESSAGES = {
     "buddy_storage_error": "首领记录或审计无法保存，已停止后续操作，请检查存储状态",
     "buddy_write_unconfirmed": "首领操作结果未确认，未派遣；仅查询核验，不会自动重新领取",
     "buddy_reconciled": "猫猫已确认领取，本次未派遣，请查询旅行状态后继续",
+    "buddy_personal_only": "该账号不参与成长中心（仅个人账号可用），未继续领猫或派遣",
 }
 
 
 class Failure(ValueError):
-    def __init__(self, kind, status=None, code=None):
+    def __init__(self, kind, status=None, code=None, reason=None):
         super().__init__("Buddy response was not confirmed")
         self.details = {"error_kind": kind, "http_status": status, "code": code}
+        if reason:
+            self.details["reason"] = reason
 
 
 def _request(client, token, operation):
@@ -67,10 +70,15 @@ def _request(client, token, operation):
             raise Failure("protocol" if response.status_code == 200 else "http", response.status_code) from None
         code = payload.get("code") if isinstance(payload, dict) else None
         code = code if type(code) is int and -(2**31) <= code < 2**31 else None
+        # The growth center is personal-only: an enterprise tenant is refused with this
+        # message on every buddy endpoint, which is a capability bound and not an outage.
+        message = payload.get("msg", "") if isinstance(payload, dict) else ""
+        reason = "personal_only" if (isinstance(message, str) and len(message) <= 512
+                                     and "only available for personal users" in message.lower()) else None
         if response.status_code != 200:
-            raise Failure("http", response.status_code, code)
+            raise Failure("http", response.status_code, code, reason)
         if code is None or code != 0:
-            raise Failure("protocol" if code is None else "business", response.status_code, code)
+            raise Failure("protocol" if code is None else "business", response.status_code, code, reason)
         data = payload.get("data")
         if data is None and method == "POST":
             return {}
@@ -285,6 +293,12 @@ def prepare(client, token, *, can_write, context=None):
         details = error.details if isinstance(error, (Failure, buddy_task.TaskFailure)) else {
             "error_kind": "timeout" if isinstance(error, httpx.TimeoutException) else "network",
             "http_status": None, "code": None}
+        # A tenant is refused by the personal-only growth center on every buddy endpoint.
+        # Report the capability bound instead of a bare HTTP 403, and keep "reason" out of
+        # the stop() keyword fields because stop() already owns that name.
+        exemption = details.get("reason") == "personal_only"
+        if exemption:
+            details = {key: value for key, value in details.items() if key != "reason"}
         if attempt:
             try:
                 reconciled = False
@@ -309,6 +323,8 @@ def prepare(client, token, *, can_write, context=None):
                       code=str(details["code"]) if details["code"] is not None else None)
             except Exception:
                 return stop("buddy_storage_error", stale=True)
+        if exemption:
+            return stop("buddy_personal_only", stale=True, **details)
         return stop("buddy_write_unconfirmed" if attempt else "buddy_unknown", stale=True, **details)
     except Exception:
         return stop("buddy_storage_error", stale=True)

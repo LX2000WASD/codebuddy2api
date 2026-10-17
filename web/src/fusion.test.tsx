@@ -355,6 +355,23 @@ describe("Diagnostics page", () => {
     expect(within(broken).queryByText("正常")).toBeNull();
     expect(within(broken).getByText("认证熔断")).toBeTruthy();
   });
+
+  it("drops the circuit badge once the cooldown deadline has passed", async () => {
+    render(<Diagnostics />);
+    await waitFor(() => expect(screen.getByText("expired-cooldown.info")).toBeTruthy(), {
+      timeout: 4000,
+    });
+    const row = screen.getByText("expired-cooldown.info").closest("tr")!;
+    // The backend keeps reporting the stale reason until an explicit reset
+    // (converter.py clear_cooldowns), so the view is the last line of defence:
+    // fail_until is a positive epoch that is already in the past.
+    expect(within(row).queryByText("无熔断")).toBeTruthy();
+    expect(within(row).queryByText(/已结束|认证熔断|429/)).toBeNull();
+    // A live deadline still renders, so the gate is not a blanket suppression.
+    const live = screen.getByText("mainland-b.info").closest("tr")!;
+    expect(within(live).queryByText("无熔断")).toBeNull();
+    expect(within(live).getByText("backend HTTP 401")).toBeTruthy();
+  });
 });
 describe("useOptimisticOverrides", () => {
   type Row = { id: string; enabled: boolean; paused: boolean };

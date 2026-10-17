@@ -210,6 +210,19 @@ class BuddyTests(unittest.TestCase):
                 self.assertEqual(result["reason"], "buddy_unknown")
         self.assertEqual(self.posts(), [])
 
+    def test_personal_only_refusal_is_reported_as_an_exemption_not_an_outage(self):
+        """The growth center is personal-only, so its refusal must not read as a 403 outage."""
+        refusal = httpx.Response(403, json={"code": 403,
+                                            "msg": "growth system is only available for personal users"})
+        result = self.prepare([refusal], automatic=True)
+        self.assertFalse(result["buddy_ready"])
+        self.assertEqual(result["reason"], "buddy_personal_only")
+        self.assertIn("不参与成长中心", result["message"])
+        self.assertNotIn("失败", result["message"])
+        # The upstream status stays observable for the operator, without becoming the headline.
+        self.assertEqual(result["http_status"], 403)
+        self.assertEqual(self.posts(), [])
+
     def test_write_failure_keeps_reservation_and_never_replays(self):
         result = self.prepare([EMPTY, LIST, TASKS, AGREEMENT, None, httpx.ReadTimeout("synthetic-secret"), EMPTY], automatic=True)
         self.assertFalse(result["buddy_ready"])

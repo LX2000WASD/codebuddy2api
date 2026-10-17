@@ -149,6 +149,12 @@ SCHEMA = {
                                 env="CODEBUDDY2API_UPSTREAM_KEEPALIVE"),
     "max_inflight_per_account": _item(0, "integer", "单账号在途上限（0 不限制）",
                                       env="CODEBUDDY2API_MAX_INFLIGHT_PER_ACCOUNT", minimum=0, maximum=10000),
+    # 入站并发闸（app/inbound_limits.py 的 ConcurrencyLimitMiddleware，只作用于三个生成端点）：
+    # 超限立即 503 + Retry-After: 3，错误码 concurrency_limit（不是 429）；0 不限制。
+    # 热生效：_gate() 每个请求比对当前上限，变化即按 (新上限 - 在途) 重设容量，
+    # 所以调大调小都即时生效，在途请求不会被重复计数（tests/test_inbound_concurrency_setting.py）。
+    "max_concurrent": _item(64, "integer", "推理并发上限（0 不限制）",
+                            env="CODEBUDDY2API_MAX_CONCURRENT", minimum=0, maximum=1024),
     "read_timeout": _item(300, "number", "上游流式读取超时秒数", env="CODEBUDDY2API_READ_TIMEOUT",
                           minimum=1, maximum=86400),
     # 默认 30s：3 次尝试 ≤ 90s，给 Cloudflare 120s 代理读取窗口留 30s 缓冲。

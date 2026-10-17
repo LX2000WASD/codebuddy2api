@@ -1059,6 +1059,24 @@ class LogIntegrationTests(unittest.TestCase):
                 self.assertEqual(len(audit.list_records("runtime", limit=100)["items"]), 30)
             self.assertFalse(path.exists())
 
+    def test_travel_component_reaches_the_audit_store_without_rewriting_other_components(self):
+        from app.audit_store import AuditStore
+        with tempfile.TemporaryDirectory() as directory:
+            with contextlib.closing(AuditStore(Path(directory) / "logs.sqlite3")) as audit:
+                with patch.dict(converter.CONFIG, {"audit_store": audit}):
+                    # Travel failures used to be dropped on the floor: "[travel]" matched no
+                    # component in the allowlist, so a failed automatic trip never reached
+                    # the events table. Every previously allowlisted component must keep working.
+                    for component in ("cred", "credits", "models", "usage", "trial",
+                                      "checkin", "dailychat", "housekeeper", "travel"):
+                        converter._log("[" + component + "] 失败")
+                    converter._log("[buddy] 失败")
+                items = audit.list_records("runtime", limit=100)["items"]
+        self.assertEqual(sorted({item["action"] for item in items}),
+                         sorted(["cred", "credits", "models", "usage", "trial",
+                                 "checkin", "dailychat", "housekeeper", "travel"]))
+        self.assertTrue(all(item["details"]["code"] == "failure" for item in items))
+
     def test_body_previews_and_secret_hints_never_reach_persistent_logs(self):
         from app.audit_store import AuditStore
         with tempfile.TemporaryDirectory() as directory:

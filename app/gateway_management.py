@@ -39,6 +39,13 @@ class Management:
                 balance = ledger.entry(path) if ledger else {}
                 enabled = model_policy.credential_enabled(self.CONFIG, entry)
                 until = entry.get("fail_until", 0)
+                # A breaker that already expired is not a failure: `last_error` is only
+                # cleared by an explicit reset (converter.py clear_cooldowns /
+                # reset_cooldowns_for), so an expired deadline would otherwise keep
+                # reporting a stale reason forever. Both the diagnostic readout and the
+                # credential page derive their alert from these two fields.
+                cooling = until > now
+                stale_error = entry.get("last_error") if cooling else None
                 cooldowns = [{"model": model, "until": deadline,
                               "remaining_seconds": max(0, round(deadline - now))}
                              for (cid, model), deadline in pool._model_fail.items()
@@ -49,7 +56,7 @@ class Management:
                            auto_checkin=model_policy.credential_auto_checkin(self.CONFIG, entry),
                            checkin=checkin.view(balance.get("checkin") or {}),
                            auto_travel=model_policy.credential_auto_travel(self.CONFIG, entry),
-                           travel_supported=travel.supported(entry.get("profile")),
+                           travel_supported=travel.supported(entry.get("profile"), entry.get("enterprise") is True),
                            travel=balance.get("travel") or {"state": "unknown", "message": "尚未查询旅行状态"},
                            trial_supported=entry.get("profile") == "intl-work",
                            trial=(trial_management.view(trials.get(identity), now=now) if trials is not None
@@ -60,11 +67,11 @@ class Management:
                            daily_chat=self._daily_chat_view(daily_chats, identity, now),
                            fail_until=until, cooldown_until=until,
                            cooldown_remaining=max(0, round(until - now)),
-                           last_error_code=("http_401" if entry.get("last_error") == "backend HTTP 401" else
-                                            "http_403" if entry.get("last_error") == "backend HTTP 403" else
-                                            "credential_error" if entry.get("last_error") else None),
+                           last_error_code=("http_401" if stale_error == "backend HTTP 401" else
+                                            "http_403" if stale_error == "backend HTTP 403" else
+                                            "credential_error" if stale_error else None),
                            last_failure_at=entry.get("last_failure_at"),
-                           sync_error=(balance.get("error") or entry.get("last_error") or None),
+                           sync_error=(balance.get("error") or stale_error or None),
                            cooldowns=cooldowns, credits=balance.get("credits") or None,
                            sync_pending=path in pool._sync_pending or path in pool._syncing or path in pool._sync_retry,
                            catalog_ready=(self.CONFIG.get("account_catalogs") or {}).get(identity, {}).get("models") is not None,
@@ -111,8 +118,9 @@ class Management:
             entry = next((entry for entry in pool.entries() if entry.get("account_key") == identity), None)
             if entry is None:
                 raise HTTPException(404, "凭证不存在")
-            if enabled and not travel.supported(entry.get("profile")):
-                raise HTTPException(400, "旅行仅适用于国内账号")
+            if enabled and not travel.supported(entry.get("profile"), entry.get("enterprise") is True):
+                raise HTTPException(400, "企业账号不参与成长中心，无法旅行"
+                                    if entry.get("enterprise") is True else "旅行仅适用于国内账号")
             self.CONFIG["control_store"].set_auto_travel(identity, enabled)
 
     def admin_set_auto_daily_chat(self, identity, enabled):

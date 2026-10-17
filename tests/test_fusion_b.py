@@ -14,6 +14,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import count
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -22,6 +23,7 @@ from app.audit_store import (AuditStore, BUCKET_COUNT, LATENCY_EDGES,
                              empty_buckets, latency_bucket_index, latency_percentiles,
                              merge_buckets, stats_view)
 from app.health_endpoints import install as install_health, pool_counts
+from app.gateway_management import Management
 import app.diagnostic as diagnostic
 import app.alerting as alerting
 from app.alerting import AlertBus, AlertEvaluator, mask_url
@@ -169,11 +171,15 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(stats_view(profile["summary"])["requests"], 3)
 
     def test_dimension_series_hourly_granularity_matches_daily_summary(self):
+        # The query window ends at "now", so the 09:00 record only exists inside
+        # it once the wall clock has passed 09:00 UTC. Freeze the store's clock at
+        # UTC noon to keep both records in range regardless of when this runs.
         base = int(time.time() // 86400) * 86400
-        for hour in (2, 9):
-            _record(self.store, started=base + hour * 3600, duration=250.0, output=10)
-        hourly = self.store.dimension_query("global", None, 1, "hour")
-        daily = self.store.dimension_query("global", None, 1, "day")
+        with patch("app.audit_store.time.time", return_value=float(base + 12 * 3600)):
+            for hour in (2, 9):
+                _record(self.store, started=base + hour * 3600, duration=250.0, output=10)
+            hourly = self.store.dimension_query("global", None, 1, "hour")
+            daily = self.store.dimension_query("global", None, 1, "day")
         self.assertEqual(hourly["range"]["granularity"], "hour")
         expected_hours = int(hourly["range"]["end"] // 3600) - int(hourly["range"]["start"] // 3600) + 1
         self.assertEqual(len(hourly["series"]), expected_hours)
@@ -703,6 +709,94 @@ class RouteTests(unittest.TestCase):
         block_lock = locks["unavailable-model"]
         self.assertEqual(block_lock["kind"], "model_block")
         self.assertTrue(block_lock["advisory"])
+
+    def test_expired_cooldown_stops_reporting_its_stale_reason(self):
+        """An expired breaker must not keep claiming a fault anywhere.
+
+        `entry["last_error"]` is only cleared by an explicit reset
+        (converter.py clear_cooldowns / reset_cooldowns_for), so after the deadline
+        passes the inventory used to keep serving the old reason: the diagnostic
+        page rendered it and the alert evaluator re-fired it as a live circuit.
+        """
+        now = time.time()
+        entry = {"id": "/auth/expired.info", "profile": "cn-cli", "account_key": "acc-expired",
+                 "fail_until": now - 600, "last_error": "backend HTTP 429",
+                 "last_failure_at": now - 900}
+
+        class FakePool:
+            _lock = threading.RLock()
+            _model_fail = {}
+            _sync_pending, _syncing, _sync_retry = set(), set(), {}
+
+            def _rescan(self):
+                pass
+
+            def entries(self):
+                return [entry]
+
+            def snapshot(self):
+                return [{"auth_file": entry["id"]}]
+
+        self.config["cred_pool"] = FakePool()
+        # Management reads its gateway's CONFIG attribute, not a bare dict.
+        self.config["management"] = Management(SimpleNamespace(CONFIG=self.config))
+        row = self.config["management"].admin_credential_inventory()[0]
+        self.assertEqual(row["health"], "ready")
+        self.assertEqual(row["fail_until"], now - 600)
+        self.assertIsNone(row["last_error_code"])
+        self.assertIsNone(row["sync_error"])
+
+        account = self.client.get("/admin/diagnostic").json()["accounts"][0]
+        self.assertEqual(account["health"], "ready")
+        self.assertIsNone(account["cooldown"]["reason"])
+        self.assertEqual(account["cooldown"]["remaining_seconds"], 0.0)
+        self.assertIsNone(account["last_error_code"])
+
+        # Same fields while the breaker is still armed: the gate must not suppress a
+        # genuine cooldown, and both reason sources (last_error_code first) survive.
+        entry.update(fail_until=now + 500)
+        row = self.config["management"].admin_credential_inventory()[0]
+        self.assertEqual(row["health"], "circuit_open")
+        self.assertEqual(row["last_error_code"], "credential_error")
+        self.assertEqual(row["sync_error"], "backend HTTP 429")
+        account = self.client.get("/admin/diagnostic").json()["accounts"][0]
+        self.assertEqual(account["cooldown"]["reason"], "credential_error")
+        self.assertEqual(account["cooldown"]["remaining_seconds"], 500)
+        self.assertEqual(account["last_error_code"], "credential_error")
+
+    def test_balance_sync_error_survives_an_expired_cooldown(self):
+        """A sync failure is not a breaker reason: it stays visible without a cooldown."""
+        now = time.time()
+        entry = {"id": "/auth/sync.info", "profile": "cn-cli", "account_key": "acc-sync",
+                 "fail_until": 0.0, "last_error": None}
+
+        class FakePool:
+            _lock = threading.RLock()
+            _model_fail = {}
+            _sync_pending, _syncing, _sync_retry = set(), set(), set()
+
+            def _rescan(self):
+                pass
+
+            def entries(self):
+                return [entry]
+
+            def snapshot(self):
+                return [{"auth_file": entry["id"]}]
+
+        class FakeLedger:
+            def entry(self, path):
+                return {"error": "余额同步被上游拒绝"}
+
+        self.config["cred_pool"] = FakePool()
+        self.config["ledger"] = FakeLedger()
+        self.config["management"] = Management(SimpleNamespace(CONFIG=self.config))
+        account = self.client.get("/admin/diagnostic").json()["accounts"][0]
+        self.assertIsNone(account["cooldown"]["reason"])
+        self.assertEqual(account["sync_error"], "余额同步被上游拒绝")
+        row = self.config["management"].admin_credential_inventory()[0]
+        self.assertIsNone(row["last_error_code"])
+        self.assertEqual(row["sync_error"], "余额同步被上游拒绝")
 
     def test_alerts_endpoints_round_trip(self):
         events = self.client.get("/admin/alerts/events")

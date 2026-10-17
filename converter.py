@@ -423,6 +423,16 @@ MODEL_SITE_BLOCK_MAX_S = 24 * 3600  # Maximum unsupported-model backoff
 # An unsupported model must be routed to a different backend.
 MODEL_NOT_SERVABLE_CODES = frozenset({"11102"})
 _NOT_SERVABLE_MSG = re.compile(r"service info not found|model .{0,80}not (?:found|supported)", re.I)
+# 上游准入队列满（渠道级容量信号，非账号配额）：6021 / queue.full。
+# 识别只看响应体开头 QUEUE_FULL_HEAD 字节，命中后既不冷却账号也不写模型软冷却，
+# 而是按 503 + 短退避回给客户端并保留换号机会（见 _check_upstream_status）。
+QUEUE_FULL_CODES = frozenset({"6021"})
+_QUEUE_FULL_MSG = re.compile(r"queue[\s._-]*full", re.I)
+_QUEUE_FULL_BYTES = re.compile(rb"queue[\s._-]*full", re.I)
+QUEUE_FULL_HEAD = 512          # 识别只读响应体前 512 字节（超出部分不解析、不扫描）
+QUEUE_FULL_STATUS = frozenset({429, 503})   # 上游表达「排队满」的两种传输形态
+QUEUE_FULL_STATUS_CODE = 503   # 对客户端暴露的语义：服务端容量不足，而不是本账号限流
+QUEUE_FULL_RETRY_AFTER = 5     # 客户端退避：足够短，不放大上游压力
 CRED_REFRESH_MARGIN = 600   # Proactive refresh margin in seconds
 CRED_KEEPALIVE_S = 24 * 3600   # Maximum idle interval before refreshing
 CRED_KEEPALIVE_RETRY_S = 3600  # Keepalive retry interval, independent of expiry retries
@@ -486,6 +496,43 @@ def _parse_not_servable(raw: bytes, status: int):
         return None
     if code in MODEL_NOT_SERVABLE_CODES or _NOT_SERVABLE_MSG.search(msg):
         return code or "11102", msg[:200]
+    return None
+
+
+def _parse_queue_full(raw: bytes, status: int):
+    """Recognize upstream admission-queue rejections (6021 / queue.full) as capacity signals.
+
+    The upstream queue being full says nothing about the account's health or quota, so this
+    must be classified before the account-level 429 path. Parsing is deliberately defensive:
+    a raising or unbounded parse would sit in front of every 429, so every failure mode falls
+    through to the existing account-level handling instead of propagating.
+    """
+    if status not in QUEUE_FULL_STATUS or not raw:
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8", "replace"))
+    except (ValueError, UnicodeError, RecursionError):
+        payload = None
+    code = msg = ""
+    if isinstance(payload, dict):
+        nodes = [payload]
+        inner = payload.get("error")
+        if isinstance(inner, dict):
+            nodes.append(inner)
+        for node in nodes:
+            for key in ("code", "errCode", "error_code"):
+                value = node.get(key)
+                if value is not None and str(value).strip():
+                    code = code or str(value).strip()
+            for key in ("msg", "message"):
+                value = node.get(key)
+                if isinstance(value, str) and value.strip():
+                    msg = msg or value.strip()
+    # Bodies that are not JSON (or are truncated JSON) still count when the marker is in
+    # the head; only the head is scanned so a pathological body cannot drive the scan.
+    if (code in QUEUE_FULL_CODES or _QUEUE_FULL_MSG.search(msg[:QUEUE_FULL_HEAD])
+            or _QUEUE_FULL_BYTES.search(raw[:QUEUE_FULL_HEAD])):
+        return code or "6021", msg[:200]
     return None
 
 
@@ -610,6 +657,7 @@ class CredentialPool:
                         if entry.get("uid"):
                             have_uids.pop(old_identity, None)
                         entry.update(uid=summary.get("uid"), profile=summary["profile"], site=summary["site"],
+                                     enterprise=summary.get("enterprise") is True,
                                      account_key=identity, generation=generation, catalog_dirty=True)
                         self._bind_entry(entry)
                         if reset or replaced:
@@ -654,6 +702,7 @@ class CredentialPool:
                     continue
                 entry = {"id": cid, "cm": manager, "fail_until": 0.0 if summary else time.time() + CRED_COOLDOWN, "uid": uid,
                          "site": summary.get("site"), "profile": profile, "generation": manager._generation,
+                         "enterprise": summary.get("enterprise") is True,
                          "account_key": identity_key, "catalog_dirty": True}
                 self._bind_entry(entry)
                 self._adopt_cooldowns(entry)
@@ -1444,6 +1493,13 @@ class CredentialPool:
         if not_servable:
             self.note_not_servable(cm, model, code=not_servable[0], msg=not_servable[1], generation=generation)
             return
+        # 上游准入队列满（6021 / queue.full）是渠道级容量信号，不是本账号的配额证据：
+        # 拦在 429 分支之前，既不写 _model_fail 也不熔断账号，让调用方换号后按 503 短退避
+        # 回给客户端（见 _check_upstream_status）。漏掉这一层，池里每个账号各撞一次就会
+        # 把该模型对全池下线 MODEL_COOLDOWN 秒。
+        if _parse_queue_full(raw, status):
+            _log(f"[cred] 上游排队已满（HTTP {status} queue.full）@ {Path(cm.path).name}，按渠道容量信号处理")
+            return
         if status != 429 or not model:
             return
         now = time.time()
@@ -1840,12 +1896,21 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
                 _sync_error(pool, ledger, entry, generation, "checkin", error)
         if not model_policy.credential_enabled(CONFIG, entry):
             return None
+        if checkin and not travel.supported(entry.get("profile"), entry.get("enterprise") is True):
+            # The exemption is terminal, so keep the ledger honest instead of leaving the
+            # previous upstream refusal as this account's current travel state. A stored
+            # notice is only rewritten when it differs, so the sweep stays a no-op after.
+            notice = travel.unavailable(entry.get("profile"), entry.get("enterprise") is True)
+            if not pool.apply_if_current(cm, generation, lambda: travel.clear_unsupported(ledger, cid, notice)):
+                failed.add(cid)
+                return None
         if checkin and model_policy.credential_auto_travel(CONFIG, entry):
             try:
                 def can_travel():
                     return (model_policy.credential_auto_travel(CONFIG, entry)
                             and pool.apply_if_current(cm, generation, lambda: None))
                 trip = travel.perform(token, profile_for_headers(headers), can_write=can_travel,
+                                      enterprise=entry.get("enterprise") is True,
                                       buddy_context=_buddy_context(entry, headers))
                 if not pool.apply_if_current(cm, generation, lambda: travel.remember(ledger, cid, trip)):
                     failed.add(cid)
@@ -2273,6 +2338,8 @@ CONFIG: dict = {"api_key": "", "cred": None, "log_path": None, "ledger": None,
                 "max_images": 16, "image_policy": "truncate",
                 "max_request_bytes": 32 * 1024 * 1024, "log_body_limit": 65536,
                 "max_inbound_bytes": 64 * 1024 * 1024,
+                # Same value as settings.SCHEMA["max_concurrent"]["default"] and the
+                # --max-concurrent CLI default; tests pin all three against each other.
                 "max_collect_bytes": 8 * 1024 * 1024, "max_concurrent": 64,
                 "upstream_keepalive": False, "max_inflight_per_account": 0,
                 "request_context_mode": "legacy",
@@ -2319,7 +2386,7 @@ _OAUTH = auth_oauth.OAuthManager(user_agent=USER_AGENT)
 def _log(msg: str):
     """Persist allowlisted runtime events in SQLite, never free-form text or secrets."""
     audit = CONFIG.get("audit_store")
-    component = re.match(r"\[(cred|credits|models|usage|trial|checkin|dailychat|housekeeper)\]", msg)
+    component = re.match(r"\[(cred|credits|models|usage|trial|checkin|dailychat|housekeeper|travel)\]", msg)
     if audit is not None and component:
         # Persist event codes, not free-form lines which may contain upstream data.
         code = "cooldown" if "熔断" in msg or "冷却" in msg else "failure" if "失败" in msg or "异常" in msg else "updated"
@@ -3817,6 +3884,14 @@ def _check_upstream_status(status, raw, cred, model, *, headers=None):
         retry_after = parse_retry_after((headers or {}).get("Retry-After"))
         if not is_filter_error(raw):
             _note_cred_status(cred, status, model=model, raw=raw, retry_after=retry_after)
+        # 上游排队满（6021 / queue.full）对外是「服务端容量不足、稍后重试」，不是本账号配额耗尽：
+        # 因此换 503 + 短退避回客户端（不是 429 + 600），并保留原上游状态供审计。503 在
+        # FAILOVER_CODES 内，所以 _failover_safe 仍会放行换号——轮转收益不变。
+        if _parse_queue_full(raw, status):
+            observe_attempt("upstream_queue_full", status_code=status,
+                             retry_after=QUEUE_FULL_RETRY_AFTER)
+            raise UpstreamHTTPError(QUEUE_FULL_STATUS_CODE, raw,
+                                    retry_after=QUEUE_FULL_RETRY_AFTER)
         raise UpstreamHTTPError(status, raw, retry_after=retry_after)
 
 

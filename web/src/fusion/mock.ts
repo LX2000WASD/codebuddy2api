@@ -152,6 +152,27 @@ function accountsFixture(): MockAccount[] {
       transportPenaltySeconds: 0,
     },
     {
+      // A breaker that already lifted: the backend still remembers the last error
+      // until an explicit reset, so this row pins "expired cooldown renders no badge".
+      id: "cn-expired",
+      name: "expired-cooldown.info",
+      profile: "cn-cli",
+      health: "ready",
+      enabled: true,
+      paused: false,
+      disabled_reason: null,
+      fail_until: now - 600,
+      cooldown_reason: "backend HTTP 429",
+      model_cooldowns: [],
+      last_error_code: "credential_error",
+      last_failure_at: now - 900,
+      sync_error: null,
+      catalog_ready: true,
+      share: 0.08,
+      transportFails: 0,
+      transportPenaltySeconds: 0,
+    },
+    {
       id: "intl-work-1",
       name: "intl-work-1.info",
       profile: "intl-work",
@@ -361,6 +382,10 @@ function diagnosticResponse(): DiagnosticResponse {
       enabled: a.enabled,
       paused: a.paused,
       disabled_reason: a.disabled_reason,
+      // Deliberately keyed on "a deadline was set", not on "it is still live": the
+      // fixture keeps serving the expired-but-present cooldown a pre-fix backend
+      // returns, so the view's own expiry gate stays pinned instead of being
+      // shadowed by the fixture.
       cooldown:
         a.fail_until > 0
           ? {

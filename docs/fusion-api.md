@@ -84,8 +84,8 @@
       "disabled_reason": "人工停用 | 认证熔断 | 登录身份过期 | 同步失败 | 后端错误 | null",
       "cooldown": {
         "fail_until": 1718084000.0,       // 无熔断时为 0
-        "remaining_seconds": 800,
-        "reason": "backend HTTP 401"      // 冷却原因（安全过滤后的简短文本）
+        "remaining_seconds": 800,         // 已过期恒为 0
+        "reason": "backend HTTP 401"      // 冷却原因（安全过滤后的简短文本）；已过期时为 null
       },
       "model_cooldowns": [
         {"model": "deepseek-chat", "until": 1718085000.0, "remaining_seconds": 1800}
@@ -115,6 +115,7 @@
 
 - `model_locks` 按 `profile + model` 聚合**全部账号**的模型级冷却（含 Fusion-A 的模型级冷却表），并合并 `model_block`（后端确认不支持的模型对，与 `/admin/model-blocks` 同源）。kind=model_block 时 reason 为「后端模型不可用」，`account_ids` 为受影响绑定账号（可能为全部启用账号，此时为提示性锁定）。
 - 冷却原因文本为安全过滤后的固定短文本，不含上游返回体。
+- `cooldown` 只在**冷却仍生效**（`fail_until > now`）时带 `reason`；`fail_until` 已过期时 `reason` 为 `null`、`remaining_seconds` 为 0，且 `last_error_code` 也为 `null`——熔断过期后不得继续上报过期原因（`last_error` 在内存里要等显式重置才清除，见 `converter.py` 的 `clear_cooldowns`/`reset_cooldowns_for`）。`sync_error` 是余额/目录同步错误，与熔断无关，因此不受此门控。
 - 503 当且仅当凭证池未初始化（此时 accounts 与 model_locks 为空数组）。
 
 ---

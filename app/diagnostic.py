@@ -53,6 +53,11 @@ def _account_view(row, identity, now):
     elif health == "error":
         reason = "同步失败" if row.get("sync_error") else "后端错误"
     until = float(row.get("fail_until") or 0)
+    # An expired deadline is not a live fault. `last_error` survives until an explicit
+    # reset, so the inventory can still carry the text of a breaker that already lifted;
+    # reporting it would keep the diagnostics page and the alert evaluator firing on a
+    # cooldown that no longer exists. Both fields are gated on the deadline.
+    cooling = until > now
     cooldowns = []
     for item in (row.get("cooldowns") or [])[:64]:
         if not isinstance(item, dict):
@@ -67,11 +72,16 @@ def _account_view(row, identity, now):
             "health": health, "enabled": enabled, "paused": paused,
             "disabled_reason": reason,
             "cooldown": {"fail_until": until,
-                         "remaining_seconds": max(0.0, round(until - now, 1)) if until > now else 0.0,
-                         "reason": _safe_text(row.get("last_error_code") or row.get("sync_error"), 160)},
+                         "remaining_seconds": max(0.0, round(until - now, 1)) if cooling else 0.0,
+                         # `last_error_code` wins over `sync_error`; both are only meaningful
+                         # while the breaker is armed.
+                         "reason": (_safe_text(row.get("last_error_code") or row.get("sync_error"), 160)
+                                    if cooling else None)},
             "model_cooldowns": cooldowns,
-            "last_error_code": _safe_text(row.get("last_error_code"), 80),
+            "last_error_code": _safe_text(row.get("last_error_code"), 80) if cooling else None,
             "last_failure_at": float(row.get("last_failure_at") or 0) or None,
+            # A sync error is a balance/catalog fault, not a breaker reason: it stays visible
+            # even when no cooldown is armed (docs/fusion-api.md §3).
             "sync_error": _safe_text(row.get("sync_error"), _REASON_LIMIT),
             "catalog_ready": bool(row.get("catalog_ready")),
             # Fusion: 传输层连败降权（出池期间账号仍出现在池里，但被选路软偏好避开）。

@@ -138,7 +138,8 @@ export type DiagnosticAccount = {
   cooldown: {
     fail_until: EpochSeconds;
     remaining_seconds: number;
-    reason: string;
+    /** null once the deadline has passed: an expired breaker has no live reason. */
+    reason: string | null;
   } | null;
   model_cooldowns: { model: string; until: EpochSeconds; remaining_seconds: number }[];
   last_error_code: string | null;
