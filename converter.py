@@ -2114,19 +2114,36 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
         # An enterprise account always bills through the enterprise endpoint, so an
         # unresolvable tenant must fail loudly rather than silently fall back to the
         # personal endpoint, which would report it as having no credits at all.
-        enterprise_id = _enterprise_dispatch_id(token, _credential_account(cm._session()),
-                                               uid=uid, domain=domain)
-        balance = credits_mod.fetch_credits(
-            token, uid=uid, domain=domain,
-            # The dispatch key travels from the credential so both views agree.
-            enterprise_id=enterprise_id or "")
-        if bool(balance.get("intl")) != (site == INTERNATIONAL):
-            raise ValueError("积分响应与凭据站点不一致")
-        if not pool.apply_if_current(cm, generation, lambda: ledger.update_credits(cid, balance)):
+        #
+        # A balance lookup fails independently of the account model catalog, so it must not
+        # take catalog synchronization down with it. Before this split, a flapping billing
+        # endpoint (or an unresolvable enterprise tenant) made _sync_credits return None, the
+        # caller left the account out of refs, and _sync_model_catalogs skipped it entirely:
+        # the catalog then never refreshed and newly published models could never be routed,
+        # while /admin/status showed only a credits failure. Keep the old balance, record the
+        # failure so it is retried, and still hand back the valid lease so the catalog sync runs.
+        try:
+            enterprise_id = _enterprise_dispatch_id(token, _credential_account(cm._session()),
+                                                   uid=uid, domain=domain)
+            balance = credits_mod.fetch_credits(
+                token, uid=uid, domain=domain,
+                # The dispatch key travels from the credential so both views agree.
+                enterprise_id=enterprise_id or "")
+            if bool(balance.get("intl")) != (site == INTERNATIONAL):
+                raise ValueError("积分响应与凭据站点不一致")
+            if not pool.apply_if_current(cm, generation, lambda: ledger.update_credits(cid, balance)):
+                failed.add(cid)
+                return None
+            shown = "无限" if balance.get("unlimited") and balance.get("enterprise") else balance["credits"]
+            _log(f"[credits] {Path(cid).name}: 站点 {site}，余额 {shown}")
+        except credits_mod.AuthExpiredError:
+            # An expired login is an account-level verdict: swallowing it here would keep
+            # syncing a credential that can no longer authenticate, and hide a real re-login
+            # need behind an ordinary billing-hiccup retry.
+            raise
+        except Exception as error:
+            _sync_error(pool, ledger, entry, generation, "credits", error)
             failed.add(cid)
-            return None
-        shown = "无限" if balance.get("unlimited") and balance.get("enterprise") else balance["credits"]
-        _log(f"[credits] {Path(cid).name}: 站点 {site}，余额 {shown}")
         profile = profile_for_headers(headers)
         return entry, generation, headers, profile
     except Exception as error:
