@@ -48,7 +48,21 @@ def cost_rows(count, models):
 
 
 class PauseLedgerBoundTests(unittest.TestCase):
-    """AccountPauses: 256 rows must land inside 64 KiB and still read back."""
+    """AccountPauses: a full table must fit, and the byte bound must still work as a net.
+
+    Two separate contracts, deliberately tested apart:
+
+    * capacity — MAX_ACCOUNTS rows always fit inside MAX_BYTES, so a full table is written
+      and read back whole. The bound is a safety net for a damaged or hand-edited file, and
+      the normal write path cannot reach it;
+    * shedding — if the bound is ever exceeded anyway, rows are given up in a defined order
+      and the caller is told the write was not fully durable, instead of the reader throwing
+      the entire table away on the next start.
+
+    The shedding tests override MAX_BYTES rather than relying on the production constant: at
+    256 KiB the table cannot overflow its own capacity, so a test that "sheds at capacity"
+    would only be asserting an unreachable state.
+    """
 
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -58,34 +72,54 @@ class PauseLedgerBoundTests(unittest.TestCase):
         with ledger._lock:
             ledger._data = pause_rows(count)
 
-    def test_a_full_table_lands_inside_the_bound_and_still_reads_back(self):
-        """The pre-fix writer produced 110,104 B against a 65,536 B reader: 0 rows restored."""
+    def bounded(self, limit):
+        """An AccountPauses whose byte bound is small enough to be reachable in a test."""
+        return type("BoundedPauses", (AccountPauses,), {"MAX_BYTES": limit})(self.path)
+
+    # -- A. capacity: a full table fits and round-trips whole -----------------
+
+    def test_a_full_table_fits_and_reads_back_whole(self):
+        """256 rows with the longest reason the writer allows must not be shed.
+
+        Before MAX_BYTES was raised, this same table measured 105-124 KB against a 64 KiB
+        bound, so the writer shed it and the reader discarded the file: 0 rows after a
+        restart, and every paused account came back into selection.
+        """
         ledger = AccountPauses(self.path)
         self.fill(ledger, ledger.MAX_ACCOUNTS)
-        self.assertFalse(ledger._save_locked())          # Rows had to be shed.
+        self.assertTrue(ledger._save_locked())           # Fully durable, nothing shed.
+        self.assertIsNone(ledger.last_error)
+        self.assertEqual(ledger.shed_total, 0)
         self.assertLessEqual(self.path.stat().st_size, PAUSE_BYTES)
-        self.assertEqual(ledger.last_error, "capacity")
         restored = AccountPauses(self.path)
-        self.assertGreater(len(restored.detail()), 0)    # Not the whole table.
-        self.assertGreater(ledger.shed_total, 0)
+        self.assertEqual(len(restored.detail()), ledger.MAX_ACCOUNTS)   # Whole table.
+        self.assertEqual({row["identity"] for row in restored.detail()},
+                         set(pause_rows(ledger.MAX_ACCOUNTS)))
 
-    def test_shedding_keeps_the_most_recent_pauses(self):
-        """The oldest pause is the one an operator is most likely to resume next anyway."""
+    def test_the_worst_case_row_the_writer_allows_still_fits_at_capacity(self):
+        """The bound must cover the reason length the writer itself permits, not just today.
+
+        A 128-character CJK reason is the longest value that survives _text(), so it is the
+        worst case a real deployment can produce. 256 of them measure ~121 KiB.
+        """
+        ledger = AccountPauses(self.path)
+        with ledger._lock:
+            ledger._data = {f"{index:064x}": {"at": NOW, "reason": "测" * 128}
+                            for index in range(ledger.MAX_ACCOUNTS)}
+        self.assertTrue(ledger._save_locked())
+        self.assertEqual(ledger.shed_total, 0)
+        self.assertEqual(len(AccountPauses(self.path).detail()), ledger.MAX_ACCOUNTS)
+
+    def test_a_pause_that_fits_is_reported_as_durable(self):
+        """The caller must be told the truth in the ordinary case, not just the shed case."""
         ledger = AccountPauses(self.path)
         self.fill(ledger, ledger.MAX_ACCOUNTS)
-        ledger._save_locked()
-        restored = {row["identity"] for row in AccountPauses(self.path).detail()}
-        self.assertIn(f"{ledger.MAX_ACCOUNTS - 1:064x}", restored)   # Newest survived.
-        self.assertNotIn(f"{0:064x}", restored)                      # Oldest was shed.
-
-    def test_a_pause_that_was_shed_is_not_reported_as_durable(self):
-        """A caller told "durable" would never learn the account returns after a restart."""
-        ledger = AccountPauses(self.path)
-        self.fill(ledger, ledger.MAX_ACCOUNTS)
+        self.fill(ledger, ledger.MAX_ACCOUNTS - 1)
         outcome = ledger.pause("f" * 64, reason=REASON, now=NOW)
-        self.assertTrue(outcome["changed"])
-        self.assertFalse(outcome["durable"])
-        self.assertEqual(ledger.last_error, "capacity")
+        self.assertEqual(outcome, {"changed": True, "durable": True})
+        self.assertIsNone(ledger.last_error)
+        self.assertEqual(ledger.shed_total, 0)
+        self.assertEqual(len(AccountPauses(self.path).detail()), ledger.MAX_ACCOUNTS)
 
     def test_a_table_inside_the_bound_is_unchanged_and_fully_durable(self):
         ledger = AccountPauses(self.path)
@@ -96,8 +130,59 @@ class PauseLedgerBoundTests(unittest.TestCase):
         self.assertEqual(AccountPauses(self.path).detail(),
                          [{"identity": "a" * 64, "at": NOW, "reason": "short"}])
 
-    def test_storage_reports_the_rows_it_gave_up(self):
+    def test_the_safety_net_is_not_reachable_by_the_normal_write_path(self):
+        """Documents why capacity, not the byte bound, is what limits this table.
+
+        A full table is 121 KiB against a 256 KiB bound, so the only way to exceed it is a
+        hand-edited file or a future widening of MAX_ACCOUNTS. Asserting the headroom keeps a
+        later constant change from silently reintroducing the shedding-at-capacity bug.
+        """
         ledger = AccountPauses(self.path)
+        with ledger._lock:
+            ledger._data = {f"{index:064x}": {"at": NOW, "reason": "测" * 128}
+                            for index in range(ledger.MAX_ACCOUNTS)}
+        content, shed = ledger._serialize_locked()
+        self.assertEqual(shed, 0)
+        self.assertLessEqual(len(content), PAUSE_BYTES)
+        # The full table measures ~121 KiB of the 256 KiB bound, so MAX_ACCOUNTS could grow by
+        # roughly half again before the bound could ever bite. If this floor breaks, the two
+        # constants have drifted apart and shedding-at-capacity is back.
+        self.assertGreaterEqual(PAUSE_BYTES - len(content), 64 * 1024,
+                                "headroom shrank; re-check MAX_BYTES against MAX_ACCOUNTS")
+
+    # -- B. shedding: the safety net still works when the bound is exceeded -----
+
+    def test_shedding_lands_inside_the_bound_and_still_reads_back(self):
+        """Exceeding the bound must drop rows, never produce a file the reader rejects."""
+        ledger = self.bounded(16 * 1024)
+        self.fill(ledger, ledger.MAX_ACCOUNTS)
+        self.assertFalse(ledger._save_locked())          # Rows had to be shed.
+        self.assertLessEqual(self.path.stat().st_size, 16 * 1024)
+        self.assertEqual(ledger.last_error, "capacity")
+        restored = AccountPauses(self.path)
+        self.assertGreater(len(restored.detail()), 0)    # Some rows survived.
+        self.assertGreater(ledger.shed_total, 0)
+
+    def test_shedding_keeps_the_most_recent_pauses(self):
+        """The oldest pause is the one an operator is most likely to resume next anyway."""
+        ledger = self.bounded(16 * 1024)
+        self.fill(ledger, ledger.MAX_ACCOUNTS)
+        ledger._save_locked()
+        restored = {row["identity"] for row in AccountPauses(self.path).detail()}
+        self.assertIn(f"{ledger.MAX_ACCOUNTS - 1:064x}", restored)   # Newest survived.
+        self.assertNotIn(f"{0:064x}", restored)                      # Oldest was shed.
+
+    def test_a_pause_that_was_shed_is_not_reported_as_durable(self):
+        """A caller told "durable" would never learn the account returns after a restart."""
+        ledger = self.bounded(16 * 1024)
+        self.fill(ledger, ledger.MAX_ACCOUNTS)
+        outcome = ledger.pause("f" * 64, reason=REASON, now=NOW)
+        self.assertTrue(outcome["changed"])
+        self.assertFalse(outcome["durable"])
+        self.assertEqual(ledger.last_error, "capacity")
+
+    def test_storage_reports_the_rows_it_gave_up(self):
+        ledger = self.bounded(16 * 1024)
         self.fill(ledger, ledger.MAX_ACCOUNTS)
         ledger._save_locked()
         view = ledger.storage()

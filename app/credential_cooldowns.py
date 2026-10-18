@@ -517,7 +517,13 @@ class AccountPauses:
 
     VERSION = 1
     MAX_ACCOUNTS = 256
-    MAX_BYTES = 64 * 1024
+    # Sized so MAX_ACCOUNTS rows always fit: the worst case the writer itself allows is a
+    # 128-character reason (3 B/char in UTF-8) on all 256 rows, which measures 123,672 B.
+    # At the previous 64 KiB this table could not hold its own capacity, so a full table was
+    # shed and the reader — which enforces the same bound — discarded the file wholesale.
+    # The byte bound is now a safety net for a corrupted or hand-edited file, not a limit the
+    # normal write path can reach; MAX_ACCOUNTS is the real constraint on row count.
+    MAX_BYTES = 256 * 1024
     _FIELDS = {"at", "reason"}
 
     def __init__(self, path=None):
