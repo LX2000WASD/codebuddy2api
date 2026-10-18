@@ -9,6 +9,7 @@
 //   - VITE_FUSION_LIVE=true overrides dev mode to force live endpoints, e.g.
 //     pointing the vite dev proxy at a real backend while keeping DEV=true.
 // No page code reads this flag; only the request seam below does.
+import axios from "axios";
 import { api, errorMessage } from "../api";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { mockDelay, mockRequest } from "./mock";
@@ -66,14 +67,34 @@ async function perform(
   }
   // Paths are stored with their documented prefix (/admin/..., /healthz); the
   // shared axios instance carries baseURL=/admin, so request with an empty base.
-  const response = await api.request<unknown, { data: unknown }>({
-    method,
-    url: fullPath,
-    baseURL: "",
-    data: body,
-    signal: options.signal,
-  });
-  return response.data;
+  try {
+    const response = await api.request<unknown, { data: unknown }>({
+      method,
+      url: fullPath,
+      baseURL: "",
+      data: body,
+      signal: options.signal,
+    });
+    return response.data;
+  } catch (error) {
+    // axios rejects an aborted request with its own CanceledError (code
+    // ERR_CANCELED), which no caller recognises as an abort — it would render as a
+    // red "cannot reach the admin API" banner whenever a filter change or unmount
+    // supersedes a request. Normalise it to the same abort signal the mock branch
+    // throws; every other error keeps propagating untouched.
+    if (isAbort(error)) throw new FusionAbortError("aborted");
+    throw error;
+  }
+}
+
+/**
+ * True for an aborted axios request. axios normalises every abort into its own
+ * CanceledError, which sets both `__CANCEL__` (axios.isCancel) and
+ * `code === "ERR_CANCELED"`; the code check keeps working even if the error is
+ * re-wrapped or cloned by an interceptor.
+ */
+function isAbort(error: unknown): boolean {
+  return axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED");
 }
 
 export function fusionGet(path: string, params = new URLSearchParams(), options?: RequestOptions) {

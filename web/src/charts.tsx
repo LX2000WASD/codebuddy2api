@@ -2,7 +2,16 @@
 // Design inherited from workbuddy2api-panel's usage chart (real time axis, gradient
 // stacked bars, mean reference line, peak annotation, per-bucket hover detail) and
 // rewritten as accessible React components with keyboard navigation.
-import { useId, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import {
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { metric, number, type RecordValue } from "./api";
 import { Empty } from "./components";
 import { t } from "./i18n";
@@ -13,11 +22,84 @@ export type ChartBucket = RecordValue & {
   date: string;
 };
 
-const PLOT = { width: 1160, height: 220, left: 58, right: 16, top: 26, bottom: 30 };
-const inner = () => ({
-  width: PLOT.width - PLOT.left - PLOT.right,
-  height: PLOT.height - PLOT.top - PLOT.bottom,
+// The viewBox is derived from the measured container width (1 user unit = 1 CSS px)
+// instead of a fixed 1160×220 canvas. A fixed canvas scaled into a phone-width card
+// shrank the 11px tick labels to ~4px and letterboxed the plot; matching the box
+// keeps text at its designed size on every viewport while the geometry stays
+// unscaled (no stretched strokes or distorted bars).
+const PLOT_HEIGHT = 220;
+const PLOT_TOP = 26;
+const PLOT_BOTTOM = 30;
+const PLOT_LEFT = 58;
+const PLOT_RIGHT = 16;
+const NARROW_LEFT = 44;
+const NARROW_RIGHT = 10;
+const NARROW_WIDTH = 520;
+// First-render fallback only: the layout effect measures the real box before paint.
+const DEFAULT_WIDTH = 1160;
+const MIN_WIDTH = 240;
+
+type Plot = {
+  width: number;
+  height: number;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+};
+
+const plotFor = (width: number): Plot => {
+  const narrow = width < NARROW_WIDTH;
+  return {
+    width,
+    height: PLOT_HEIGHT,
+    left: narrow ? NARROW_LEFT : PLOT_LEFT,
+    right: narrow ? NARROW_RIGHT : PLOT_RIGHT,
+    top: PLOT_TOP,
+    bottom: PLOT_BOTTOM,
+  };
+};
+
+const inner = (plot: Plot) => ({
+  width: plot.width - plot.left - plot.right,
+  height: plot.height - plot.top - plot.bottom,
 });
+
+// An outermost <svg> lays its viewBox out in the content box, so the stylesheet
+// padding on .chartWide is excluded from both the scale and the pointer origin.
+function contentBox(svg: SVGSVGElement): { left: number; width: number } {
+  const rect = svg.getBoundingClientRect();
+  const style = getComputedStyle(svg);
+  const left = parseFloat(style.paddingLeft) || 0;
+  const right = parseFloat(style.paddingRight) || 0;
+  return { left: rect.left + left, width: Math.max(0, rect.width - left - right) };
+}
+
+/** Tracks the rendered width so the viewBox can match the SVG viewport exactly. */
+function usePlot(): { ref: RefObject<SVGSVGElement | null>; plot: Plot } {
+  const ref = useRef<SVGSVGElement | null>(null);
+  const [width, setWidth] = useState(DEFAULT_WIDTH);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const sync = () => {
+      const measured = contentBox(element).width;
+      // jsdom reports 0 for layout; keep the fallback there instead of collapsing.
+      if (measured > 0) setWidth(Math.max(MIN_WIDTH, Math.round(measured)));
+    };
+    sync();
+    if (typeof ResizeObserver === "undefined") return;
+    // contentRect is the content box, matching the SVG viewport above.
+    const observer = new ResizeObserver((entries) => {
+      const measured = entries[0]?.contentRect.width ?? 0;
+      if (measured > 0) setWidth(Math.max(MIN_WIDTH, Math.round(measured)));
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return { ref, plot: plotFor(width) };
+}
+
 const fmtTime = (bucket: number, granularity: string) => {
   const date = new Date(bucket * 1000);
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -32,7 +114,10 @@ const fmtDayLabel = (bucket: number) => {
 
 type Axis = { xOf: (index: number) => number; indexes: number[]; barWidth: number };
 
-function useSelection(rows: ChartBucket[]): {
+function useSelection(
+  rows: ChartBucket[],
+  plot: Plot,
+): {
   active: number | null;
   pointer: (event: PointerEvent<SVGSVGElement>) => void;
   keyDown: (event: KeyboardEvent<SVGSVGElement>) => void;
@@ -43,16 +128,16 @@ function useSelection(rows: ChartBucket[]): {
   const active = selection?.rows === rows ? selection.index : null;
   const choose = (index: number) =>
     setSelection({ rows, index: Math.max(0, Math.min(rows.length - 1, index)) });
-  const xFor = (clientX: number, rect: DOMRect) => {
-    if (!rect.width) return 0;
-    return ((clientX - rect.left) * PLOT.width) / rect.width;
+  const xFor = (clientX: number, svg: SVGSVGElement) => {
+    const box = contentBox(svg);
+    if (!box.width) return 0;
+    return ((clientX - box.left) * plot.width) / box.width;
   };
   return {
     active,
     pointer: (event) => {
-      const rect = event.currentTarget.getBoundingClientRect();
-      const x = xFor(event.clientX, rect);
-      const index = nearestIndex(rows, x);
+      const x = xFor(event.clientX, event.currentTarget);
+      const index = nearestIndex(rows, x, plot);
       if (index !== null) choose(index);
     },
     keyDown: (event) => {
@@ -75,18 +160,18 @@ function useSelection(rows: ChartBucket[]): {
   };
 }
 
-const nearestIndex = (rows: ChartBucket[], plotX: number) => {
+const nearestIndex = (rows: ChartBucket[], plotX: number, plot: Plot) => {
   if (!rows.length) return null;
-  const layout = timeLayout(rows);
+  const layout = timeLayout(rows, plot);
   let closest = 0;
   for (let i = 1; i < rows.length; i++)
     if (Math.abs(layout.xOf(i) - plotX) < Math.abs(layout.xOf(closest) - plotX)) closest = i;
   return closest;
 };
 
-function timeLayout(rows: ChartBucket[]): Axis {
-  const box = inner();
-  if (rows.length < 2) return { xOf: () => PLOT.left + box.width / 2, indexes: [0], barWidth: 14 };
+function timeLayout(rows: ChartBucket[], plot: Plot): Axis {
+  const box = inner(plot);
+  if (rows.length < 2) return { xOf: () => plot.left + box.width / 2, indexes: [0], barWidth: 14 };
   const buckets = rows.map((row) => number(row.bucket));
   const first = buckets[0] ?? 0;
   const last = buckets.at(-1) ?? 0;
@@ -96,7 +181,7 @@ function timeLayout(rows: ChartBucket[]): Axis {
   );
   const barWidth = Math.max(2, Math.min(28, box.width * (minGap / span) * 0.72));
   const xOf = (index: number) =>
-    PLOT.left +
+    plot.left +
     barWidth / 2 +
     ((buckets[index]! - first) / span) * Math.max(1, box.width - barWidth);
   // ~6 ticks snapped to real buckets, first/last anchored to the edges.
@@ -114,6 +199,8 @@ function timeLayout(rows: ChartBucket[]): Axis {
 
 function ChartFrame({
   children,
+  plot,
+  frameRef,
   onPointer,
   onKeyDown,
   onBlur,
@@ -122,6 +209,8 @@ function ChartFrame({
   hintId,
 }: {
   children: ReactNode;
+  plot: Plot;
+  frameRef: RefObject<SVGSVGElement | null>;
   onPointer: (event: PointerEvent<SVGSVGElement>) => void;
   onKeyDown: (event: KeyboardEvent<SVGSVGElement>) => void;
   onBlur: () => void;
@@ -132,7 +221,8 @@ function ChartFrame({
   return (
     <div className={s.chartInteractive}>
       <svg
-        viewBox={`0 0 ${PLOT.width} ${PLOT.height}`}
+        ref={frameRef}
+        viewBox={`0 0 ${plot.width} ${plot.height}`}
         preserveAspectRatio="xMidYMid meet"
         className={s.chartWide}
         role="img"
@@ -158,18 +248,18 @@ function ChartFrame({
   );
 }
 
-function GridLines() {
-  const box = inner();
+function GridLines({ plot }: { plot: Plot }) {
+  const box = inner(plot);
   return (
     <>
       {[0, 1, 2, 3, 4].map((step) => {
-        const y = PLOT.top + box.height - (box.height * step) / 4;
+        const y = plot.top + box.height - (box.height * step) / 4;
         return (
           <line
             key={step}
-            x1={PLOT.left}
+            x1={plot.left}
             y1={y}
-            x2={PLOT.width - PLOT.right}
+            x2={plot.width - plot.right}
             y2={y}
             stroke="var(--line)"
             strokeDasharray="4 5"
@@ -180,14 +270,22 @@ function GridLines() {
   );
 }
 
-function YTicks({ max, format }: { max: number; format: (value: number) => string }) {
-  const box = inner();
+function YTicks({
+  plot,
+  max,
+  format,
+}: {
+  plot: Plot;
+  max: number;
+  format: (value: number) => string;
+}) {
+  const box = inner(plot);
   return (
     <>
       {[0, 1, 2, 3, 4].map((step) => {
-        const y = PLOT.top + box.height - (box.height * step) / 4;
+        const y = plot.top + box.height - (box.height * step) / 4;
         return (
-          <text key={step} x={PLOT.left - 8} y={y + 4} textAnchor="end" className={s.chartTick}>
+          <text key={step} x={plot.left - 8} y={y + 4} textAnchor="end" className={s.chartTick}>
             {format((max * step) / 4)}
           </text>
         );
@@ -197,22 +295,24 @@ function YTicks({ max, format }: { max: number; format: (value: number) => strin
 }
 
 function XAxis({
+  plot,
   rows,
   granularity,
   layout,
 }: {
+  plot: Plot;
   rows: ChartBucket[];
   granularity: string;
   layout: Axis;
 }) {
-  const box = inner();
+  const box = inner(plot);
   return (
     <>
       <line
-        x1={PLOT.left}
-        y1={PLOT.top + box.height}
-        x2={PLOT.width - PLOT.right}
-        y2={PLOT.top + box.height}
+        x1={plot.left}
+        y1={plot.top + box.height}
+        x2={plot.width - plot.right}
+        y2={plot.top + box.height}
         stroke="var(--line)"
       />
       {layout.indexes.map((index) => {
@@ -220,12 +320,12 @@ function XAxis({
         if (bucket === null) return null;
         const x = layout.xOf(index);
         const anchor =
-          x < PLOT.left + 16 ? "start" : x > PLOT.width - PLOT.right - 16 ? "end" : "middle";
+          x < plot.left + 16 ? "start" : x > plot.width - plot.right - 16 ? "end" : "middle";
         return (
           <text
             key={index}
-            x={Math.max(PLOT.left, Math.min(PLOT.width - PLOT.right, x))}
-            y={PLOT.top + box.height + 17}
+            x={Math.max(plot.left, Math.min(plot.width - plot.right, x))}
+            y={plot.top + box.height + 17}
             textAnchor={anchor}
             className={s.chartTick}
           >
@@ -252,10 +352,11 @@ export function StackedBars({
   emptyTitle?: string;
 }) {
   const id = useId();
-  const selection = useSelection(rows);
+  const { ref, plot } = usePlot();
+  const selection = useSelection(rows, plot);
   if (!rows.length) return <Empty title={emptyTitle ?? t("fusion.charts.noRequestsInRange")} />;
-  const box = inner();
-  const layout = timeLayout(rows);
+  const box = inner(plot);
+  const layout = timeLayout(rows, plot);
   const values = rows.map((row) => ({
     requests: number(row.requests) ?? 0,
     success: number(row.success) ?? 0,
@@ -268,13 +369,15 @@ export function StackedBars({
     (best, value, index) => (value > totals[best]! ? index : best),
     0,
   );
-  const yOf = (value: number) => PLOT.top + box.height - box.height * (value / max);
+  const yOf = (value: number) => plot.top + box.height - box.height * (value / max);
   const active = selection.active;
   const selected = active === null ? null : rows[active];
 
   return (
     <>
       <ChartFrame
+        plot={plot}
+        frameRef={ref}
         label={
           granularity === "hour"
             ? t("fusion.charts.hourlyRequests")
@@ -296,8 +399,8 @@ export function StackedBars({
             <stop offset="1" style={{ stopColor: "var(--error)", stopOpacity: 0.62 }} />
           </linearGradient>
         </defs>
-        <GridLines />
-        <YTicks max={max} format={(value) => metric(value)} />
+        <GridLines plot={plot} />
+        <YTicks plot={plot} max={max} format={(value) => metric(value)} />
         {rows.map((row, index) => {
           const x = layout.xOf(index) - layout.barWidth / 2;
           const total = totals[index]!;
@@ -318,7 +421,7 @@ export function StackedBars({
               {successHeight > 0 && (
                 <rect
                   x={x}
-                  y={PLOT.top + box.height - successHeight - errorHeight}
+                  y={plot.top + box.height - successHeight - errorHeight}
                   width={layout.barWidth}
                   height={successHeight}
                   fill={`url(#${id}-ok)`}
@@ -328,7 +431,7 @@ export function StackedBars({
               {errorHeight > 0 && (
                 <rect
                   x={x}
-                  y={PLOT.top + box.height - errorHeight}
+                  y={plot.top + box.height - errorHeight}
                   width={layout.barWidth}
                   height={errorHeight}
                   fill={`url(#${id}-err)`}
@@ -341,23 +444,23 @@ export function StackedBars({
         {mean > 0 && mean < max && (
           <>
             <line
-              x1={PLOT.left}
+              x1={plot.left}
               y1={yOf(mean)}
-              x2={PLOT.width - PLOT.right}
+              x2={plot.width - plot.right}
               y2={yOf(mean)}
               stroke="var(--strong)"
               strokeDasharray="7 6"
             />
-            <text x={PLOT.left + 6} y={yOf(mean) - 5} textAnchor="start" className={s.chartMean}>
+            <text x={plot.left + 6} y={yOf(mean) - 5} textAnchor="start" className={s.chartMean}>
               {t("fusion.charts.mean", { value: metric(mean) })}
             </text>
           </>
         )}
         {totals[peakIndex]! > 0 && (
           <text
-            x={Math.max(PLOT.left, Math.min(PLOT.width - PLOT.right, layout.xOf(peakIndex)))}
+            x={Math.max(plot.left, Math.min(plot.width - plot.right, layout.xOf(peakIndex)))}
             y={Math.max(12, yOf(totals[peakIndex]!) - 6)}
-            textAnchor={layout.xOf(peakIndex) > PLOT.width - PLOT.right - 90 ? "end" : "middle"}
+            textAnchor={layout.xOf(peakIndex) > plot.width - plot.right - 90 ? "end" : "middle"}
             className={s.chartPeak}
           >
             {t("fusion.charts.peak", { value: metric(totals[peakIndex]!) })}
@@ -368,8 +471,8 @@ export function StackedBars({
             <line
               x1={layout.xOf(active)}
               x2={layout.xOf(active)}
-              y1={PLOT.top - 6}
-              y2={PLOT.top + box.height}
+              y1={plot.top - 6}
+              y2={plot.top + box.height}
               stroke="var(--accent)"
               strokeDasharray="3 4"
             />
@@ -383,7 +486,7 @@ export function StackedBars({
             />
           </g>
         )}
-        <XAxis rows={rows} granularity={granularity} layout={layout} />
+        <XAxis plot={plot} rows={rows} granularity={granularity} layout={layout} />
       </ChartFrame>
       {selected && active !== null && (
         <div className={s.chartDetailRow} role="status">
@@ -434,18 +537,19 @@ export function LineChart({
   emptyTitle?: string;
 }) {
   const id = useId();
+  const { ref, plot } = usePlot();
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
-  const selection = useSelection(rows);
+  const selection = useSelection(rows, plot);
   if (!rows.length) return <Empty title={emptyTitle ?? t("fusion.charts.noSamplesInRange")} />;
-  const box = inner();
-  const layout = timeLayout(rows);
+  const box = inner(plot);
+  const layout = timeLayout(rows, plot);
   const values = rows.map((row) =>
     metrics.map((metricDef) => (number(row[metricDef.key]) ?? null) as number | null),
   );
   const observed = values.flat().filter((value): value is number => value !== null);
   if (!observed.length) return <Empty title={t("fusion.charts.insufficientForPercentiles")} />;
   const max = Math.max(1, ...observed);
-  const yOf = (value: number) => PLOT.top + box.height - box.height * (value / max);
+  const yOf = (value: number) => plot.top + box.height - box.height * (value / max);
   const active = selection.active;
   const selected = active === null ? null : rows[active];
 
@@ -498,6 +602,8 @@ export function LineChart({
         })}
       </div>
       <ChartFrame
+        plot={plot}
+        frameRef={ref}
         label={t("fusion.charts.latencyPercentiles")}
         hintId={`${id}-hint`}
         onPointer={selection.pointer}
@@ -505,8 +611,8 @@ export function LineChart({
         onBlur={selection.blur}
         onFocus={selection.focus}
       >
-        <GridLines />
-        <YTicks max={max} format={(value) => metric(value)} />
+        <GridLines plot={plot} />
+        <YTicks plot={plot} max={max} format={(value) => metric(value)} />
         {metrics.map((metricDef) => {
           if (hidden.has(metricDef.key)) return null;
           const metricIndex = metrics.indexOf(metricDef);
@@ -525,8 +631,8 @@ export function LineChart({
             <line
               x1={layout.xOf(active)}
               x2={layout.xOf(active)}
-              y1={PLOT.top - 6}
-              y2={PLOT.top + box.height}
+              y1={plot.top - 6}
+              y2={plot.top + box.height}
               stroke="var(--muted)"
               strokeDasharray="3 4"
             />
@@ -547,7 +653,7 @@ export function LineChart({
             })}
           </g>
         )}
-        <XAxis rows={rows} granularity={granularity} layout={layout} />
+        <XAxis plot={plot} rows={rows} granularity={granularity} layout={layout} />
       </ChartFrame>
       {selected && active !== null && (
         <div className={s.chartDetailRow} role="status">

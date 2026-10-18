@@ -284,12 +284,12 @@ export function Trends() {
             <table>
               <thead>
                 <tr>
-                  <th>{t("fusion.trends.colBucket")}</th>
-                  <th>{t("fusion.trends.colRequests")}</th>
-                  <th>{t("fusion.trends.colSuccessError")}</th>
-                  <th>P50 / P95 / P99</th>
-                  <th>{t("fusion.trends.metric.rate")}</th>
-                  <th>Token</th>
+                  <th scope="col">{t("fusion.trends.colBucket")}</th>
+                  <th scope="col">{t("fusion.trends.colRequests")}</th>
+                  <th scope="col">{t("fusion.trends.colSuccessError")}</th>
+                  <th scope="col">P50 / P95 / P99</th>
+                  <th scope="col">{t("fusion.trends.metric.rate")}</th>
+                  <th scope="col">Token</th>
                 </tr>
               </thead>
               <tbody>

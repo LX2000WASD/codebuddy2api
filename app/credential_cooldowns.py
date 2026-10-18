@@ -22,6 +22,8 @@ import tempfile
 import threading
 import time
 
+from .state_store import serialize_bounded
+
 VERSION = 1
 MAX_ACCOUNTS = 256          # Bounded table; matches the credential pool's practical size.
 MAX_MODELS = 64             # Bounded per-account model rows.
@@ -107,6 +109,10 @@ class CredentialCooldowns:
         # Set when the in-memory table changed but the write did not land. A later clear must
         # retry the write instead of reporting "nothing to do" while stale rows sit on disk.
         self._dirty = False
+        # Set while a stage=True update is waiting for flush(); see flush().
+        self._staged = False
+        # Rows given up to the byte bound since start, so an operator can see shedding.
+        self.shed_total = 0
         if self.path:
             self._load()
 
@@ -149,36 +155,37 @@ class CredentialCooldowns:
     def _serialize_locked(self):
         """Build the exact payload to write, shedding rows until it fits MAX_BYTES.
 
-        Returns the payload plus whether rows had to be shed, because a caller that asked to
+        Returns the payload plus how many rows had to be shed, because a caller that asked to
         record a cooldown must not be told its write was durable when that row was the one
         given up to satisfy the byte bound.
         """
-        accounts = dict(self._data)
-        shed = False
-        while True:
-            try:
-                content = json.dumps({"version": VERSION, "accounts": accounts},
-                                     ensure_ascii=False, separators=(",", ":"),
-                                     allow_nan=False).encode("utf-8")
-            except (TypeError, ValueError):
-                return None, shed
-            if len(content) <= MAX_BYTES or not accounts:
-                return content, shed
-            # Shed the accounts nearest expiry first, in one proportional step.
-            ordered = sorted(accounts, key=lambda key: max(
-                [float(accounts[key].get("fail_until") or 0.0)] + list(accounts[key]["models"].values())))
-            keep = max(0, int(len(ordered) * MAX_BYTES / len(content) * 0.9))
-            for key in ordered[:max(1, len(ordered) - keep)]:
-                accounts.pop(key, None)
-                shed = True
+        return serialize_bounded(
+            {"version": VERSION, "accounts": self._data}, MAX_BYTES, rows_field="accounts",
+            # Shed the accounts nearest expiry first: those are the cooldowns the table would
+            # forget soonest on its own, so the longest-lived ones survive.
+            urgency=lambda key, row: max([float(row.get("fail_until") or 0.0)]
+                                         + list(row["models"].values())))
 
-    def _save_locked(self) -> bool:
+    def _save_locked(self, stage: bool = False) -> bool:
         """Atomically rewrite the table; returns False when the update was not fully durable.
 
         The payload is written even when rows had to be shed, so the file stays bounded and
         readable; the False return tells the caller its update may not have survived.
+
+        With *stage*, a SQLite-backed table hands the payload to StateStore.stage() instead of
+        paying for a durable commit per update; the caller then owns durability through
+        flush(). The in-memory table and the value returned by restore() are already updated
+        either way, so selection sees the cooldown immediately.
         """
         if not self.path:
+            return True
+        if stage and self._store is not None:
+            # No encode, no shed pass, no SQLite: flush() does all three once per burst. The
+            # shallow copy handed to the store is O(accounts) and keeps read-your-writes true
+            # for any other reader of the same store before this burst is committed.
+            with self._lock:
+                self._staged = True
+                self._store.stage("cooldowns", {"version": VERSION, "accounts": dict(self._data)})
             return True
         content, shed = self._serialize_locked()
         if content is None:
@@ -187,13 +194,20 @@ class CredentialCooldowns:
             return False
         if self._store is not None:
             try:
-                self._store.put("cooldowns", json.loads(content))
+                if stage:
+                    # Hand over the in-memory table, not the payload: decoding it back would
+                    # put the O(document) encode this path just paid right back on the hot
+                    # path. The shed pass and the encode happen once, in flush().
+                    self._staged = True
+                    self._store.stage("cooldowns", {"version": VERSION, "accounts": dict(self._data)})
+                else:
+                    self._store.put("cooldowns", json.loads(content))
             except (OSError, ValueError, sqlite3.Error) as error:
                 self.last_error = type(error).__name__
                 self._dirty = True
                 return False
             self.last_error = "capacity" if shed else None
-            self._dirty = shed
+            self._dirty = bool(shed)
             return not shed
         temporary = None
         try:
@@ -218,7 +232,9 @@ class CredentialCooldowns:
                 except OSError:
                     pass
         self.last_error = "capacity" if shed else None
-        self._dirty = shed          # The write landed, but rows were dropped to fit.
+        self._dirty = bool(shed)    # The write landed, but rows were dropped to fit.
+        if shed:
+            self.shed_total += shed
         return not shed
 
     # -- table helpers -----------------------------------------------------
@@ -268,14 +284,61 @@ class CredentialCooldowns:
             return True
         return self._save_locked()
 
+    # -- coalesced durability ----------------------------------------------
+
+    def flush(self) -> bool:
+        """Make every staged update durable; returns whether the table is fully persisted.
+
+        Only a SQLite-backed table stages, and only when its caller asked for it, so this is a
+        no-op (True) for the file-backed table and for callers that never stage. This is where
+        a staged burst pays its one encode and one durable commit, and where the byte bound
+        and shedding are applied; a failed commit leaves the batch staged for the next flush.
+        The in-memory table is authoritative either way.
+        """
+        if self._store is None:
+            return not self._dirty
+        if not self._staged:
+            # Nothing of ours is waiting: a previous commit may still be dirty, so report that.
+            return self._store.flush() and not self._dirty
+        with self._lock:
+            shed = 0
+            if self._staged:
+                content, shed = self._serialize_locked()
+                if content is None:
+                    self.last_error = "serialize"
+                    self._dirty = True
+                    return False
+                self._store.stage("cooldowns", json.loads(content))
+            durable = self._store.flush()
+            if not durable:
+                self.last_error = "store"
+                self._dirty = True
+                return False
+            if self._staged and not self._store.pending():
+                self._staged = False
+            self.last_error = "capacity" if shed else None
+            self._dirty = bool(shed)
+            if shed:
+                self.shed_total += shed
+            return not shed
+
+    def pending(self) -> bool:
+        """Whether an accepted update is still waiting for flush()."""
+        return self._staged or (self._store is not None and self._store.pending())
+
     def _drop_locked(self, identity, row):
         if not row.get("models") and not row.get("fail_until"):
             self._data.pop(identity, None)
 
     # -- writes ------------------------------------------------------------
 
-    def note_credential(self, identity, profile, until, reason="", now=None) -> bool:
-        """Record a credential-wide circuit-breaker deadline; returns whether it is durable."""
+    def note_credential(self, identity, profile, until, reason="", now=None, *,
+                        stage: bool = False) -> bool:
+        """Record a credential-wide circuit-breaker deadline; returns whether it is durable.
+
+        With *stage*, a SQLite-backed table returns whether the deadline was accepted instead
+        of whether it is durable; the caller makes it durable with flush().
+        """
         deadline = _number(until)
         stamp = _number(time.time() if now is None else now)
         if deadline is None or stamp is None:
@@ -290,10 +353,14 @@ class CredentialCooldowns:
                                     min(deadline, stamp + self.auth_ceiling_s))
             row["reason"] = _text(reason)
             row["failed_at"] = stamp
-            return self._save_locked()
+            return self._save_locked(stage)
 
-    def note_model(self, identity, profile, model, until, now=None) -> bool:
-        """Record a per-model 429 deadline; returns whether it is durable."""
+    def note_model(self, identity, profile, model, until, now=None, *, stage: bool = False) -> bool:
+        """Record a per-model 429 deadline; returns whether it is durable.
+
+        With *stage*, a SQLite-backed table returns whether the deadline was accepted instead
+        of whether it is durable; the caller makes it durable with flush().
+        """
         deadline = _number(until)
         stamp = _number(time.time() if now is None else now)
         if not _valid_token(model) or deadline is None or stamp is None:
@@ -309,7 +376,7 @@ class CredentialCooldowns:
                 models.pop(min(models, key=lambda name: models[name]), None)
             models[model] = max(float(models.get(model) or 0.0),
                                 min(deadline, stamp + self.model_ceiling_s))
-            return self._save_locked()
+            return self._save_locked(stage)
 
     def _expire_locked(self, now):
         """Drop expired deadlines so capacity reflects live rows only."""
@@ -458,6 +525,9 @@ class AccountPauses:
         self._lock = threading.RLock()
         self._data: dict[str, dict] = {}
         self.last_error: str | None = None
+        # Rows given up to the byte bound since start. A shed pause row means that account
+        # re-enters selection after a restart, so this is a data-loss signal, not a metric.
+        self.shed_total = 0
         if self.path:
             self._load()
 
@@ -491,11 +561,32 @@ class AccountPauses:
         with self._lock:
             self._data = restored
 
+    def _serialize_locked(self):
+        """Build the exact payload to write, shedding rows until it fits MAX_BYTES.
+
+        Returns the payload plus how many pause rows had to be given up. A paused account
+        whose row is shed re-enters selection after a restart, so the caller has to be able
+        to tell "written" from "written, minus the row you just asked me to keep".
+        """
+        return serialize_bounded({"version": self.VERSION, "paused": self._data}, self.MAX_BYTES,
+                                 rows_field="paused",
+                                 # Oldest pause first: it has been out of selection longest and
+                                 # is the row an operator is most likely to resume next anyway.
+                                 urgency=lambda key, row: float(row.get("at") or 0.0))
+
     def _save_locked(self) -> bool:
+        """Atomically rewrite the pause table; returns False when the update is not durable.
+
+        The payload is written even when rows had to be shed, so the file stays inside the
+        bound its reader enforces; the False return tells the caller its pause may not have
+        survived a restart.
+        """
         if not self.path:
             return True
-        content = json.dumps({"version": self.VERSION, "paused": self._data},
-                             ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        content, shed = self._serialize_locked()
+        if content is None:
+            self.last_error = "serialize"
+            return False
         temporary = None
         try:
             directory = os.path.dirname(self.path) or "."
@@ -517,8 +608,10 @@ class AccountPauses:
                     os.unlink(temporary)
                 except OSError:
                     pass
-        self.last_error = None
-        return True
+        self.last_error = "capacity" if shed else None
+        if shed:
+            self.shed_total += shed
+        return not shed
 
     def pause(self, identity: str, reason: str = "", now=None) -> dict:
         """Stand an account aside from selection; returns whether it is durable."""
@@ -560,6 +653,12 @@ class AccountPauses:
             return [{"identity": identity, **row} for identity, row in self._data.items()]
 
     def storage(self) -> dict:
+        """Report pause persistence health, including rows given up to the byte bound.
+
+        A non-zero *shed_rows* means a paused account can come back into selection after a
+        restart, which is the one pause outcome an operator has to be able to see without
+        reading the file.
+        """
         return {"available": self.path is not None, "path": self.path,
                 "degraded": self.last_error is not None, "last_error": self.last_error,
-                "rows": len(self._data)}
+                "rows": len(self._data), "shed_rows": self.shed_total}

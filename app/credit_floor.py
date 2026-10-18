@@ -32,6 +32,7 @@ import threading
 import time
 
 from .model_rates import multiplier_value as _multiplier_value
+from .state_store import serialize_bounded
 
 VERSION = 1
 MAX_ACCOUNTS = 256          # Bounded table, matching the credential pool's practical size.
@@ -84,6 +85,9 @@ class CostLedger:
         self._data: dict[str, dict] = {}
         # Last write failure, surfaced for diagnostics instead of failing silently.
         self.last_error: str | None = None
+        # Observations given up to the byte bound since start; a shed row weakens the credit
+        # floor for that model until the next sample arrives.
+        self.shed_total = 0
         if self.path:
             self._load()
 
@@ -126,12 +130,28 @@ class CostLedger:
         with self._lock:
             self._data = restored
 
+    def _serialize_locked(self):
+        """Build the exact payload to write, shedding observations until it fits MAX_BYTES.
+
+        Returns the payload plus how many (account, model) rows had to be given up. A shed
+        row is a lost cost observation, which weakens the credit floor for that model until
+        the next sample, so the caller must not be told its write was fully durable.
+        """
+        return serialize_bounded(
+            {"version": VERSION, "accounts": self._data}, MAX_BYTES, rows_field="accounts",
+            # Stalest account first: its observations expire soonest, so it is the one the
+            # ledger would forget on its own; the freshest prices survive.
+            urgency=lambda key, models: max((row["last_seen"] for row in models.values()),
+                                            default=0.0))
+
     def _save_locked(self) -> bool:
         """Atomically rewrite the ledger; returns False when the update was not durable."""
         if not self.path:
             return True
-        content = json.dumps({"version": VERSION, "accounts": self._data},
-                             ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        content, shed = self._serialize_locked()
+        if content is None:
+            self.last_error = "serialize"
+            return False
         temporary = None
         try:
             directory = os.path.dirname(self.path) or "."
@@ -154,8 +174,10 @@ class CostLedger:
                     os.unlink(temporary)
                 except OSError:
                     pass
-        self.last_error = None
-        return True
+        self.last_error = "capacity" if shed else None
+        if shed:
+            self.shed_total += shed
+        return not shed
 
     # -- writes ------------------------------------------------------------
 

@@ -79,8 +79,6 @@ const zh: Record<string, string> = {
   "logs.tab.runtime": "运行事件",
   "logs.tab.admin": "管理操作记录",
   "logs.panel.request": "请求记录",
-  "logs.panel.runtime": "运行事件",
-  "logs.panel.admin": "管理操作记录",
   "logs.perPage": "每页 50 条",
   "logs.filter.model": "筛选模型",
   "logs.filter.credential": "筛选凭证",
@@ -100,7 +98,6 @@ const zh: Record<string, string> = {
   "logs.col.action": "操作 / 类型",
   "logs.col.status": "状态",
   "logs.col.duration": "耗时",
-  "logs.col.tokens": "Token",
   "logs.viewDetail": "查看详情",
   "logs.prevPage": "上一页",
   "logs.nextPage": "下一页",
@@ -167,9 +164,6 @@ const zh: Record<string, string> = {
   "dash.granularityHour": "按小时",
   "dash.granularityByRequests": "按请求量",
   "dash.summary": "统计",
-  "dash.totalRequests": "请求总量",
-  "dash.successRate": "成功率",
-  "dash.totalTokens": "Token 用量",
   "dash.requests": "请求",
   "dash.models": "模型",
   "dash.modelRank": "模型使用排行",
@@ -179,7 +173,6 @@ const zh: Record<string, string> = {
   "dash.unknownModel": "未识别模型",
   "dash.credentialHealth": "凭证健康",
   "dash.credentialHealthEmpty": "尚未添加凭证",
-  "dash.health": "健康状态",
   "dash.balance": "官方余额",
   "dash.balanceNote": "账号余额，并非本网关消费统计。",
   "dash.balanceEmpty": "暂无余额数据，可在凭证管理查看。",
@@ -187,20 +180,12 @@ const zh: Record<string, string> = {
   "dash.syncStatus": "同步状态",
   "dash.syncTimeUnknown": "同步时间未知",
   "dash.status.ready": "就绪",
-  "dash.status.done": "已完成",
   "dash.status.normal": "正常",
   "dash.status.manual": "人工停用",
   "dash.status.syncError": "同步异常",
-  "dash.status.unknown": "状态未知",
-  "dash.status.batch": "分批清理中",
   "dash.storage": "日志存储",
   "dash.storageDegraded": "统计可能不完整，请检查日志存储状态。",
   "dash.storagePartial": "小时记录不完整，仅展示已记录时段；可切换按天查看完整统计。",
-  "dash.storageDiagnose": "查看存储诊断",
-  "dash.storage.wal": "WAL 文件",
-  "dash.storage.shm": "SHM 文件",
-  "dash.storage.credits": "网关已知 Credit",
-  "dash.storage.creditsNote": "官方账号余额",
   "dash.kpi.requests": "请求数",
   "dash.kpi.successRate": "成功率",
   "dash.kpi.failures": "失败数",
@@ -223,8 +208,6 @@ const zh: Record<string, string> = {
   "dash.zoomReset": "复位缩放",
   "dash.zoomHint": "滚轮缩放 · 双击复位",
   "dash.unlimited": "无限",
-  "dash.storage.unknown": "未知",
-  "dash.storage.collectDegraded": "采集降级",
   "dash.credentials": "凭证",
   "dash.window": "统计窗口",
   "val.success": "成功",
@@ -259,12 +242,9 @@ const zh: Record<string, string> = {
   "dash.trend.daily": "按日请求量趋势",
   "dash.trend.hourly": "按小时请求量趋势",
   "dash.lastNDays": "最近 {n} 天",
-  "dash.rangeHint": "最近 {n} 天 · UTC 自然日 · {grain}",
   "dash.updatedAt": "更新于",
   "dash.shareOfRequests": "请求占比",
   "dash.modelCooldowns": "{n} 个模型冷却",
-  "dash.storage.cleanupStatus": "清理状态:",
-  "dash.storage.detailsLine": "明细 {used} / {max}",
   "dash.balanceTitle": "官方账号余额",
   "logs.clear.scope": "清理范围",
   "logs.clear.detailsOnly": "仅清空明细 · 保留统计",
@@ -620,8 +600,6 @@ const en: Record<string, string> = {
   "logs.tab.runtime": "Runtime events",
   "logs.tab.admin": "Admin actions",
   "logs.panel.request": "Request records",
-  "logs.panel.runtime": "Runtime events",
-  "logs.panel.admin": "Admin action records",
   "logs.perPage": "50 per page",
   "logs.filter.model": "Filter model",
   "logs.filter.credential": "Filter credential",
@@ -641,7 +619,6 @@ const en: Record<string, string> = {
   "logs.col.action": "Action / type",
   "logs.col.status": "Status",
   "logs.col.duration": "Duration",
-  "logs.col.tokens": "Tokens",
   "logs.viewDetail": "Details",
   "logs.prevPage": "Previous page",
   "logs.nextPage": "Next page",
@@ -708,9 +685,6 @@ const en: Record<string, string> = {
   "dash.granularityHour": "By hour",
   "dash.granularityByRequests": "By requests",
   "dash.summary": "Summary",
-  "dash.totalRequests": "Total requests",
-  "dash.successRate": "Success rate",
-  "dash.totalTokens": "Token usage",
   "dash.requests": "Requests",
   "dash.models": "Models",
   "dash.modelRank": "Model usage ranking",
@@ -720,7 +694,6 @@ const en: Record<string, string> = {
   "dash.unknownModel": "Unidentified model",
   "dash.credentialHealth": "Credential health",
   "dash.credentialHealthEmpty": "No credentials yet",
-  "dash.health": "Health",
   "dash.balance": "Official balance",
   "dash.balanceNote": "Account balance, not this gateway's consumption.",
   "dash.balanceEmpty": "No balance data yet; check credential management.",
@@ -728,21 +701,13 @@ const en: Record<string, string> = {
   "dash.syncStatus": "Sync status",
   "dash.syncTimeUnknown": "Sync time unknown",
   "dash.status.ready": "Ready",
-  "dash.status.done": "Completed",
   "dash.status.normal": "Normal",
   "dash.status.manual": "Manually disabled",
   "dash.status.syncError": "Sync error",
-  "dash.status.unknown": "Unknown status",
-  "dash.status.batch": "Batch cleanup running",
   "dash.storage": "Log storage",
   "dash.storageDegraded": "Statistics may be incomplete; check log storage.",
   "dash.storagePartial":
     "Hourly records are incomplete; only recorded hours are shown. Switch to daily for full totals.",
-  "dash.storageDiagnose": "View storage diagnostics",
-  "dash.storage.wal": "WAL file",
-  "dash.storage.shm": "SHM file",
-  "dash.storage.credits": "Gateway-known credits",
-  "dash.storage.creditsNote": "Official account balance",
   "dash.kpi.requests": "Requests",
   "dash.kpi.successRate": "Success rate",
   "dash.kpi.failures": "Failures",
@@ -765,8 +730,6 @@ const en: Record<string, string> = {
   "dash.zoomReset": "Reset zoom",
   "dash.zoomHint": "Scroll to zoom · double-click reset",
   "dash.unlimited": "Unlimited",
-  "dash.storage.unknown": "Unknown",
-  "dash.storage.collectDegraded": "Collection degraded",
   "dash.credentials": "Credentials",
   "dash.window": "Statistics window",
   "val.success": "Success",
@@ -801,12 +764,9 @@ const en: Record<string, string> = {
   "dash.trend.daily": "Daily request trend",
   "dash.trend.hourly": "Hourly request trend",
   "dash.lastNDays": "Last {n} days",
-  "dash.rangeHint": "Last {n} days · UTC days · {grain}",
   "dash.updatedAt": "Updated",
   "dash.shareOfRequests": "share of requests",
   "dash.modelCooldowns": "{n} model cooldowns",
-  "dash.storage.cleanupStatus": "Cleanup:",
-  "dash.storage.detailsLine": "Details {used} / {max}",
   "dash.balanceTitle": "Official account balance",
   "logs.clear.scope": "Scope",
   "logs.clear.detailsOnly": "Details only · keep aggregates",
@@ -1155,6 +1115,41 @@ export function useT() {
     () => (key: string, vars?: Record<string, string | number>) => translate(key, vars),
     [lang],
   );
+}
+
+/** BCP-47 tag for Intl formatting; `en` must not fall back to a zh-CN date order. */
+export function intlLocale(lang: Lang): string {
+  return lang === "en" ? "en-US" : "zh-CN";
+}
+
+/**
+ * Locale-aware date/time formatter for the active UI language. Hard-coded
+ * toLocaleString("zh-CN") rendered a Chinese date order inside the English UI.
+ * Both formatters use the locale defaults, matching the previous zh-CN output.
+ */
+export function useDateFormat(): {
+  date: (value: Date) => string;
+  dateTime: (value: Date) => string;
+} {
+  const lang = useLang();
+  return useMemo(() => {
+    const locale = intlLocale(lang);
+    // Defaults keep the exact shape the hard-coded toLocaleString("zh-CN")
+    // produced for zh ("2026/10/18 10:26:01"), so only the English UI changes.
+    const day = new Intl.DateTimeFormat(locale);
+    const full = new Intl.DateTimeFormat(locale, {
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+    });
+    return {
+      date: (value: Date) => day.format(value),
+      dateTime: (value: Date) => full.format(value),
+    };
+  }, [lang]);
 }
 
 export function LanguageProvider({ children }: { children: ReactNode }) {

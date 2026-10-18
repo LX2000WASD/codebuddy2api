@@ -704,7 +704,8 @@ class InboundStreamingTests(unittest.IsolatedAsyncioTestCase):
                  "asgi": {"version": "3.0", "spec_version": "2.3"}}
         await asyncio.wait_for(middleware(scope, receive, send), 2)
         self.assertTrue(closed.is_set())
-        self.assertFalse(middleware._gate().locked())
+        # The slot must be handed back once the stream finishes or disconnects.
+        self.assertEqual(middleware._active, 0)
         body = b"".join(m.get("body", b"") for m in sent)
         self.assertIn(b"data: first", body)
         if disconnect:
@@ -781,8 +782,7 @@ class AuxiliaryCapacityTests(unittest.IsolatedAsyncioTestCase):
         from app.inbound_limits import ConcurrencyLimitMiddleware
 
         middleware = ConcurrencyLimitMiddleware(converter.app, {"max_concurrent": 1})
-        gate = middleware._gate()
-        await gate.acquire()
+        middleware._active += 1  # saturate the limit of 1
         try:
             with patch.dict(converter.CONFIG, {"api_key": ""}):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=middleware),
@@ -795,9 +795,9 @@ class AuxiliaryCapacityTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(unknown.status_code, 404)
                     wrong_method = await client.get("/v1/messages")
                     self.assertEqual(wrong_method.status_code, 405)
-            self.assertTrue(gate.locked())
+            self.assertEqual(middleware._active, 1)
         finally:
-            gate.release()
+            middleware._active -= 1
 
 
 

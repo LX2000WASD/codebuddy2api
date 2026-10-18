@@ -17,7 +17,8 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager, contextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -76,8 +77,8 @@ from app.observability import (observe_recovery, observe_route, observe_stream_m
                                observe_failure, observe_failure_seq)
 from app.credential_io import (CredentialFileError, read_import_file, atomic_write_credential,
                                credential_file_lock)
-from app.upstream_io import (ChatSSEAccumulator, StreamOutputBudget, UpstreamHTTPError,
-                             UpstreamResponseError, UpstreamTimeout,
+from app.upstream_io import (ChatSSEAccumulator, LEGACY_MAX_ATTEMPTS, StreamOutputBudget,
+                             UpstreamHTTPError, UpstreamResponseError, UpstreamTimeout,
                              open_backend_stream, parse_retry_after, read_bounded_error)
 from app.inference_resources import (AccountCapacity, InferenceResourcesMiddleware, inference_lifespan,
                                      request_resources, release_credential)
@@ -423,6 +424,12 @@ MODEL_SITE_BLOCK_MAX_S = 24 * 3600  # Maximum unsupported-model backoff
 # An unsupported model must be routed to a different backend.
 MODEL_NOT_SERVABLE_CODES = frozenset({"11102"})
 _NOT_SERVABLE_MSG = re.compile(r"service info not found|model .{0,80}not (?:found|supported)", re.I)
+# A plan-permission rejection: the backend serves the model, this account's plan may not use
+# it. The verdict is per account, not per backend, so its negative cache is account-scoped and
+# the request moves on to the next account, whose plan may well be allowed. The message
+# pattern is deliberately narrow: a broad "not allowed" would swallow ordinary request errors.
+MODEL_FORBIDDEN_CODES = frozenset({"11158"})
+_MODEL_FORBIDDEN_MSG = re.compile(r"is not allowed for (?:user type|this account|your )", re.I)
 # 上游准入队列满（渠道级容量信号，非账号配额）：6021 / queue.full。
 # 识别只看响应体开头 QUEUE_FULL_HEAD 字节，命中后既不冷却账号也不写模型软冷却，
 # 而是按 503 + 短退避回给客户端并保留换号机会（见 _check_upstream_status）。
@@ -468,10 +475,13 @@ def session_key(payload: dict) -> str | None:
 
 
 
-def _parse_not_servable(raw: bytes, status: int):
-    """Recognize unsupported-model errors from code/message fields, excluding incidental IDs."""
-    if status not in (400, 404) or not raw:
-        return None
+def _error_fields(raw: bytes):
+    """Read the code and message a JSON error body carries, ignoring incidental occurrences.
+
+    Returns (code, msg), either of which may be empty, or None when the body is not a JSON
+    object. Only dedicated fields are read: an ID that happens to contain "11102" must not
+    be mistaken for an error code.
+    """
     try:
         payload = json.loads(raw.decode("utf-8", "replace"))
     except (ValueError, UnicodeError, RecursionError):
@@ -492,11 +502,44 @@ def _parse_not_servable(raw: bytes, status: int):
             value = node.get(key)
             if isinstance(value, str) and value.strip():
                 msg = msg or value.strip()
+    return code, msg
+
+
+def _parse_not_servable(raw: bytes, status: int):
+    """Recognize unsupported-model errors from code/message fields, excluding incidental IDs."""
+    if status not in (400, 404) or not raw:
+        return None
+    fields = _error_fields(raw)
+    if fields is None:
+        return None
+    code, msg = fields
     if not code and not msg:
         return None
+    if code in MODEL_FORBIDDEN_CODES or _MODEL_FORBIDDEN_MSG.search(msg):
+        # Checked before the unsupported-model branch: a plan rejection says the model exists
+        # but this account may not use it, which is a different verdict with a different cache.
+        return code or "11158", msg[:200]
     if code in MODEL_NOT_SERVABLE_CODES or _NOT_SERVABLE_MSG.search(msg):
         return code or "11102", msg[:200]
     return None
+
+
+def _is_model_forbidden(raw: bytes, status: int) -> bool:
+    """Whether this response is a plan-permission rejection rather than a request error.
+
+    Only this narrow class may widen failover to HTTP 400. Every other 400 is a deterministic
+    request error (bad parameters, malformed tools) that must be surfaced untouched instead of
+    being replayed against every account in the pool. The check is intentionally independent
+    of _parse_not_servable's status window: failover must reach the same verdict for the same
+    body no matter which branch produced the error.
+    """
+    if status != 400 or not raw:
+        return False
+    fields = _error_fields(raw)
+    if fields is None:
+        return False
+    code, msg = fields
+    return code in MODEL_FORBIDDEN_CODES or bool(_MODEL_FORBIDDEN_MSG.search(msg))
 
 
 def _parse_queue_full(raw: bytes, status: int):
@@ -599,9 +642,20 @@ class CredentialPool:
         self._sync_retry: dict[str, float] = {}
         self._sync_attempts: dict[str, int] = {}
         self._rescan_dir_key: tuple | None = None  # 上次重扫时的目录发现键
+        # 选路静态资格（哪些 profile 在池内、是否启用）的版本号：条目集合或条目
+        # profile 一变就自增，_configured_profiles 的缓存键随之失效。仅凭内容比较
+        # 会漏掉「换号但 profile 相同」这类变化，所以按事件计数而不是按内容哈希。
+        self.revision = 0
+        self._configured_cache: dict = {}
+        self._configured_revision = -1
         self.reload(paths or [])
         if self._scan:
             self._rescan()             # Discover credentials at startup.
+
+    def _bump_revision(self):
+        """Invalidate cached static routing facts after the entry set or a profile changes."""
+        self.revision += 1
+        self._configured_cache.clear()
 
     @staticmethod
     def _pause_store_path(cooldowns_path, state_store):
@@ -659,6 +713,9 @@ class CredentialPool:
                         entry.update(uid=summary.get("uid"), profile=summary["profile"], site=summary["site"],
                                      enterprise=summary.get("enterprise") is True,
                                      account_key=identity, generation=generation, catalog_dirty=True)
+                        # A rewritten file can change this account's profile (or replace the
+                        # account outright), which changes the pool's static eligibility set.
+                        self._bump_revision()
                         self._bind_entry(entry)
                         if reset or replaced:
                             entry.update(fail_until=0.0, keepalive_after=0.0)
@@ -707,6 +764,7 @@ class CredentialPool:
                 self._bind_entry(entry)
                 self._adopt_cooldowns(entry)
                 self._entries.append(entry)
+                self._bump_revision()
                 by_id[cid] = entry
                 self._ignored_duplicates.discard(cid)
                 self._ignored_invalid.pop(cid, None)
@@ -788,6 +846,7 @@ class CredentialPool:
             self._ledger.remove(cid)
         self.forget_credential_state(entry)
         self._entries = [e for e in self._entries if e is not entry]
+        self._bump_revision()
         self._model_fail = {key: until for key, until in self._model_fail.items() if key[0] != cid}
         self._sticky = OrderedDict((key, value) for key, value in self._sticky.items() if value[0] != cid)
         self._sync_pending.discard(cid)
@@ -812,6 +871,7 @@ class CredentialPool:
                 self.forget_credential_state(entry)
             self._entries = [e for e in self._entries if e not in removed]
             if len(self._entries) != before:
+                self._bump_revision()
                 ids = {e["id"] for e in self._entries}
                 self._sync_pending.intersection_update(ids)
                 self._syncing.intersection_update(ids)
@@ -878,20 +938,48 @@ class CredentialPool:
         """
         return bool(entry.get("account_key") and entry.get("profile") and entry.get("uid"))
 
+    # Cooldown persistence is split in two so the pool lock never waits on SQLite.
+    #
+    # A 429 storm drives every selection through _remember_model/_remember_credential, and each
+    # of those used to pay a full durable commit (BEGIN IMMEDIATE + synchronous=FULL, ~0.84ms
+    # measured here) while still holding pool._lock; the surrounding _log() added an audit row
+    # (~0.94ms) under the same lock. Selection then serialized at 1-2ms per pick.
+    #
+    # The lock now only updates the in-memory tables — which is what selection reads — and
+    # stages the write; _flush_cooldowns() commits it after the lock is released. A staged
+    # document is visible to the store's get(), so a request that records a cooldown and then
+    # re-reads it never sees the old value. A failed commit keeps the staged document for the
+    # next flush, so nothing is lost, and the in-memory verdict already applied: a storage
+    # failure costs durability, never routing.
+
     def _remember_credential(self, entry, reason):
-        """Mirror a credential circuit breaker to disk; returns whether it is durable."""
+        """Stage a credential circuit breaker; returns the stage result, or None if unkeyed.
+
+        None means this account's identity is incomplete, so it owns no durable row and the
+        caller has nothing to flush. False means the update was offered and refused, which
+        the caller must still surface — a refusal is as reportable as a failed commit.
+        """
         if not self._durable_identity(entry):
-            return False
-        durable = self._cooldowns.note_credential(entry["account_key"], entry["profile"],
-                                                 entry["fail_until"], reason=reason)
-        self._warn_storage("cooldown", durable)
-        return durable
+            return None
+        return self._cooldowns.note_credential(entry["account_key"], entry["profile"],
+                                               entry["fail_until"], reason=reason, stage=True)
 
     def _remember_model(self, entry, model, until):
-        """Mirror a model cooldown to disk; returns whether it is durable."""
+        """Stage a model cooldown; returns the stage result, or None if the identity is unkeyed."""
         if not self._durable_identity(entry):
-            return False
-        durable = self._cooldowns.note_model(entry["account_key"], entry["profile"], model, until)
+            return None
+        return self._cooldowns.note_model(entry["account_key"], entry["profile"], model, until,
+                                          stage=True)
+
+    def _flush_cooldowns(self):
+        """Commit staged cooldown rows outside the pool lock; returns whether they are durable.
+
+        Durability is reported from the commit, never from the staged acceptance: that is what
+        keeps a failed write visible while the in-memory cooldown stays in force. A file-backed
+        table has nothing to coalesce, so its stage already wrote and this only re-reads the
+        outcome — which is why the caller must flush after a refused stage too.
+        """
+        durable = self._cooldowns.flush()
         self._warn_storage("cooldown", durable)
         return durable
 
@@ -1033,6 +1121,16 @@ class CredentialPool:
 
     @staticmethod
     def _entry_profile(entry):
+        """Return the cached profile a reload stamped on this entry.
+
+        Every entry is built from a parsed summary, and reload() rewrites the field whenever
+        the file's generation moves, so the cache cannot go stale between reloads. Falling
+        back to summary() only covers entries that never went through that path; reading the
+        file here on the hot path cost one stat per entry per candidate check.
+        """
+        profile = entry.get("profile")
+        if profile:
+            return profile
         try:
             return entry["cm"].summary().get("profile", "cn-cli")
         except Exception:
@@ -1077,17 +1175,24 @@ class CredentialPool:
         profile = profile or actual
         if not profile or profile != actual or not _in_region(profile, region):
             return False
-        configured = {candidate for item in self._entries if (candidate := self._entry_profile(item))
-                      and _in_region(candidate, region)}
+        configured = _configured_profiles(region)
         if profile not in _model_profiles(model, region, configured):
             return False
         if CONFIG.get("account_catalogs") is not None or CONFIG.get("model_cache") is not None:
-            try:
-                identity = entry["cm"].summary()["account_key"]
-            except Exception:
-                return False
-            if identity != entry.get("account_key"):
-                return False
+            # Identity safety check: the entry's cached identity must still describe the file
+            # behind it. A matching generation proves the entry was built by reload() from the
+            # current file content, so identity cannot have changed and the expensive re-read
+            # (a stat plus a parse per entry per candidate check) is redundant. Only a moved
+            # generation — a file edited, replaced or refreshed behind our back — needs it,
+            # and then the freshly parsed identity is what the catalog lookup must use.
+            identity = entry.get("account_key")
+            if entry.get("generation") != entry["cm"]._generation:
+                try:
+                    identity = entry["cm"].summary()["account_key"]
+                except Exception:
+                    return False
+                if identity != entry.get("account_key"):
+                    return False
             account = (CONFIG.get("account_catalogs") or {}).get(identity) or {}
             models = _effective_account_scope(account, "serves", model_id=_upstream_model(model, profile))
             if account.get("profile") != profile or models is None:
@@ -1128,22 +1233,47 @@ class CredentialPool:
         return PROFILE_ENDPOINTS.get(profile) if profile else None
 
     @classmethod
-    def _model_block_key(cls, entry):
+    def _account_block_key(cls, entry):
+        """Account-scoped backoff namespace for one entry's backend."""
         endpoint = cls._entry_endpoint(entry)
-        if endpoint and cls._entry_profile(entry) in SHARED_INTL_PROFILES:
-            identity = entry.get("account_key") or hashlib.sha256(str(entry.get("id", "")).encode()).hexdigest()
-            return f"{endpoint}#account:{identity}"
+        if not endpoint:
+            return None
+        identity = entry.get("account_key") or hashlib.sha256(str(entry.get("id", "")).encode()).hexdigest()
+        return f"{endpoint}#account:{identity}"
+
+    @classmethod
+    def _model_block_key(cls, entry, code=None):
+        """Return the backoff namespace a rejection is recorded under.
+
+        Backend-scoped by default: "this backend does not serve the model" is a fact about
+        the backend, so every account behind it must back off together. A plan-permission
+        rejection (and, historically, every international rejection) is account-scoped
+        instead, because it says something about this account's plan. Recording a permission
+        verdict backend-wide would take the model away from the accounts allowed to use it.
+        """
+        endpoint = cls._entry_endpoint(entry)
+        if not endpoint:
+            return None
+        if code in MODEL_FORBIDDEN_CODES or cls._entry_profile(entry) in SHARED_INTL_PROFILES:
+            return cls._account_block_key(entry)
         return endpoint
 
+    @classmethod
+    def _model_guard_keys(cls, entry) -> tuple:
+        """Every backoff namespace this entry must respect: its backend and its own plan."""
+        keys = [cls._model_block_key(entry), cls._account_block_key(entry)]
+        return tuple(dict.fromkeys(key for key in keys if key))
 
     def _model_servable(self, e: dict, model: str | None) -> bool:
         """Check backend/model backoff, skipping the check when no model is supplied."""
         if not model:
             return True
-        endpoint = self._model_block_key(e)
-        if not endpoint:
+        keys = self._model_guard_keys(e)
+        if not keys:
             return True
-        return time.time() >= self._blocks.until(endpoint, _block_model(model))
+        now = time.time()
+        routed = _block_model(model)
+        return all(now >= self._blocks.until(key, routed) for key in keys)
 
     def _model_healthy(self, e: dict, model: str | None) -> bool:
         """Check this credential's model-specific 429 cooldown (model-level soft cooldown).
@@ -1406,6 +1536,7 @@ class CredentialPool:
         return generation == cm._generation
 
     def cooldown(self, cm: CredentialManager, reason: str = "", *, generation=None, duration=None):
+        persisted = False
         with self._lock, (cm._lock if generation is not None else nullcontext()):
             if not self._lease_matches(cm, generation):
                 return
@@ -1416,7 +1547,9 @@ class CredentialPool:
                     e["fail_until"] = time.time() + seconds
                     e["last_error"] = sanitize_log_text(reason, 256)
                     e["last_failure_at"] = time.time()
-                    self._remember_credential(e, e["last_error"])
+                    persisted |= self._remember_credential(e, e["last_error"]) is not None
+        if persisted:
+            self._flush_cooldowns()     # Durable commit and audit row, outside the pool lock.
         _log(f"[cred] 凭证熔断 {seconds:.0f}s: {Path(cm.path).name} {reason}")
 
 
@@ -1511,6 +1644,7 @@ class CredentialPool:
                 CONFIG.get("model_cooldown_s", MODEL_COOLDOWN) or MODEL_COOLDOWN)
         until = min(until, now + float(CONFIG.get("model_cooldown_max_s", MODEL_COOLDOWN_MAX)
                                        or MODEL_COOLDOWN_MAX))
+        persisted = kept = False
         with self._lock, (cm._lock if generation is not None else nullcontext()):
             if not self._lease_matches(cm, generation):
                 return
@@ -1524,11 +1658,16 @@ class CredentialPool:
                             and CONFIG.get("model_cooldown_no_stack", True)):
                         # Fusion: 处于软冷却中再次撞 429（重试/兜底探测）——文案未给出更晚的
                         # 重置时间时，不延长截止、不推进任何计数，避免越重试越冷。
-                        _log(f"[cred] 模型冷却保持 {model} @ {Path(cm.path).name}（兜底探测不堆叠）")
-                        return
+                        kept = True
+                        break
                     until = max(until, existing)
                     self._model_fail[key] = until
-                    self._remember_model(e, routed_model, until)
+                    persisted |= self._remember_model(e, routed_model, until) is not None
+        if persisted:
+            self._flush_cooldowns()     # Durable commit and audit row, outside the pool lock.
+        if kept:
+            _log(f"[cred] 模型冷却保持 {model} @ {Path(cm.path).name}（兜底探测不堆叠）")
+            return
         _log(f"[cred] 模型冷却 {model} @ {Path(cm.path).name} 至 "
              f"{time.strftime('%m-%d %H:%M:%S', time.localtime(until))} (HTTP 429)")
 
@@ -1556,7 +1695,7 @@ class CredentialPool:
             if not self._lease_matches(cm, generation):
                 return 0.0
             entry = next((e for e in self._entries if e["cm"] is cm), None)
-            endpoint = self._model_block_key(entry) if entry else None
+            endpoint = self._model_block_key(entry, code) if entry else None
             if not endpoint:
                 return 0.0
             row = self._blocks.note(endpoint, _block_model(model), code=code, msg=msg)
@@ -1577,8 +1716,11 @@ class CredentialPool:
             with self._lock:
                 self._auth_fails.pop(entry["id"], None)
                 self._transport_fails.pop(entry["id"], None)
-        endpoint = self._model_block_key(entry) if entry else None
-        return bool(endpoint) and self._blocks.clear(endpoint, _block_model(model))
+        # A success proves the backend serves this model and this account may use it, so it
+        # lifts both namespaces a rejection could have written.
+        cleared = [self._blocks.clear(key, _block_model(model)) for key in
+                   (self._model_guard_keys(entry) if entry else ())]
+        return any(cleared)
 
     def model_block_until(self, model: str | None, *, region=None) -> float | None:
         """Return a retry time only when every potential backend has confirmed backoff."""
@@ -1615,6 +1757,37 @@ class CredentialPool:
         if any(until <= now for until in untils):
             return None
         return max(untils)
+
+    def model_forbidden(self, model: str | None, *, region=None, tried=()) -> dict | None:
+        """Report a plan-permission dead end instead of an unknown model.
+
+        Returns the earliest retry time only when every account that could serve this model
+        is cooling down under a plan rejection (11158). "The model does not exist" and "your
+        plan may not use it" are different answers for a caller, so they must not collapse
+        into one 404: this reports the 400 model_unavailable case, model_block_until reports
+        the 404 model_not_found one. It never fires while some candidate is still untried or
+        still allowed, which is what keeps a single free account from speaking for the pool.
+        """
+        if not model:
+            return None
+        tried = {_cred_manager(item) for item in tried}
+        now = time.time()
+        routed = _block_model(model)
+        with self._lock:
+            pool = [entry for entry in self._entries
+                    if entry["cm"] not in tried and self._healthy(entry) and not self._paused(entry)
+                    and self._eligible(entry, model, region=region)]
+            if not pool:
+                return None
+            untils = [self._blocks.until(self._account_block_key(entry), routed) for entry in pool]
+            if any(until <= now for until in untils):
+                return None
+            codes = {row.get("code") for row in self._blocks.detail(now)
+                     for key in (self._account_block_key(entry) for entry in pool)
+                     if row.get("endpoint") == key and row.get("model") == routed}
+            if not codes & MODEL_FORBIDDEN_CODES:
+                return None
+            return {"until": max(untils), "retry_after": max(1, math.ceil(max(untils) - now))}
 
     def model_blocks_detail(self) -> list:
         """Return model backoff details for diagnostics."""
@@ -2448,6 +2621,19 @@ def _cred_for(payload: dict, model: str | None = None, *, region=None, tried=(),
                                f"预计 {t} 后重试；请改用 /v1/models 列出的模型",
                     "type": "invalid_request_error", "code": "model_not_found",
                     "param": "model"}})
+            forbidden = pool.model_forbidden(model, region=region, tried=tried)
+            if forbidden:
+                # The model exists but no account in the pool may use it. Say so, and keep it
+                # distinguishable from "no such model": a caller that sees model_not_found
+                # goes looking for a typo, while this one has to change plan or account.
+                t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(forbidden["until"]))
+                raise HTTPException(status_code=400,
+                                    headers={"Retry-After": str(forbidden["retry_after"])},
+                                    detail={"error": {
+                    "message": f"模型 {model} 在当前所有已登录账号均无使用权限（官方回 11158 "
+                               f"is not allowed for user type），预计 {t} 后重试",
+                    "type": "invalid_request_error", "code": "model_unavailable",
+                    "param": "model"}})
             # Fusion: 全池触底宁返回 503 不打穿——候选齐整但全被积分保底拦住时，
             # 明确告知调用方在等签到/余额刷新，而不是借量切到触底号上。
             if pool.floor_exhausted(model, region=region, tried=tried):
@@ -3080,11 +3266,54 @@ def _catalog_for(profile: str, scope: str = "models", *, model_id=None):
 
 
 
+def _policy_revision():
+    """Return the control store's revision, or None when it cannot be read.
+
+    Routing only needs a value that moves whenever an account's enabled flag or a model
+    rule changes; a store that cannot answer (or a test double that is not one) must make
+    the caller skip its cache rather than pin a stale answer.
+    """
+    try:
+        revision = model_policy.snapshot(CONFIG)["revision"]
+    except Exception:
+        return None
+    return revision if isinstance(revision, int) else None
+
+
 def _configured_profiles(region: str | None) -> set[str]:
+    """Return enabled profiles in a region, cached until the pool or policy revision moves.
+
+    This is static eligibility, and _eligible() consults it once per candidate per pick, so
+    rebuilding it by walking every entry (each walk copying the entry list under the pool
+    lock) made selection quadratic in the pool size. The cache key covers every way the
+    answer can change: the pool's own revision moves on reload/prune/drop and on any profile
+    change, and the control store's revision moves when an account is enabled or disabled.
+    """
     pool = CONFIG.get("cred_pool")
     if pool is not None:
-        return {profile for entry in pool.entries() if (profile := pool._entry_profile(entry))
-                and model_policy.credential_enabled(CONFIG, entry) and _in_region(profile, region)}
+        policy_revision = _policy_revision()
+        if policy_revision is None:
+            # Without a readable revision the answer cannot be cached safely; fall through
+            # to the live computation instead of pinning a value that may already be stale.
+            return frozenset(profile for entry in pool.entries()
+                             if (profile := pool._entry_profile(entry))
+                             and model_policy.credential_enabled(CONFIG, entry)
+                             and _in_region(profile, region))
+        key = (region, pool.revision, policy_revision, id(CONFIG.get("control_store")))
+        with pool._lock:
+            if pool._configured_revision != pool.revision:
+                pool._configured_cache.clear()
+                pool._configured_revision = pool.revision
+            cached = pool._configured_cache.get(key)
+            if cached is not None:
+                return cached
+            profiles = frozenset(profile for entry in pool._entries
+                                 if (profile := pool._entry_profile(entry))
+                                 and model_policy.credential_enabled(CONFIG, entry)
+                                 and _in_region(profile, region))
+            pool._configured_cache.clear()
+            pool._configured_cache[key] = profiles
+            return profiles
     cm = CONFIG.get("cred")
     if cm is not None:
         profile = cm.summary()["profile"]
@@ -3831,6 +4060,28 @@ async def _backend_stream(url, headers, body, *, timeout=300, rid="", model_name
                         upstream_request_id=outgoing.get("X-Request-ID"))
         return outgoing
 
+    # One request-wide dial budget, spent across every credential this request touches.
+    # None keeps the legacy single retry for callers that never installed a budget.
+    dial_budget = _current_attempt_budget()
+    dial_attempts = {"index": 0}
+    grant = LEGACY_MAX_ATTEMPTS
+    if dial_budget is not None:
+        grant = dial_budget.grant()
+        if grant < 1:
+            # Every dial is spent or reserved, so no further dial is permitted. This is
+            # reported as its own type rather than a timeout: the caller surfaces the real
+            # upstream failure it already holds, and this only stops the loop from dialling.
+            raise UpstreamAttemptsExhausted("upstream attempt budget exhausted for this request")
+
+    dial_attempts["count"] = 0
+
+    def dial(index):
+        """Report the 1-based dial index of this open_backend_stream call and charge it."""
+        dial_attempts["index"] = index
+        dial_attempts["count"] += 1
+        if dial_budget is not None:
+            dial_budget.charge(index)
+
     def retry(error):
         """Record connection retries and flag possible billing after write timeouts."""
         timeout_on_write = isinstance(error, WRITE_TIMEOUT_TRANSPORT)
@@ -3841,7 +4092,10 @@ async def _backend_stream(url, headers, body, *, timeout=300, rid="", model_name
         observe_attempt("write_timeout_retry" if timeout_on_write else "connect_retry",
                         error_code=type(error).__name__,
                         duration_ms=(time.monotonic() - started) * 1000)
-        _log(f"[{rid}] {'写超时重放' if timeout_on_write else '建连失败'}，重试 1/1 | {model_name}"
+        # Report the real dial numbers: a hardcoded "1/1" told an operator the request was
+        # on its last chance when the budget actually allowed more, and hid the ones it did not.
+        _log(f"[{rid}] {'写超时重放' if timeout_on_write else '建连失败'}，"
+             f"重试 {dial_attempts['index']}/{grant} | {model_name}"
              f" | {_network_error_text(error)}{_replay_cost_note(error)}")
     try:
         resources = request_resources.get()
@@ -3860,10 +4114,23 @@ async def _backend_stream(url, headers, body, *, timeout=300, rid="", model_name
                                        retry_write_timeout=bool(CONFIG.get("retry_write_timeout")),
                                        clients=clients, headers_for_attempt=attempt_headers,
                                        ttfb_timeout=ttfb, idle_timeout=idle,
-                                       write_timeout=write_bound) as response:
+                                       write_timeout=write_bound,
+                                       max_attempts=grant if dial_budget is not None else None,
+                                       on_attempt=dial if dial_budget is not None else None) as response:
             opened = True
             observe_attempt("upstream_http", status_code=response.status_code,
                             duration_ms=(time.monotonic() - started) * 1000)
+            if dial_budget is not None:
+                # A dial that reached a backend is not wasted work: refund it so a healthy
+                # response never shrinks the allowance the caller configured. Connection
+                # failures stay charged — that is the tail the budget exists to bound.
+                #
+                # HTTP error responses stay charged too, which keeps the budget a true bound
+                # on total dials: refunding a 429 would let an unreachable-but-answering
+                # upstream replay past failover_max, since the failover limit counts
+                # reroutes while the budget counts dials and the two must not disagree.
+                if response.status_code == 200:
+                    dial_budget.refund(dial_attempts["count"])
             yield response
     except (httpx.HTTPError, UpstreamResponseError) as error:
         if not opened:
@@ -4146,6 +4413,156 @@ def _cred_manager(cred):
 FAILOVER_CODES = frozenset({401, 403, 429, 502, 503, 504})
 # Connection failures occur before any request body is sent.
 REPLAYABLE_TRANSPORT = (httpx.ConnectError, httpx.ConnectTimeout, UpstreamTimeout)
+
+
+class UpstreamAttemptsExhausted(UpstreamTimeout):
+    """The request spent every upstream dial it was allowed.
+
+    A distinct type from the TTFB/idle timeout: that one means the upstream accepted the
+    connection and then went quiet, while this one means no further dial is permitted at all.
+    Failover must not replay it — there is no budget left to replay with — and it must not be
+    reported as a backend connection failure, which would blame a credential that was never
+    dialled.
+    """
+
+
+class AttemptBudget:
+    """The dials one client request may spend on the upstream, across every credential.
+
+    The defect this closes: open_backend_stream retried a connection failure once inside the
+    call, and the failover loop then replayed the whole call up to failover_max times, so a
+    single request could dial the upstream (1 + 1) * (1 + failover_max) times — 6 dials and
+    128.8s with the shipped failover_max=2.
+
+    The budget is per request, not per credential: failover is what spends it, so a new
+    account never refills it.
+
+    Dials are *reserved* for the failover steps that are still allowed, and a single
+    open_backend_stream call may only spend what is left after those reservations. Without
+    that reservation a call's own connection retry would eat the whole budget and the request
+    would surface the first credential's error with a perfectly good account still untried.
+    The consequence is deliberate: with failover configured, the first credential gets one
+    dial and the request moves on to the next account instead of retrying the same one. With
+    failover_max=0 there is nothing to reserve, so the legacy single retry is preserved.
+    """
+
+    __slots__ = ("total", "spent", "reserved")
+
+    def __init__(self, total, reserved=0):
+        self.total = max(1, int(total))
+        self.spent = 0
+        self.reserved = max(0, int(reserved))
+
+    @property
+    def remaining(self):
+        return max(0, self.total - self.spent)
+
+    def release(self):
+        """Give up one reservation: the failover loop is about to spend that dial itself."""
+        self.reserved = max(0, self.reserved - 1)
+
+    def grant(self):
+        """Return the dials the next open_backend_stream call may make, charging as it dials.
+
+        Returns 0 when the budget is exhausted, and the caller must then not open a stream at
+        all — open_backend_stream refuses a budget below one.
+        """
+        return max(0, min(LEGACY_MAX_ATTEMPTS, self.remaining - self.reserved))
+
+    def charge(self, _index=0):
+        """Count one real dial; the on_attempt hook passes its 1-based index."""
+        self.spent += 1
+
+    def refund(self, count=1):
+        """Give back dials that produced a usable response.
+
+        The budget exists to bound *wasted* upstream work: connection failures and error
+        responses. A dial that came back 200 was not wasted, and charging for it would make
+        tool-repair and filter-retry — which re-ask the same account and succeed — eat the
+        failover allowance and starve requests that never failed.
+        """
+        self.spent = max(0, self.spent - max(0, int(count)))
+
+
+_attempt_budget = ContextVar("codebuddy_attempt_budget", default=None)
+
+
+def _current_attempt_budget():
+    return _attempt_budget.get()
+
+
+def _release_failover_reservation():
+    """Spend one reserved dial: the failover loop is about to use it for a new account.
+
+    Reservations exist so a credential's own connection retry cannot consume the dials that
+    failover still needs. Releasing exactly one per reroute keeps that promise without
+    stranding budget once the loop is actually moving to another account.
+    """
+    budget = _attempt_budget.get()
+    if budget is not None:
+        budget.release()
+
+
+def _failover_budget_allows_next():
+    """Whether the request budget can still fund one more dial on a replacement account.
+
+    The failover limit counts reroutes; the budget counts dials. Checking both before
+    rerouting keeps them from disagreeing — without it a reroute would be attempted and then
+    refused by _backend_stream, turning a real upstream error into a confusing budget error.
+    """
+    budget = _attempt_budget.get()
+    if budget is None:
+        return True         # No budget installed: the failover limit alone decides.
+    return budget.remaining >= 1
+
+
+def _retry_same_credential(cm, retried, error):
+    """Convert an unspendable failover reservation into one retry of the current credential.
+
+    Reservations assume a reroute is available. In a single-account deployment (or when every
+    other account is ineligible) there is nothing to reroute to, and leaving the reservation
+    in place would make the request strictly worse than before the budget existed: the first
+    account would get one dial, fail, find no alternative, and surface a 502 with no
+    connection retry at all. Handing the reservation back here restores exactly the retry
+    that existed before, while a pool with alternatives keeps preferring the reroute.
+
+    Only connection-level failures qualify. An HTTP error (429, 401, 503) is an answer from
+    a reachable backend, and retrying the same account against it is the behaviour the
+    failover loop already rejects — those keep surfacing immediately.
+
+    Bounded to one retry per credential: the point is to preserve the legacy single
+    connection retry, not to let a dead account keep spending the request budget. Without
+    that bound the budget alone would allow two retries here (three dials) because the
+    reservations it releases were sized for accounts that turned out not to exist.
+    """
+    if not isinstance(error, REPLAYABLE_TRANSPORT):
+        return False
+    budget = _attempt_budget.get()
+    if budget is None:
+        return False        # No budget installed: open_backend_stream already retried.
+    if cm in retried:
+        return False
+    retried.add(cm)
+    budget.release()
+    return budget.grant() >= 1
+
+
+@contextmanager
+def _request_attempt_budget():
+    """Install one request-wide budget for the duration of a failover sequence.
+
+    A ContextVar rather than a parameter: the budget is consumed deep inside _backend_stream,
+    which six call chains reach through _stream_upstream / _stream_adapted / _fetch_checked_chat.
+    Threading it through every signature would touch every one of them and the tests that call
+    them directly, for a value that is by definition request-scoped.
+    """
+    failover = _failover_limit()
+    budget = AttemptBudget(max(2, 1 + failover), reserved=failover)
+    token = _attempt_budget.set(budget)
+    try:
+        yield budget
+    finally:
+        _attempt_budget.reset(token)
 # Write-timeout replay requires explicit opt-in because partial requests may already be billed.
 WRITE_TIMEOUT_TRANSPORT = (httpx.WriteTimeout,)
 # Gateway timeouts may follow billable upstream work and need an explicit cost warning.
@@ -4166,7 +4583,12 @@ def _failover_safe(error, raw=b"") -> bool:
     if is_filter_error(raw):
         return False
     if isinstance(error, UpstreamHTTPError):
-        return error.status in FAILOVER_CODES
+        if error.status in FAILOVER_CODES:
+            return True
+        # A plan-permission rejection is the one 400 worth replaying: another account in the
+        # pool may hold a plan that allows the model. Every other 400 is deterministic and
+        # must reach the client unchanged instead of being retried against every account.
+        return _is_model_forbidden(raw or error.raw, error.status)
     if isinstance(error, UpstreamResponseError):
         return False
     if isinstance(error, WRITE_TIMEOUT_TRANSPORT):
@@ -4290,30 +4712,64 @@ async def _stream_plan(payload, canonical, model_name, rid, t0, make, routed, cr
     """Prefetch with bounded credential failover, using canonical input to preserve routing restrictions."""
     tried = []
     recovered = None
+    # The failover loop owns the request-wide dial budget: every credential it moves to spends
+    # from the same pool, so failover can no longer multiply the per-call connection retry.
+    with _request_attempt_budget():
+        return await _stream_plan_budgeted(payload, canonical, model_name, rid, t0, make,
+                                           routed, cred, headers, url)
+
+
+async def _stream_plan_budgeted(payload, canonical, model_name, rid, t0, make, routed, cred, headers, url):
+    tried = []
+    recovered = None
+    retried = set()        # Credentials that already used their one no-alternative retry.
     while True:
         stream = make(routed, cred, headers, url)
         try:
             first = await _preflight_stream(stream, model_name, t0, rid)
         except _StreamFailure as failure:
             await _close_stream(stream)   # Release the failed upstream connection.
-            release_credential(cred)
             recovered = observe_failure_seq()   # Recover only this failure sequence.
-            tried.append(cred)
             if isinstance(failure.error, httpx.TransportError):
                 _note_cred_transport_failure(cred)   # Fusion: 传输层连败降权
             limit = _failover_limit()
             surface = HTTPException(status_code=failure.status, headers=failure.headers,
                                     detail=_safe_err_raw(failure.raw, failure.status))
             if limit <= 0 or len(tried) > limit or not _failover_safe(failure.error, failure.raw):
+                release_credential(cred)
+                tried.append(cred)
                 raise surface from None
+            tried.append(cred)
             try:
                 attempt = await run_in_threadpool(_route_chat, payload, canonical, rid,
                                                   tried={_cred_manager(item) for item in tried})
             except HTTPException:
-                raise surface from None      # Preserve the failure when no alternative account exists.
+                # No alternative account: hand the reservation back and retry this one, so a
+                # single-account pool keeps the connection retry it had before the budget.
+                if _retry_same_credential(_cred_manager(cred), retried, failure.error):
+                    tried.pop()             # The retry is the same account, not a new attempt.
+                    _log(f"[{rid}] ↻ 无备选账号，用剩余预算重试当前凭证 | {model_name}"
+                         f" | 上游 HTTP {failure.status}{_replay_cost_note(failure.error)}")
+                    continue
+                release_credential(cred)
+                raise surface from None      # Preserve the failure when no alternative exists.
             if _cred_manager(attempt[1]) in {_cred_manager(item) for item in tried}:
+                release_credential(cred)
+                if _retry_same_credential(_cred_manager(cred), retried, failure.error):
+                    tried.pop()
+                    _log(f"[{rid}] ↻ 路由回到同一凭证，用剩余预算重试 | {model_name}"
+                         f" | 上游 HTTP {failure.status}{_replay_cost_note(failure.error)}")
+                    continue
                 raise surface from None
+            if not _failover_budget_allows_next():
+                # The configured reroute is still available but the dial budget cannot fund
+                # it. Surface the real failure the caller already holds instead of dialling
+                # into a budget that would refuse the attempt.
+                release_credential(cred)
+                raise surface from None
+            release_credential(cred)         # Only now is the previous lease really done.
             routed, cred, headers, url = attempt
+            _release_failover_reservation()
             _log(f"[{rid}] ↻ 换凭证重放 {len(tried)}/{limit} | {model_name} | 上游 HTTP "
                  f"{failure.status} → {profile_for_headers(headers)}"
                  f"{_replay_cost_note(failure.error)}")
@@ -4337,8 +4793,16 @@ def _routed_stream(payload, canonical, model_name, rid, t0, make, routed, cred, 
 
 async def _routed_fetch(payload, canonical, model_name, rid, t0, fetch, routed, cred, headers, url):
     """Apply bounded non-streaming failover while preserving canonical routing restrictions."""
+    # One budget for the whole failover sequence; a replacement credential does not refill it.
+    with _request_attempt_budget():
+        return await _routed_fetch_budgeted(payload, canonical, model_name, rid, t0, fetch,
+                                            routed, cred, headers, url)
+
+
+async def _routed_fetch_budgeted(payload, canonical, model_name, rid, t0, fetch, routed, cred, headers, url):
     tried = []
     recovered = None
+    retried = set()        # Credentials that already used their one no-alternative retry.
     while True:
         try:
             collected = await fetch(routed, cred, headers, url)
@@ -4347,25 +4811,45 @@ async def _routed_fetch(payload, canonical, model_name, rid, t0, fetch, routed, 
                 observe_recovery(recovered)
             return collected
         except (httpx.HTTPError, UpstreamResponseError) as error:
-            release_credential(cred)
             status, raw = _upstream_failure(error, model_name, t0, rid)
             recovered = observe_failure_seq()
-            tried.append(cred)
             if isinstance(error, httpx.TransportError):
                 _note_cred_transport_failure(cred)   # Fusion: 传输层连败降权
             limit = _failover_limit()
             surface = HTTPException(status_code=status, detail=_safe_err_raw(raw, status),
                                     headers=error.headers if isinstance(error, UpstreamHTTPError) else None)
             if limit <= 0 or len(tried) > limit or not _failover_safe(error, raw):
+                release_credential(cred)
+                tried.append(cred)
                 raise surface from None
+            tried.append(cred)
             try:
                 attempt = await run_in_threadpool(_route_chat, payload, canonical, rid,
                                                   tried={_cred_manager(item) for item in tried})
             except HTTPException:
+                # No alternative account: hand the reservation back and retry this one, so a
+                # single-account pool keeps the connection retry it had before the budget.
+                if _retry_same_credential(_cred_manager(cred), retried, error):
+                    tried.pop()
+                    _log(f"[{rid}] ↻ 无备选账号，用剩余预算重试当前凭证 | {model_name}"
+                         f" | 上游 HTTP {status}{_replay_cost_note(error)}")
+                    continue
+                release_credential(cred)
                 raise surface from None
             if _cred_manager(attempt[1]) in {_cred_manager(item) for item in tried}:
+                release_credential(cred)
+                if _retry_same_credential(_cred_manager(cred), retried, error):
+                    tried.pop()
+                    _log(f"[{rid}] ↻ 路由回到同一凭证，用剩余预算重试 | {model_name}"
+                         f" | 上游 HTTP {status}{_replay_cost_note(error)}")
+                    continue
                 raise surface from None
+            if not _failover_budget_allows_next():
+                release_credential(cred)
+                raise surface from None
+            release_credential(cred)         # Only now is the previous lease really done.
             routed, cred, headers, url = attempt
+            _release_failover_reservation()
             _log(f"[{rid}] ↻ 换凭证重放 {len(tried)}/{limit} | {model_name} | 上游 HTTP "
                  f"{status} → {profile_for_headers(headers)}"
                  f"{_replay_cost_note(error)}")

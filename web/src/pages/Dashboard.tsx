@@ -78,9 +78,9 @@ function OfficialCredits({ value }: { value: unknown }) {
       <table>
         <thead>
           <tr>
-            <th>{t("dash.credentials")}</th>
-            <th>{t("dash.balance")}</th>
-            <th>{t("dash.syncStatus")}</th>
+            <th scope="col">{t("dash.credentials")}</th>
+            <th scope="col">{t("dash.balance")}</th>
+            <th scope="col">{t("dash.syncStatus")}</th>
           </tr>
         </thead>
         <tbody>
@@ -220,10 +220,10 @@ export function Dashboard() {
                   <table>
                     <thead>
                       <tr>
-                        <th>{t("dash.models")}</th>
-                        <th>{t("dash.requests")}</th>
-                        <th>Token</th>
-                        <th>Credit</th>
+                        <th scope="col">{t("dash.models")}</th>
+                        <th scope="col">{t("dash.requests")}</th>
+                        <th scope="col">Token</th>
+                        <th scope="col">Credit</th>
                       </tr>
                     </thead>
                     <tbody>

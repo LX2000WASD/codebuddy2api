@@ -695,14 +695,14 @@ export function Models() {
               <table>
                 <thead>
                   <tr>
-                    <th>模型 ID</th>
-                    <th>消费倍率 / 优惠</th>
-                    <th>模型能力</th>
-                    <th>上下文窗口</th>
-                    <th>最大输出</th>
-                    <th>思考档位</th>
-                    <th>路由边界</th>
-                    <th>操作</th>
+                    <th scope="col">模型 ID</th>
+                    <th scope="col">消费倍率 / 优惠</th>
+                    <th scope="col">模型能力</th>
+                    <th scope="col">上下文窗口</th>
+                    <th scope="col">最大输出</th>
+                    <th scope="col">思考档位</th>
+                    <th scope="col">路由边界</th>
+                    <th scope="col">操作</th>
                   </tr>
                 </thead>
                 <tbody>

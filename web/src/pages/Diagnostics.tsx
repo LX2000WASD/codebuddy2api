@@ -131,10 +131,10 @@ export function Diagnostics() {
                   <table>
                     <thead>
                       <tr>
-                        <th>{t("fusion.diagnostics.colProduct")}</th>
-                        <th>{t("fusion.diagnostics.colAccounts")}</th>
-                        <th>{t("fusion.diagnostics.colHealthy")}</th>
-                        <th>{t("fusion.diagnostics.colServable")}</th>
+                        <th scope="col">{t("fusion.diagnostics.colProduct")}</th>
+                        <th scope="col">{t("fusion.diagnostics.colAccounts")}</th>
+                        <th scope="col">{t("fusion.diagnostics.colHealthy")}</th>
+                        <th scope="col">{t("fusion.diagnostics.colServable")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -211,11 +211,11 @@ export function Diagnostics() {
             <table>
               <thead>
                 <tr>
-                  <th>{t("fusion.diagnostics.colAccountProduct")}</th>
-                  <th>{t("fusion.diagnostics.colStatus")}</th>
-                  <th>{t("fusion.diagnostics.colCircuit")}</th>
-                  <th>{t("fusion.diagnostics.colModelCooldown")}</th>
-                  <th>{t("fusion.diagnostics.colDisabledReason")}</th>
+                  <th scope="col">{t("fusion.diagnostics.colAccountProduct")}</th>
+                  <th scope="col">{t("fusion.diagnostics.colStatus")}</th>
+                  <th scope="col">{t("fusion.diagnostics.colCircuit")}</th>
+                  <th scope="col">{t("fusion.diagnostics.colModelCooldown")}</th>
+                  <th scope="col">{t("fusion.diagnostics.colDisabledReason")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -301,11 +301,11 @@ export function Diagnostics() {
             <table>
               <thead>
                 <tr>
-                  <th>{t("fusion.diagnostics.colProductModel")}</th>
-                  <th>{t("fusion.diagnostics.colLocked")}</th>
-                  <th>{t("fusion.diagnostics.colPoolUnlock")}</th>
-                  <th>{t("fusion.diagnostics.colKind")}</th>
-                  <th>{t("fusion.diagnostics.colReason")}</th>
+                  <th scope="col">{t("fusion.diagnostics.colProductModel")}</th>
+                  <th scope="col">{t("fusion.diagnostics.colLocked")}</th>
+                  <th scope="col">{t("fusion.diagnostics.colPoolUnlock")}</th>
+                  <th scope="col">{t("fusion.diagnostics.colKind")}</th>
+                  <th scope="col">{t("fusion.diagnostics.colReason")}</th>
                 </tr>
               </thead>
               <tbody>

@@ -91,13 +91,13 @@ class InferenceAdmissionTests(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(path=path, headers=headers):
                     status, body = await self.request(path, headers, forbid_receive=True)
                     self.assert_unauthorized(path, status, body)
-                    self.assertIsNone(self.gate._semaphore)
+                    self.assertEqual(self.gate._active, 0)
         status, body = await self.request(ROUTES[0], ((b"authorization", b"Bearer synthetic-key"),))
         self.assertEqual(status, 200, body)
 
     async def test_full_gate_still_authenticates_before_returning_capacity_errors(self):
-        gate = self.gate._gate()
-        await gate.acquire()
+        # Saturate the limit of 1 by holding one request in flight.
+        self.gate._active += 1
         try:
             for path in ROUTES:
                 with self.subTest(path=path):
@@ -109,7 +109,7 @@ class InferenceAdmissionTests(unittest.IsolatedAsyncioTestCase):
             status, body = await self.request("/v1/messages/count_tokens", ((b"x-api-key", b"synthetic-key"),))
             self.assertEqual(status, 200, body)
         finally:
-            gate.release()
+            self.gate._active -= 1
 
     async def test_current_key_and_header_precedence_are_preserved(self):
         valid = (((b"authorization", b"Bearer synthetic-key"),), ((b"x-api-key", b"synthetic-key"),),
@@ -143,7 +143,7 @@ class InferenceAdmissionTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(status=expected):
                 status, body = await self.request("/v1/models", headers, method="GET", forbid_receive=True)
                 self.assertEqual(status, expected, body)
-                self.assertIsNone(self.gate._semaphore)
+                self.assertEqual(self.gate._active, 0)
 
 
     async def test_disabled_gate_still_authenticates_and_empty_key_remains_optional(self):
@@ -153,7 +153,7 @@ class InferenceAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.config["api_key"] = ""
         status, body = await self.request(ROUTES[0])
         self.assertEqual(status, 200, body)
-        self.assertIsNone(self.gate._semaphore)
+        self.assertEqual(self.gate._active, 0)
         self.config["api_key"] = "synthetic-key"
         status, body = await self.request("/admin/test")
         self.assertEqual(status, 200, body)

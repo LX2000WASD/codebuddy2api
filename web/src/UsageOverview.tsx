@@ -540,12 +540,12 @@ export function UsageTrend({
         <table>
           <thead>
             <tr>
-              <th>
+              <th scope="col">
                 {displayRows !== rows || granularity === "hour" ? "时段（UTC）" : "日期（UTC）"}
               </th>
-              <th>{t("dash.kpi.requests")}</th>
-              <th>{t("dash.kpi.totalTokens")}</th>
-              <th>{t("dash.kpi.credit")}</th>
+              <th scope="col">{t("dash.kpi.requests")}</th>
+              <th scope="col">{t("dash.kpi.totalTokens")}</th>
+              <th scope="col">{t("dash.kpi.credit")}</th>
             </tr>
           </thead>
           <tbody>

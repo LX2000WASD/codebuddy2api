@@ -6,66 +6,27 @@ from __future__ import annotations
 import json
 
 
-import asyncio
-
-
 _GATED_PATHS = ("/v1/chat/completions", "/v1/responses", "/v1/messages")
 _BODY_PATHS = (*_GATED_PATHS, "/v1/messages/count_tokens")
 
 
-class _ResizableGate(asyncio.Semaphore):
-    """Semaphore whose capacity follows a hot-reloaded setting.
-
-    asyncio.Semaphore has no public resize, and rebuilding it would strand the
-    permits held by in-flight requests on the discarded object. The gate never
-    queues (callers check locked() before acquiring), so no waiters need waking.
-    """
-
-    def resize(self, capacity: int) -> None:
-        self._value = max(0, capacity)
-
-
-class _BypassCharge:
-    """Tracks whether one unlimited-era request has been charged against gate capacity."""
-
-    __slots__ = ("charged",)
-
-    def __init__(self):
-        self.charged = False
-
-
 class ConcurrencyLimitMiddleware:
-    """Reject excess inference concurrency with HTTP 503 and retain slots through response completion."""
+    """Reject excess inference concurrency with HTTP 503 and retain slots through response completion.
+
+    Admission is a plain in-flight counter compared against the live setting, not a
+    semaphore. A semaphore ties every permit to the capacity generation that issued
+    it, so shrinking the limit while requests are in flight has to either strand
+    those permits or rewrite the semaphore's internal count; either way the old
+    generation's permits come back on release and restore the capacity the limit
+    had *before* it was lowered, so a limit of 1 keeps admitting 4. A counter has no
+    capacity to restore: each request is measured against whatever the setting says
+    at the moment it arrives, in both directions, at any time.
+    """
 
     def __init__(self, app, config):
         self.app = app
         self.config = config
-        self._semaphore = None
         self._active = 0          # Gated requests currently inside the application
-        self._bypass = set()      # _BypassCharge for each in-flight unlimited-era request
-        self._limit_at_gate = None
-
-    def _charge_bypass(self):
-        """Charge every still-running unlimited-era request once against the new capacity."""
-        for holder in self._bypass:
-            holder.charged = True
-
-    def _gate(self):
-        limit = self._limit()
-        if self._semaphore is None:
-            # Requests admitted while the limit was 0 are already in flight; charge
-            # them against the new capacity instead of granting a fresh full budget.
-            # Semaphore rejects a negative initial value, so clamp like resize() does.
-            self._charge_bypass()
-            self._semaphore = _ResizableGate(max(0, limit - self._active))
-            self._limit_at_gate = limit
-        elif self._limit_at_gate != limit:
-            # Hot reload: keep the remaining capacity at exactly limit - in-flight so
-            # locked() stays equivalent to "in-flight == limit" in both directions.
-            self._charge_bypass()
-            self._limit_at_gate = limit
-            self._semaphore.resize(limit - self._active)
-        return self._semaphore
 
     def _limit(self) -> int:
         try:
@@ -73,51 +34,46 @@ class ConcurrencyLimitMiddleware:
         except (TypeError, ValueError):
             return 0
 
+    def _admit(self) -> bool:
+        """Reserve one in-flight slot, or report that the limit is already reached.
+
+        There is no await between reading _active, comparing it and incrementing it,
+        so the check and the reservation are a single uninterrupted step of the
+        event loop: two requests can never both claim the last free slot.
+        """
+        limit = self._limit()
+        if limit > 0 and self._active >= limit:
+            return False
+        # 0 means unlimited, but the request is still counted, so raising the limit
+        # later applies to what is already in flight instead of oversubscribing it.
+        self._active += 1
+        return True
+
     async def __call__(self, scope, receive, send):
         if (scope["type"] != "http" or scope.get("method") != "POST"
                 or scope.get("path", "") not in _GATED_PATHS):
             return await self.app(scope, receive, send)
-        limit = self._limit()
-        if limit <= 0:
-            # Unlimited, but still counted: raising the limit later must apply to
-            # requests already in flight instead of oversubscribing the new gate.
-            # None marks the gate as stale, because these requests consume _active
-            # without consuming a permit. Without it, 64 -> 0 -> 64 would compare
-            # equal and skip the resize, leaving capacity at limit + (bypassed).
-            self._limit_at_gate = None
-            holder = _BypassCharge()
-            self._bypass.add(holder)
-            self._active += 1
-            try:
-                return await self.app(scope, receive, send)
-            finally:
-                self._active -= 1
-                self._bypass.discard(holder)
-                # A resize while this request ran subtracted it from the capacity, so
-                # give that permit back; otherwise the loss is permanent.
-                if holder.charged and self._semaphore is not None:
-                    self._semaphore.release()
-        gate = self._gate()
-        if gate.locked():  # Reject overload without queueing request bodies.
-            error = {"message": "inference concurrency limit reached, retry later",
-                     "type": "rate_limit_error", "code": "concurrency_limit"}
-            payload = {"error": error}
-            if scope["path"] == "/v1/messages":
-                error["type"] = "api_error"
-                payload["type"] = "error"
-            raw = json.dumps(payload).encode()
-            await send({"type": "http.response.start", "status": 503,
-                        "headers": [(b"content-type", b"application/json"), (b"retry-after", b"3"),
-                                    (b"content-length", str(len(raw)).encode())]})
-            await send({"type": "http.response.body", "body": raw})
-            return
-        await gate.acquire()
-        self._active += 1
+        if not self._admit():
+            return await self._reject(send, scope["path"])
         try:
             await self.app(scope, receive, send)
         finally:
             self._active -= 1
-            gate.release()
+
+    @staticmethod
+    async def _reject(send, path: str):
+        """Answer overload without queueing the request body behind a permit."""
+        error = {"message": "inference concurrency limit reached, retry later",
+                 "type": "rate_limit_error", "code": "concurrency_limit"}
+        payload = {"error": error}
+        if path == "/v1/messages":
+            error["type"] = "api_error"
+            payload["type"] = "error"
+        raw = json.dumps(payload).encode()
+        await send({"type": "http.response.start", "status": 503,
+                    "headers": [(b"content-type", b"application/json"), (b"retry-after", b"3"),
+                                (b"content-length", str(len(raw)).encode())]})
+        await send({"type": "http.response.body", "body": raw})
 
 
 class InboundBodyLimitMiddleware:

@@ -168,10 +168,10 @@ export function Trend({
         <table>
           <thead>
             <tr>
-              <th>{granularity === "hour" ? "时段（UTC）" : "日期（UTC）"}</th>
-              <th>请求</th>
-              <th>成功</th>
-              <th>失败</th>
+              <th scope="col">{granularity === "hour" ? "时段（UTC）" : "日期（UTC）"}</th>
+              <th scope="col">请求</th>
+              <th scope="col">成功</th>
+              <th scope="col">失败</th>
             </tr>
           </thead>
           <tbody>

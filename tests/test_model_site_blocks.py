@@ -120,8 +120,8 @@ class ModelBlocksTests(unittest.TestCase):
         self.assertFalse(blocks.blocked("https://b", "m1"))
 
 
-class PoolRoutingTests(unittest.TestCase):
-    """Route around unavailable models and clear backoff after confirmed availability."""
+class _PoolFixture(unittest.TestCase):
+    """Build a two-profile pool with synthetic offline credentials and a model catalog."""
 
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -162,6 +162,10 @@ class PoolRoutingTests(unittest.TestCase):
     def cred_for(self, model=MODEL, region=None):
         return converter._cred_for({"model": model, "messages": [{"role": "user", "content": "hi"}]},
                                    model, region=region)
+
+
+class PoolRoutingTests(_PoolFixture):
+    """Route around unavailable models and clear backoff after confirmed availability."""
 
     def test_missing_model_is_not_picked_again(self):
         """Route to an eligible domestic backend after an international unsupported-model response."""
@@ -367,6 +371,133 @@ class PoolRoutingTests(unittest.TestCase):
                               raw=_error_body(11102, "service info not found"))
         self.assertTrue(self.pool._blocks.blocked(self.intl_block_key, "auto"))
         self.assertFalse(self.pool._blocks.blocked(self.intl_block_key, "default-model"))
+
+
+FORBIDDEN_BODY = json.dumps({
+    "code": 11158,
+    "msg": f"model [{MODEL}] is not allowed for user type [personal_free_user]",
+    "requestId": "0198f5a6b7c8d9e0f1a2b3c4d5e6f7a8"}).encode()
+PARAM_ERROR_BODY = json.dumps({
+    "code": 40000, "msg": "invalid parameter: temperature must be <= 2"}).encode()
+
+
+class ModelPermissionTests(_PoolFixture):
+    """Classify a plan-permission rejection (11158) as account-scoped and fail over on it.
+
+    Before this classification a mixed pool (free + PRO accounts) answered a PRO-only model
+    with a bare 400 from the first free account it happened to select: no failover (400 is
+    not in FAILOVER_CODES) and no negative cache (11158 was not a not-servable code), so a
+    model that the pool could actually serve looked broken to the caller.
+    """
+
+    def add_account(self, profile, uid):
+        """Add another account on an existing profile without disturbing the fixture."""
+        domain = DOMAINS[profile] if profile in DOMAINS else profile
+        value = {"account": {"uid": uid, "enterpriseId": "synthetic-enterprise"},
+                 "auth": {"domain": domain, "accessToken": "synthetic-access",
+                          "refreshToken": "synthetic-refresh",
+                          "expiresAt": (time.time() + 86400) * 1000,
+                          "lastRefreshTime": time.time() * 1000}}
+        path = self.root / (uid + ".info")
+        path.write_text(json.dumps(value), encoding="utf-8")
+        self.pool.reload([Path(entry["id"]) for entry in self.pool.entries()] + [path])
+        return next(entry for entry in self.pool.entries() if entry["uid"] == uid)
+
+    # -- recognition -----------------------------------------------------
+
+    def test_11158_is_recognized_as_a_permission_rejection(self):
+        self.assertEqual(converter._parse_not_servable(FORBIDDEN_BODY, 400)[0], "11158")
+        self.assertTrue(converter._is_model_forbidden(FORBIDDEN_BODY, 400))
+
+    def test_the_message_pattern_alone_is_enough(self):
+        """Some deployments answer 11158 wording under a different numeric code."""
+        body = json.dumps({"code": 40000, "msg": f"model [{MODEL}] is not allowed for user type"}).encode()
+        self.assertEqual(converter._parse_not_servable(body, 400)[0], "40000")
+        self.assertTrue(converter._is_model_forbidden(body, 400))
+
+    def test_ordinary_bad_requests_are_not_permission_rejections(self):
+        """A request error must never be replayed against the whole pool."""
+        for body, status in ((PARAM_ERROR_BODY, 400),
+                             (json.dumps({"error": {"message": "tools[0] is invalid"}}).encode(), 400),
+                             (b"", 400)):
+            with self.subTest(body=body[:40], status=status):
+                self.assertFalse(converter._is_model_forbidden(body, status))
+                self.assertFalse(converter._failover_safe(
+                    converter.UpstreamHTTPError(status, body), body))
+
+    def test_the_widened_400_does_not_leak_to_other_statuses(self):
+        """429/404 already fail over; the permission classification must not change them."""
+        for status in (429, 404, 422):
+            with self.subTest(status=status):
+                self.assertFalse(converter._is_model_forbidden(FORBIDDEN_BODY, status))
+
+    # -- failover --------------------------------------------------------
+
+    def test_11158_fails_over_to_another_account(self):
+        """The permission verdict is per account, so the next account must be tried."""
+        self.assertTrue(converter._failover_safe(converter.UpstreamHTTPError(400, FORBIDDEN_BODY),
+                                                 FORBIDDEN_BODY))
+
+    def test_11158_does_not_take_the_model_away_from_other_accounts(self):
+        """One refused plan must not block the model for an account that is allowed."""
+        allowed = self.add_account(DOMESTIC_PROFILE, "synthetic-cn-allowed")
+        cm, _ = self.by_endpoint[DOMESTIC_ENDPOINT]
+        refused = next(entry for entry in self.pool.entries() if entry["cm"] is cm)
+
+        self.pool.note_status(cm, 400, model=MODEL, raw=FORBIDDEN_BODY)
+
+        self.assertFalse(self.pool._model_servable(refused, MODEL),
+                         "the refused account must stop being offered this model")
+        self.assertTrue(self.pool._model_servable(allowed, MODEL),
+                        "a same-backend account with another plan must stay eligible")
+        self.assertIsNotNone(self.pool.pick(None, MODEL), "the pool must still route the model")
+
+    def test_a_permission_rejection_is_not_a_backend_rejection(self):
+        """11158 says the account's plan is limited, never that the backend lacks the model."""
+        cm, _ = self.by_endpoint[DOMESTIC_ENDPOINT]
+        self.pool.note_status(cm, 400, model=MODEL, raw=FORBIDDEN_BODY)
+        self.assertFalse(self.pool._blocks.blocked(DOMESTIC_ENDPOINT, MODEL),
+                         "a plan verdict must not be recorded against the shared backend")
+
+    def test_a_success_clears_the_permission_verdict(self):
+        cm, _ = self.by_endpoint[DOMESTIC_ENDPOINT]
+        self.pool.note_status(cm, 400, model=MODEL, raw=FORBIDDEN_BODY)
+        self.assertFalse(self.pool._model_servable(self.pool._entries[0], MODEL)
+                         if self.pool._entries[0]["cm"] is cm else False)
+        self.assertTrue(self.pool.note_model_ok(cm, MODEL))
+        entry = next(e for e in self.pool.entries() if e["cm"] is cm)
+        self.assertTrue(self.pool._model_servable(entry, MODEL))
+
+    # -- pool-wide verdict ----------------------------------------------
+
+    def test_a_whole_pool_without_permission_reports_model_unavailable(self):
+        """All accounts refused must be a 400 model_unavailable, not a 404 or a bare 400."""
+        for cm, _ in self.by_endpoint.values():
+            self.pool.note_status(cm, 400, model=MODEL, raw=FORBIDDEN_BODY)
+        with self.assertRaises(HTTPException) as caught:
+            self.cred_for()
+        self.assertEqual(caught.exception.status_code, 400)
+        detail = caught.exception.detail["error"]
+        self.assertEqual(detail["code"], "model_unavailable")
+        self.assertEqual(detail["type"], "invalid_request_error")
+        self.assertIn(MODEL, detail["message"])
+        self.assertIn("11158", detail["message"])
+        self.assertIn("Retry-After", caught.exception.headers)
+
+    def test_a_whole_pool_without_permission_still_lists_other_models(self):
+        for cm, _ in self.by_endpoint.values():
+            self.pool.note_status(cm, 400, model=MODEL, raw=FORBIDDEN_BODY)
+        picked, _headers = self.cred_for(model=OTHER_MODEL)
+        self.assertIsNotNone(picked)
+
+    def test_one_refused_account_does_not_speak_for_the_pool(self):
+        """While another account is still allowed the request must be routed, not rejected."""
+        self.add_account(DOMESTIC_PROFILE, "synthetic-cn-allowed")
+        cm, _ = self.by_endpoint[DOMESTIC_ENDPOINT]
+        self.pool.note_status(cm, 400, model=MODEL, raw=FORBIDDEN_BODY)
+        self.assertIsNone(self.pool.model_forbidden(MODEL), "仍有可用账号时不得报全池无权限")
+        picked, _headers = self.cred_for()
+        self.assertIsNotNone(picked)
 
 
 if __name__ == "__main__":

@@ -33,14 +33,17 @@ class GateHarness:
         self.park_first = park_first
         self.park = park
         self.calls = 0
+        self.inside = 0      # Requests currently inside the application.
 
         async def application(scope, receive, send):
             self.calls += 1
+            self.inside += 1
             if self.park_first and self.calls <= self.park:
                 self.entered.set()
                 await self.release.wait()
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b"{}"})
+            self.inside -= 1
 
         self.middleware = ConcurrencyLimitMiddleware(application, self.config)
 
@@ -60,6 +63,47 @@ class GateHarness:
     @staticmethod
     def headers(sent):
         return dict(sent[0]["headers"])
+
+    async def capacity(self, up_to):
+        """Measure the live budget by flooding: park every admitted request, count the 200s.
+
+        This is the observable definition of "how many requests may be in flight
+        right now", so the assertions below never have to reach into gate internals.
+        """
+        self.release.clear()
+        self.park = up_to + 1
+        self.calls = 0
+        self.inside = 0
+        tasks = [asyncio.create_task(self.send()) for _ in range(up_to)]
+        # Settle without a wall-clock sleep: a request is either parked inside the
+        # application (admitted) or already finished (rejected), so the flood is
+        # fully resolved once done + parked accounts for every task.
+        for _ in range(100_000):
+            if sum(task.done() for task in tasks) + self.inside >= up_to:
+                break
+            await asyncio.sleep(0)
+        else:  # pragma: no cover - guards against a hung harness, not a gate bug
+            raise AssertionError("harness did not settle")
+        admitted = self.calls
+        self.release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), 2)
+        self.park = 0
+        self.calls = 0
+        return admitted
+
+    async def in_flight(self, count):
+        """Park exactly `count` requests inside the application and return their tasks."""
+        self.release.clear()
+        self.entered.clear()
+        self.park = count
+        tasks = [asyncio.create_task(self.send()) for _ in range(count)]
+        await asyncio.wait_for(self.entered.wait(), 2)
+        return tasks
+
+    async def drain(self, tasks):
+        self.release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), 2)
+        self.park = 0
 
 
 class HotReloadTests(unittest.IsolatedAsyncioTestCase):
@@ -119,133 +163,110 @@ class HotReloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(harness.headers(sent)[b"retry-after"], b"3")
 
     async def test_lowering_below_the_in_flight_count_never_goes_negative(self):
+        """Lowering the limit under the in-flight count must over-admit nothing and never underflow."""
         harness = GateHarness(8)
-        first = asyncio.create_task(harness.send())
-        await asyncio.wait_for(harness.entered.wait(), 2)
+        parked = await harness.in_flight(3)
         try:
             harness.config["max_concurrent"] = 0
-            harness.middleware._active = 3  # Pretend three unlimited requests are running.
             harness.config["max_concurrent"] = 1
             sent = await harness.send()
             self.assertEqual(sent[0]["status"], 503)
-            self.assertGreaterEqual(harness.middleware._gate()._value, 0)
         finally:
-            harness.middleware._active = 0
-            harness.release.set()
-            await asyncio.wait_for(first, 2)
+            await harness.drain(parked)
+        # Once everything drains, a limit of 1 must admit exactly one request, not zero
+        # (underflow) and not more (over-admission).
+        self.assertEqual(await harness.capacity(4), 1)
 
     async def test_a_first_limit_below_the_in_flight_count_is_clamped_not_fatal(self):
-        """Semaphore rejects negative initial values; 0 -> N with requests in flight must not raise."""
+        """Turning the limit on while more requests are in flight than it allows must not raise."""
         harness = GateHarness(0)
-        first = asyncio.create_task(harness.send())
-        await asyncio.wait_for(harness.entered.wait(), 2)
+        parked = await harness.in_flight(3)
         try:
-            self.assertEqual(harness.middleware._active, 1)
-            harness.middleware._active = 3  # Pretend three unlimited requests are running.
+            self.assertEqual(harness.middleware._active, 3)
             harness.config["max_concurrent"] = 2
             sent = await harness.send()
             self.assertEqual(sent[0]["status"], 503)
-            self.assertEqual(harness.middleware._gate()._value, 0)
         finally:
-            harness.middleware._active = 0
-            harness.release.set()
-            await asyncio.wait_for(first, 2)
+            await harness.drain(parked)
+        self.assertEqual(await harness.capacity(4), 2)
 
     async def test_round_trip_through_zero_charges_the_requests_admitted_while_unlimited(self):
-        """64 -> 0 (3 in flight) -> 64: the 3 bypassed requests must consume real permits.
+        """8 -> 0 (4 in flight) -> 8: the 4 bypassed requests must consume real budget.
 
-        Requests admitted while unlimited hold no permit, so if the gate kept comparing
-        64 == 64 and skipped the resize, real concurrency would be 64 + 3.
+        Requests admitted while unlimited still count, so if they were forgotten the
+        real concurrency would be 8 + 4. Measured behaviourally: with those 4 parked,
+        only 4 further requests may be admitted.
         """
-        harness = GateHarness(64, park=4)
-        tasks = [asyncio.create_task(harness.send()) for _ in range(3)]
-        await asyncio.wait_for(harness.entered.wait(), 2)
+        harness = GateHarness(8)
+        parked = await harness.in_flight(3)
+        harness.park = 4  # the request admitted while unlimited parks too
         try:
-            self.assertEqual(harness.middleware._active, 3)
-            # Real hot-reload: the bypass itself must invalidate the recorded capacity.
             harness.config["max_concurrent"] = 0
             bypass = asyncio.create_task(harness.send())
-            await asyncio.sleep(0)  # let the bypass record its state and park
-            self.assertIsNone(harness.middleware._limit_at_gate)
-            harness.config["max_concurrent"] = 64
-            gate = harness.middleware._gate()
+            await asyncio.sleep(0)  # let the bypassed request park
+            harness.config["max_concurrent"] = 8
             self.assertEqual(harness.middleware._active, 4)
-            self.assertEqual(gate._value, 60)
-            self.assertEqual(harness.middleware._active + gate._value, 64)
-            # Drain the 60 remaining permits: the next request is then the first over the limit.
-            for _ in range(60):
-                await gate.acquire()
-            self.assertTrue(gate.locked())
-            sent = await harness.send()
-            self.assertEqual(sent[0]["status"], 503)
-            self.assertEqual(harness.headers(sent)[b"retry-after"], b"3")
+            # 4 already in flight against a limit of 8 leaves exactly 4 more.
+            self.assertEqual(await harness.capacity(8), 4)
         finally:
-            harness.release.set()
             await asyncio.wait_for(bypass, 2)
-            for task in tasks:
-                await asyncio.wait_for(task, 2)
+            await harness.drain(parked)
 
     async def test_capacity_returns_to_the_limit_after_bypassed_requests_finish(self):
-        """64 -> 0 (3 in flight) -> 64, then drain: the gate must settle back at 64.
+        """64 -> 0 (3 in flight) -> 64, then drain: the budget must settle back at 64.
 
-        Bypassed requests hold no permit, so the resize charges them against capacity.
-        If that charge is never returned when they finish, the loss is permanent and
-        the operator sees "I toggled the limit through 0 and lost 3 slots".
+        If the requests admitted while unlimited were charged but never released, the
+        operator would see "I toggled the limit through 0 and lost 3 slots".
         """
-        harness = GateHarness(64, park=4)
-        tasks = [asyncio.create_task(harness.send()) for _ in range(3)]
-        await asyncio.wait_for(harness.entered.wait(), 2)
+        harness = GateHarness(64)
+        parked = await harness.in_flight(3)
+        harness.park = 4  # the request admitted while unlimited parks too
         harness.config["max_concurrent"] = 0
         bypass = asyncio.create_task(harness.send())
         await asyncio.sleep(0)
         harness.config["max_concurrent"] = 64
-        self.assertEqual(harness.middleware._gate()._value, 60)
+        self.assertEqual(harness.middleware._active, 4)
         harness.release.set()
         await asyncio.wait_for(bypass, 2)
-        for task in tasks:
-            await asyncio.wait_for(task, 2)
+        await harness.drain(parked)
         self.assertEqual(harness.middleware._active, 0)
-        self.assertEqual(len(harness.middleware._bypass), 0)
-        self.assertEqual(harness.middleware._gate()._value, 64)
+        self.assertEqual(await harness.capacity(64), 64)
 
     async def test_repeated_zero_round_trips_never_accumulate_drift(self):
         """Four 64 -> 0 -> 64 cycles with requests in flight must each end at 64.
 
         Each cycle parks two requests while unlimited, so a one-way charge would leak
-        two permits per cycle (64, 62, 60, ...). Drift is what a single-cycle test
+        two slots per cycle (64, 62, 60, ...). Drift is what a single-cycle test
         cannot see.
         """
-        harness = GateHarness(64, park=100)
+        harness = GateHarness(64)
         for cycle in range(4):
             with self.subTest(cycle=cycle):
                 harness.config["max_concurrent"] = 64
-                harness.release.clear()
-                parked = [asyncio.create_task(harness.send()) for _ in range(2)]
-                await asyncio.sleep(0)
+                parked = await harness.in_flight(2)
+                harness.park = 3  # the request admitted while unlimited parks too
                 self.assertEqual(harness.middleware._active, 2)
                 harness.config["max_concurrent"] = 0
                 bypass = asyncio.create_task(harness.send())
                 await asyncio.sleep(0)
                 harness.config["max_concurrent"] = 64
-                self.assertEqual(harness.middleware._gate()._value, 61)
+                self.assertEqual(harness.middleware._active, 3)
                 harness.release.set()
                 await asyncio.wait_for(bypass, 2)
-                for task in parked:
-                    await asyncio.wait_for(task, 2)
+                await harness.drain(parked)
                 self.assertEqual(harness.middleware._active, 0, f"cycle {cycle}")
-                self.assertEqual(harness.middleware._gate()._value, 64, f"cycle {cycle} drifted")
+                self.assertEqual(await harness.capacity(64), 64, f"cycle {cycle} drifted")
 
     async def test_round_trip_through_zero_with_nothing_in_flight_restores_full_capacity(self):
-        """64 -> 0 -> 64 with nothing in flight must not permanently shrink the gate."""
+        """64 -> 0 -> 64 with nothing in flight must not permanently shrink the budget."""
         harness = GateHarness(64, park_first=False)
         await harness.send()
-        self.assertEqual(harness.middleware._gate()._value, 64)
+        self.assertEqual(await harness.capacity(64), 64)
         harness.config["max_concurrent"] = 0
         await harness.send()
-        self.assertIsNone(harness.middleware._limit_at_gate)
         harness.config["max_concurrent"] = 64
         self.assertEqual(harness.middleware._active, 0)
-        self.assertEqual(harness.middleware._gate()._value, 64)
+        self.assertEqual(await harness.capacity(64), 64)
 
     async def test_released_slots_are_restored_after_a_hot_raise(self):
         harness = GateHarness(1)
@@ -257,8 +278,8 @@ class HotReloadTests(unittest.IsolatedAsyncioTestCase):
         harness.release.set()
         await asyncio.wait_for(first, 2)
         # The second request's slot must come back on release, leaving the full budget.
-        self.assertEqual(harness.middleware._gate()._value, 2)
         self.assertEqual(harness.middleware._active, 0)
+        self.assertEqual(await harness.capacity(2), 2)
 
     async def test_unlimited_requests_are_counted_so_a_later_limit_applies_to_them(self):
         harness = GateHarness(0)
@@ -273,6 +294,86 @@ class HotReloadTests(unittest.IsolatedAsyncioTestCase):
             harness.release.set()
             await asyncio.wait_for(first, 2)
         self.assertEqual(harness.middleware._active, 0)
+
+
+class HotShrinkRegressionTests(unittest.IsolatedAsyncioTestCase):
+    """P0-1: shrinking the limit must not hand the pre-shrink capacity back on release.
+
+    The old gate sized itself as "limit minus in-flight" at the moment the limit
+    changed, so every request already in flight when the limit dropped released a
+    permit belonging to the *old* generation. Once those requests drained, the gate
+    held the old capacity again and a limit of 1 kept admitting 4. Each case below
+    measures admitted concurrency at the middleware boundary, so it fails on the old
+    implementation and passes on a counter-based one.
+    """
+
+    async def test_shrinking_the_limit_with_requests_in_flight_holds_after_they_drain(self):
+        """4 -> 1 with 4 in flight: after drain, a limit of 1 admits exactly 1."""
+        harness = GateHarness(4)
+        inflight = await harness.in_flight(4)
+        try:
+            harness.config["max_concurrent"] = 1
+            # The first request after the change is what re-sizes the old gate.
+            sent = await harness.send()
+            self.assertEqual(sent[0]["status"], 503)
+        finally:
+            await harness.drain(inflight)
+        self.assertEqual(harness.middleware._active, 0)
+        self.assertEqual(await harness.capacity(8), 1)
+
+    async def test_repeated_shrink_cycles_never_inflate_the_budget(self):
+        """64 -> 1 -> 64 -> 0 -> 64, four times: a limit of 1 must stay 1 every round."""
+        harness = GateHarness(64)
+        for cycle in range(4):
+            with self.subTest(cycle=cycle):
+                harness.config["max_concurrent"] = 64
+                inflight = await harness.in_flight(4)
+                try:
+                    harness.config["max_concurrent"] = 1
+                    sent = await harness.send()
+                    self.assertEqual(sent[0]["status"], 503, f"cycle {cycle}")
+                finally:
+                    await harness.drain(inflight)
+                self.assertEqual(await harness.capacity(8), 1, f"cycle {cycle} inflated")
+                harness.config["max_concurrent"] = 0
+                await harness.send()
+                harness.config["max_concurrent"] = 64
+                self.assertEqual(await harness.capacity(80), 64, f"cycle {cycle} drifted")
+
+    async def test_shrunk_limit_rejects_with_the_documented_contract(self):
+        """While shrunk, every generation route answers 503 + Retry-After: 3 + concurrency_limit."""
+        harness = GateHarness(4)
+        inflight = await harness.in_flight(4)
+        try:
+            harness.config["max_concurrent"] = 1
+            for path in ROUTES:
+                with self.subTest(path=path):
+                    sent = await harness.send(path)
+                    self.assertEqual(sent[0]["status"], 503)
+                    headers = harness.headers(sent)
+                    self.assertEqual(headers[b"retry-after"], b"3")
+                    self.assertEqual(int(headers[b"content-length"]), len(sent[1]["body"]))
+                    payload = json.loads(sent[1]["body"])
+                    self.assertEqual(payload["error"]["code"], "concurrency_limit")
+                    if path == "/v1/messages":
+                        self.assertEqual(payload["type"], "error")
+                        self.assertEqual(payload["error"]["type"], "api_error")
+                    else:
+                        self.assertNotIn("type", payload)
+                        self.assertEqual(payload["error"]["type"], "rate_limit_error")
+        finally:
+            await harness.drain(inflight)
+
+    async def test_raising_the_limit_counts_the_requests_already_in_flight(self):
+        """1 -> 4 with 1 in flight: the in-flight request consumes one of the 4 slots."""
+        harness = GateHarness(1)
+        inflight = await harness.in_flight(1)
+        try:
+            harness.config["max_concurrent"] = 4
+            self.assertEqual(await harness.capacity(8), 3)
+        finally:
+            await harness.drain(inflight)
+        self.assertEqual(await harness.capacity(8), 4)
 
 
 class OverloadContractTests(unittest.IsolatedAsyncioTestCase):
@@ -303,12 +404,16 @@ class OverloadContractTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(first, 2)
 
     async def test_zero_means_unlimited_on_every_generation_route(self):
-        harness = GateHarness(0, park_first=False)
+        harness = GateHarness(0)
+        harness.park = 0  # capacity() parks what it floods; do not park here
         for path in ROUTES:
             with self.subTest(path=path):
                 sent = await harness.send(path)
                 self.assertEqual(sent[0]["status"], 200)
-        self.assertIsNone(harness.middleware._semaphore)
+        # Unlimited means a burst far above any limit is admitted, not that requests
+        # go uncounted: _active must still return to 0 once they finish.
+        self.assertEqual(await harness.capacity(40), 40)
+        self.assertEqual(harness.middleware._active, 0)
 
 
 class SettingSurfaceTests(unittest.TestCase):

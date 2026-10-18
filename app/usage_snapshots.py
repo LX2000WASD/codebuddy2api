@@ -22,6 +22,8 @@ import tempfile
 import threading
 import time
 
+from .state_store import serialize_bounded
+
 VERSION = 1
 MAX_ACCOUNTS = 256          # Bounded table; matches the credential pool's practical size.
 MAX_DAYS = 31               # The upstream usage window is 30 days; allow one spare day.
@@ -97,6 +99,8 @@ class UsageSnapshots:
         self.last_error: str | None = None
         # Set when the cache changed but the write did not land, so a later forget retries.
         self._dirty = False
+        # Rows given up to the byte bound since start, so shedding is observable.
+        self.shed_total = 0
         if self.path:
             self._load()
 
@@ -166,25 +170,14 @@ class UsageSnapshots:
     def _serialize_locked(self):
         """Build the payload, shedding the oldest snapshots until it fits MAX_BYTES.
 
-        Returns the payload plus whether rows had to be shed, so a caller is not told its
+        Returns the payload plus how many rows had to be shed, so a caller is not told its
         snapshot was cached when that row was the one given up to satisfy the byte bound.
         """
-        accounts = dict(self._data)
-        shed = False
-        while True:
-            try:
-                content = json.dumps({"version": VERSION, "accounts": accounts},
-                                     ensure_ascii=False, separators=(",", ":"),
-                                     allow_nan=False).encode("utf-8")
-            except (TypeError, ValueError):
-                return None, shed
-            if len(content) <= MAX_BYTES or not accounts:
-                return content, shed
-            ordered = sorted(accounts, key=lambda key: accounts[key].get("fetched_at") or 0.0)
-            keep = max(0, int(len(ordered) * MAX_BYTES / len(content) * 0.9))
-            for key in ordered[:max(1, len(ordered) - keep)]:
-                accounts.pop(key, None)
-                shed = True
+        return serialize_bounded({"version": VERSION, "accounts": self._data}, MAX_BYTES,
+                                 rows_field="accounts",
+                                 # Oldest fetch first: a stale snapshot is the one the next
+                                 # refresh replaces anyway.
+                                 urgency=lambda key, row: row.get("fetched_at") or 0.0)
 
     def _save_locked(self) -> bool:
         """Atomically rewrite the cache; returns False when the update was not fully durable."""
@@ -203,7 +196,9 @@ class UsageSnapshots:
                 self._dirty = True
                 return False
             self.last_error = "capacity" if shed else None
-            self._dirty = shed
+            self._dirty = bool(shed)
+            if shed:
+                self.shed_total += shed
             return not shed
         temporary = None
         try:
@@ -228,7 +223,9 @@ class UsageSnapshots:
                 except OSError:
                     pass
         self.last_error = "capacity" if shed else None
-        self._dirty = shed
+        self._dirty = bool(shed)
+        if shed:
+            self.shed_total += shed
         return not shed
 
     # -- reads / writes ----------------------------------------------------

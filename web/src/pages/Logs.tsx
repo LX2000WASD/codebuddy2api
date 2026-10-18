@@ -249,18 +249,18 @@ export function Logs() {
               <table>
                 <thead>
                   <tr>
-                    <th>{t("logs.col.time")}</th>
-                    <th>
+                    <th scope="col">{t("logs.col.time")}</th>
+                    <th scope="col">
                       {kind === "request" ? t("logs.col.modelProfile") : t("logs.col.action")}
                     </th>
-                    <th>{t("logs.col.status")}</th>
+                    <th scope="col">{t("logs.col.status")}</th>
                     {kind === "request" && (
                       <>
-                        <th>{t("logs.col.duration")}</th>
-                        <th>Token / Credit</th>
+                        <th scope="col">{t("logs.col.duration")}</th>
+                        <th scope="col">Token / Credit</th>
                       </>
                     )}
-                    <th>{t("logs.col.actions")}</th>
+                    <th scope="col">{t("logs.col.actions")}</th>
                   </tr>
                 </thead>
                 <tbody>

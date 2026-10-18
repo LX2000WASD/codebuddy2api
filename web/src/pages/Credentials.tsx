@@ -1045,13 +1045,13 @@ export function Credentials() {
                   <table>
                     <thead>
                       <tr>
-                        <th></th>
-                        <th>凭证 / 产品</th>
-                        <th>目录与同步状态</th>
-                        <th>官方余额 / 到期</th>
-                        <th>请求与用量</th>
-                        <th>认证与启用</th>
-                        <th>操作</th>
+                        <th scope="col"></th>
+                        <th scope="col">凭证 / 产品</th>
+                        <th scope="col">目录与同步状态</th>
+                        <th scope="col">官方余额 / 到期</th>
+                        <th scope="col">请求与用量</th>
+                        <th scope="col">认证与启用</th>
+                        <th scope="col">操作</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1262,11 +1262,11 @@ export function Credentials() {
                         <table>
                           <thead>
                             <tr>
-                              <th>时间</th>
-                              <th>模型</th>
-                              <th>状态</th>
-                              <th>Token</th>
-                              <th>Credit</th>
+                              <th scope="col">时间</th>
+                              <th scope="col">模型</th>
+                              <th scope="col">状态</th>
+                              <th scope="col">Token</th>
+                              <th scope="col">Credit</th>
                             </tr>
                           </thead>
                           <tbody>

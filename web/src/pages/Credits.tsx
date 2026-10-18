@@ -13,7 +13,7 @@ import {
 import { useFusionResource, FUSION_DEVELOPMENT } from "../fusion/client";
 import type { CreditExpiryResponse } from "../fusion/types";
 import { profileLabel } from "../values";
-import { t, useT } from "../i18n";
+import { t, useDateFormat, useT } from "../i18n";
 import s from "../ui.module.scss";
 
 function normalizeExpiry(value: unknown): CreditExpiryResponse {
@@ -76,6 +76,7 @@ function distribution(items: CreditExpiryResponse["items"]) {
 
 export function Credits() {
   const t = useT();
+  const format = useDateFormat();
   const [days, setDays] = useState("30");
   const [burnDays, setBurnDays] = useState("7");
   const params = new URLSearchParams({ days, burn_days: burnDays });
@@ -254,9 +255,7 @@ export function Credits() {
                         ) : (
                           <>
                             <Countdown until={item.soonest_expiry} fallback="" />
-                            <small>
-                              {new Date(item.soonest_expiry * 1000).toLocaleDateString("zh-CN")}
-                            </small>
+                            <small>{format.date(new Date(item.soonest_expiry * 1000))}</small>
                           </>
                         )}
                       </dd>
@@ -266,9 +265,9 @@ export function Credits() {
                     <table>
                       <thead>
                         <tr>
-                          <th>{t("fusion.credits.colBatch")}</th>
-                          <th>{t("fusion.credits.colRemainingTotal")}</th>
-                          <th>{t("fusion.credits.colExpiry")}</th>
+                          <th scope="col">{t("fusion.credits.colBatch")}</th>
+                          <th scope="col">{t("fusion.credits.colRemainingTotal")}</th>
+                          <th scope="col">{t("fusion.credits.colExpiry")}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -286,7 +285,7 @@ export function Credits() {
                             <td>
                               {number(segment.expires_at) === null
                                 ? t("fusion.common.unknown")
-                                : new Date(segment.expires_at * 1000).toLocaleDateString("zh-CN")}
+                                : format.date(new Date(segment.expires_at * 1000))}
                             </td>
                           </tr>
                         ))}

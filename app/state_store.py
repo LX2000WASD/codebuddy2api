@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import copy
 import json
 import math
 import os
@@ -38,6 +39,46 @@ def strict_json(raw):
         raise ValueError("non-finite state value")
 
     return json.loads(raw, object_pairs_hook=pairs, parse_constant=invalid)
+
+def serialize_bounded(document, limit, *, rows_field, urgency):
+    """Serialize *document*, shedding rows from its bounded table until it fits *limit*.
+
+    The reader and the writer share one byte bound, so a table that grows past it has to
+    lose rows instead of producing a file the reader would refuse: refusing it discards
+    *every* row, which is a strictly worse outcome than dropping the least useful ones.
+
+    Rows are given up in urgency order. urgency(key, row) returns the moment that row stops
+    mattering, and the rows that stop mattering soonest go first, so what is shed is what
+    the table would have forgotten on its own. The step is proportional to the overflow, so
+    a table far over the bound converges in a few passes instead of re-encoding once per
+    dropped row.
+
+    Returns (content, shed). *content* is the exact payload to write, or None when the
+    document cannot be encoded (or cannot fit even with every row gone, in which case
+    writing it would only feed the reader something it rejects). *shed* counts the rows
+    given up, so a caller that asked to record one row is never told its write was durable
+    when that row was the one shed to satisfy the bound.
+    """
+    rows = dict(document[rows_field])
+    shed = 0
+    while True:
+        payload = dict(document)
+        payload[rows_field] = rows
+        try:
+            content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
+                                 allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError):
+            return None, shed
+        if len(content) <= limit:
+            return content, shed
+        if not rows:
+            return None, shed     # Nothing left to give up; the bound cannot be met.
+        ordered = sorted(rows, key=lambda key: urgency(key, rows[key]))
+        keep = max(0, int(len(ordered) * limit / len(content) * 0.9))
+        for key in ordered[:max(1, len(ordered) - keep)]:
+            rows.pop(key, None)
+            shed += 1
+
 
 def load_document(path, store, name, limit=MAX_BYTES):
     """Read SQLite at runtime; retain bounded legacy readers for import validation."""
@@ -163,6 +204,8 @@ class StateStore:
         self.path = control.path
         self._db = control._db
         self._lock = control._lock
+        # Documents accepted by stage() and not yet committed; see flush().
+        self._staged: dict[str, str] = {}
 
     @contextmanager
     def transaction(self):
@@ -179,6 +222,13 @@ class StateStore:
     def _get(self, name):
         if name not in LEGACY_FILES:
             raise ValueError("Unknown state namespace")
+        if name in self._staged:
+            # Read-your-writes: a staged document is already the newest truth. The copy keeps
+            # the caller from mutating the one a later flush will store; validation here (not
+            # in stage) is what keeps stage() O(1), and reads are not the hot path.
+            value = copy.deepcopy(self._staged[name])
+            _check_document(name, value)
+            return value
         row = self._db.execute("SELECT payload FROM runtime_state WHERE name=?", (name,)).fetchone()
         if row is None:
             return None
@@ -202,6 +252,77 @@ class StateStore:
         with self.transaction():
             self._put(name, value)
 
+    # -- coalesced writes --------------------------------------------------
+
+    def stage(self, name, value) -> bool:
+        """Hand a document to the next flush(); O(1) per call, no SQLite, no encoding.
+
+        put() re-encodes and re-validates the *whole* document on every call, so a caller
+        updating one document on a hot path pays for the document on every event. Measured
+        here on a 25 KB cooldown document, one put() costs ~0.63ms, of which the durable
+        commit is the smallest part: ~0.25ms is the JSON encode and ~0.39ms the schema
+        check. Coalescing only the commit therefore saves nothing; the per-event encode and
+        check are what a burst has to skip, and flush() pays them once per document.
+
+        The document is taken over, not copied: the caller must not mutate it afterwards.
+        Validation and the size bound are applied by flush(), which is also the point where
+        the update becomes durable, so a staged document is visible to get() immediately.
+        """
+        if name not in LEGACY_FILES:
+            raise ValueError("Unknown state namespace")
+        with self._lock:
+            self._staged[name] = value
+        return True
+
+    def pending(self) -> bool:
+        """Whether any staged document is still waiting for flush()."""
+        with self._lock:
+            return bool(self._staged)
+
+    def flush(self) -> bool:
+        """Validate, encode and commit every staged document in one durable transaction.
+
+        Returns True when the staged documents are durable. A document that cannot be
+        encoded, or that the namespace rejects, is dropped and reported as a failure: it can
+        never become valid, and retrying it forever would block every later write. A commit
+        that fails keeps the batch as it was, so the next flush() retries rather than losing
+        it; a caller that only reports durability must not treat staged state as written.
+        """
+        with self._lock:
+            if not self._staged:
+                return True
+            batch = dict(self._staged)
+        encoded = {}
+        for name, value in batch.items():
+            try:
+                content = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+                _check_document(name, value)
+            except (TypeError, ValueError):
+                encoded[name] = None        # Never valid: drop it instead of retrying forever.
+                continue
+            encoded[name] = content if len(content.encode()) <= MAX_BYTES else None
+        durable = True
+        writes = {name: content for name, content in encoded.items() if content is not None}
+        if len(writes) != len(encoded):
+            durable = False
+        if writes:
+            try:
+                with self.transaction():
+                    for name, content in writes.items():
+                        self._db.execute(
+                            "INSERT INTO runtime_state(name,payload) VALUES(?,?) "
+                            "ON CONFLICT(name) DO UPDATE SET payload=excluded.payload",
+                            (name, content))
+            except (OSError, ValueError, sqlite3.Error):
+                return False
+        with self._lock:
+            # Drop only what this flush settled: a stage() that raced with the commit stays
+            # pending, so it cannot be lost between the write and the bookkeeping.
+            for name, content in encoded.items():
+                if self._staged.get(name) is batch[name]:
+                    del self._staged[name]
+        return durable
+
     def put_cache(self, name, value):
         """Cache failures stay visible without replacing the upstream inference outcome."""
         if name not in ("catalog", "model_blocks"):
@@ -219,6 +340,7 @@ class StateStore:
         if name not in LEGACY_FILES:
             raise ValueError("Unknown state namespace")
         with self.transaction():
+            self._staged.pop(name, None)    # A staged document must not outlive the delete.
             self._db.execute("DELETE FROM runtime_state WHERE name=?", (name,))
 
 

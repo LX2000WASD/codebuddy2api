@@ -19,7 +19,7 @@ import {
   type ChannelsResponse,
   type ChannelTestResult,
 } from "../fusion/types";
-import { t, useT } from "../i18n";
+import { t, useDateFormat, useT } from "../i18n";
 import s from "../ui.module.scss";
 
 function normalizeEvents(value: unknown): AlertEventsResponse {
@@ -45,6 +45,7 @@ const severityLabel = (severity: string) =>
 
 function EventsPanel() {
   const t = useT();
+  const format = useDateFormat();
   const [kinds, setKinds] = useState<Set<AlertKind>>(() => new Set());
   const [severity, setSeverity] = useState("");
   const [items, setItems] = useState<AlertEventsResponse["items"]>([]);
@@ -139,7 +140,7 @@ function EventsPanel() {
                   {event.kind in ALERT_KIND_LABELS
                     ? t(ALERT_KIND_LABELS[event.kind as AlertKind])
                     : event.kind}{" "}
-                  · {new Date(event.fired_at * 1000).toLocaleString("zh-CN")}
+                  · {format.dateTime(new Date(event.fired_at * 1000))}
                 </small>
                 <p>{event.detail}</p>
                 {event.delivered.length > 0 && (

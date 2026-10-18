@@ -383,6 +383,10 @@ BODY_NOT_ACCEPTED = (httpx.ConnectError, httpx.ConnectTimeout)
 # Write-timeout replay is opt-in because partial requests may already have been processed.
 WRITE_TIMEOUT = (httpx.WriteTimeout,)
 
+# One dial is always allowed; the legacy retry adds exactly one more. Without an explicit
+# per-request budget both stay as they were so existing callers keep their behaviour.
+LEGACY_MAX_ATTEMPTS = 2
+
 
 _PENDING = object()
 _EOF = object()
@@ -515,17 +519,32 @@ async def _attempt_client(url, timeout, clients):
 @asynccontextmanager
 async def open_backend_stream(url, headers, body, *, read_timeout=300, on_retry=None,
                               retry_write_timeout=False, clients=None, headers_for_attempt=None,
-                              ttfb_timeout=None, idle_timeout=None, write_timeout=20):
-    """Retry connection failures once on a fresh client; write timeouts require explicit opt-in.
+                              ttfb_timeout=None, idle_timeout=None, write_timeout=20,
+                              max_attempts=None, on_attempt=None):
+    """Retry connection failures on a fresh client, bounded by a shared per-request budget.
+
     Never replay after the upstream response opens. When either timeout bound is set the
     yielded response is a :class:`BoundedStream` that fails fast on TTFB or idle stalls.
+
+    ``max_attempts`` caps the dials this call may make; a connection retry spends budget
+    instead of adding a free attempt on top of the caller's failover allowance. Callers that
+    own the request-wide budget pass the remaining dials and charge them through ``on_attempt``
+    (invoked with the 1-based dial index just before each dial). ``None`` keeps the legacy
+    single retry; a budget of zero or less is refused without dialing.
     """
+    if max_attempts is not None:
+        max_attempts = int(max_attempts)
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1; the request attempt budget is exhausted")
+    budget = LEGACY_MAX_ATTEMPTS if max_attempts is None else max_attempts
     retryable = BODY_NOT_ACCEPTED + (WRITE_TIMEOUT if retry_write_timeout else ())
     # write bound: an upstream that accepts the TCP connection but never reads the
     # request body stalls here; 0/None disables the separate write bound.
     timeout = httpx.Timeout(read_timeout, connect=15, write=write_timeout or None, pool=15)
     bounded = ttfb_timeout is not None or idle_timeout is not None
-    for attempt in range(2):
+    for attempt in range(budget):
+        if on_attempt is not None:
+            on_attempt(attempt + 1)
         opened = False
         try:
             async with _attempt_client(url, timeout, clients if attempt == 0 else None) as client:
@@ -539,7 +558,7 @@ async def open_backend_stream(url, headers, body, *, read_timeout=300, on_retry=
                     yield response
                     return
         except retryable as error:
-            if opened or attempt == 1:
+            if opened or attempt == budget - 1:
                 raise
             if on_retry is not None:
                 on_retry(error)
