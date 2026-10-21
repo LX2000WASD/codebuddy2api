@@ -3,6 +3,7 @@ import { NavLink, Navigate, Outlet, Route, Routes, useLocation } from "react-rou
 import { establishSession, errorMessage, useSession } from "./api";
 import { ErrorNotice, Icon } from "./components";
 import { CommandPalette, SIDEBAR_TOGGLE_EVENT, signOut } from "./commandPalette";
+import { CreditsBadge, CreditsDot, useCreditsAlert } from "./insights";
 import { areaForPath, navAreas, navGroups, sectionFor, sectionTarget } from "./navigation";
 import { TaskArea } from "./taskArea";
 import { Appearance } from "./appearance";
@@ -56,6 +57,9 @@ function Shell() {
     };
   }, []);
   const area = areaForPath(location.pathname);
+  // Shared credential snapshot: on a page that already loaded /admin/credentials
+  // this is a TTL hit, and a write anywhere invalidates it — no polling involved.
+  const creditsAlertData = useCreditsAlert();
   // The breadcrumb names the task area, then the section when the area holds several.
   // Reading ?section= keeps the crumb in step with the tabs without a second route.
   const crumb = useMemo(() => {
@@ -103,6 +107,18 @@ function Shell() {
                     >
                       <Icon name={candidate.icon} />
                       <span className={s.navText}>{label}</span>
+                      {/* Credits expiring inside a week, on the area that owns the
+                          credits page. Renders nothing when the snapshot has no
+                          expiring account, so a healthy pool has no badge at all. */}
+                      {candidate.key === "usage" &&
+                        creditsAlertData &&
+                        (collapsed ? (
+                          // The collapsed strip is 76px wide: no room for a count, so the
+                          // dot carries the signal (positioned by .collapsed .navDot).
+                          <CreditsDot alert={creditsAlertData} />
+                        ) : (
+                          <CreditsBadge alert={creditsAlertData} />
+                        ))}
                       <span className={s.navArrow}>
                         <Icon name="arrow" />
                       </span>

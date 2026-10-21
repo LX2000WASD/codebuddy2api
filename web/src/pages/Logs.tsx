@@ -24,6 +24,7 @@ import {
   ResourceState,
 } from "../components";
 import { DataTable, writeUrlParams, type DataTableColumn, type SortingState } from "../dataTable";
+import { RequestTrace } from "../traceView";
 import { eventActionLabel, eventKindLabel } from "../values";
 import { profiles } from "./Models";
 import s from "../ui.module.scss";
@@ -420,16 +421,9 @@ export function Logs() {
                 />
                 {Array.isArray(detail.attempts) && (
                   <Panel title={t("logs.attempts")}>
-                    {detail.attempts.length ? (
-                      list(detail.attempts).map((attempt, i) => (
-                        <div key={i}>
-                          <h3>{t("logs.attemptN", { n: i + 1 })}</h3>
-                          <Fields data={attempt} />
-                        </div>
-                      ))
-                    ) : (
-                      <p>{t("logs.noAttempts")}</p>
-                    )}
+                    {/* The attempts arrive in the order they happened, so the timeline
+                        renders them as recorded instead of re-sorting them. */}
+                    <RequestTrace attempts={list(detail.attempts)} requestMs={detail.duration_ms} />
                   </Panel>
                 )}
               </>

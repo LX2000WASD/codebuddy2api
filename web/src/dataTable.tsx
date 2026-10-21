@@ -43,19 +43,45 @@ export type { SortingState } from "@tanstack/react-table";
  * codepoint order does not). Missing values sink to the bottom in both
  * directions — a model without a reported rate should not pose as the cheapest.
  */
-const compareMixed = constructSortFn({
-  sort: (a: unknown, b: unknown) => {
-    if (a === b) return 0;
-    if (a === null || a === undefined) return 1;
-    if (b === null || b === undefined) return -1;
-    if (typeof a === "number" && typeof b === "number") return a - b;
-    // Every sortable column declares a number or a string, so this narrows to the
-    // two shapes the pages actually produce instead of stringifying arbitrary data.
-    const left = typeof a === "number" ? `${a}` : typeof a === "string" ? a : "";
-    const right = typeof b === "number" ? `${b}` : typeof b === "string" ? b : "";
-    return left.localeCompare(right);
-  },
-});
+function compareValues(a: unknown, b: unknown): number {
+  if (a === b) return 0;
+  if (a === null || a === undefined) return 1;
+  if (b === null || b === undefined) return -1;
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  // Every sortable column declares a number or a string, so this narrows to the
+  // two shapes the pages actually produce instead of stringifying arbitrary data.
+  const left = typeof a === "number" ? `${a}` : typeof a === "string" ? a : "";
+  const right = typeof b === "number" ? `${b}` : typeof b === "string" ? b : "";
+  return left.localeCompare(right);
+}
+const compareMixed = constructSortFn({ sort: compareValues });
+
+/**
+ * Orders rows the page sorts itself (`manualSorting`).
+ *
+ * The credentials list pages on the client, so its sort has to run *before* the
+ * slice: sorting inside the table would only reorder the visible page and then
+ * reshuffle it on "next". This runs the exact comparator and `sortUndefined`
+ * rule the table uses, so a page-level sort and a table-level sort never disagree.
+ */
+export function sortRows<T extends RowData>(
+  rows: T[],
+  sortValues: Record<string, ((row: T) => number | string | undefined) | undefined>,
+  sorting: SortingState,
+): T[] {
+  const [active] = sorting;
+  const value = active ? sortValues[active.id] : undefined;
+  if (!active || !value) return rows;
+  const direction = active.desc ? -1 : 1;
+  return [...rows].sort((left, right) => {
+    const a = value(left);
+    const b = value(right);
+    // Unknown values sink to the bottom in both directions, matching the table.
+    if (a === undefined || a === null) return b === undefined || b === null ? 0 : 1;
+    if (b === undefined || b === null) return -1;
+    return direction * compareValues(a, b);
+  });
+}
 
 /** Per-column metadata; the cell renderer is data, not an element type. */
 type ColumnMeta = {
@@ -383,6 +409,16 @@ export type DataTableProps<T extends RowData> = {
     /** Accessible name of a row checkbox: `选择 {label}`. */
     rowLabel: (row: T) => string;
     selectAllLabel: string;
+    /**
+     * Render the tri-state select-all box in the header. Defaults to true.
+     *
+     * The credentials list turns it off because its toolbar already carries a
+     * select-all with a *different* meaning — every account in the pool, not the
+     * rows of the current page. Two boxes that select different sets on one
+     * screen is worse than one, so the page keeps its own and the table drops
+     * its header box while still owning the row checkboxes and the highlight.
+     */
+    headerCheckbox?: boolean;
   };
   loading?: boolean;
   loadingLabel?: string;
@@ -390,6 +426,15 @@ export type DataTableProps<T extends RowData> = {
   empty?: ReactNode;
   /** Own scroll box with a sticky header (long, interactive tables). */
   scroll?: boolean;
+  /**
+   * The page sorts `rows` itself.
+   *
+   * Lists that page on the client need this: sorting inside the table would only
+   * reorder the visible page and then reshuffle it when the user presses "next".
+   * The header interaction and `aria-sort` stay here — the table still owns the
+   * sort state, it just does not apply it.
+   */
+  manualSorting?: boolean;
   className?: string;
 };
 
@@ -405,6 +450,7 @@ export function DataTable<T extends RowData>({
   loadingLabel,
   empty,
   scroll = false,
+  manualSorting = false,
   className = "",
 }: DataTableProps<T>) {
   const columnVisibility = useMemo(() => {
@@ -450,6 +496,7 @@ export function DataTable<T extends RowData>({
     // natural order is a data property, not a view the user can toggle into.
     enableSortingRemoval: false,
     enableMultiSort: false,
+    manualSorting,
   });
 
   const classes = useMemo(
@@ -468,6 +515,7 @@ export function DataTable<T extends RowData>({
     // `indeterminate` is a DOM property, not a prop React can set on a checkbox.
     if (selectAll.current) selectAll.current.indeterminate = someSelected;
   }, [someSelected]);
+  const showSelectAll = Boolean(selection) && selection?.headerCheckbox !== false;
   const toggleAll = () => {
     if (!selection) return;
     const next = new Set(selection.selected);
@@ -497,13 +545,15 @@ export function DataTable<T extends RowData>({
               <tr key={group.id}>
                 {selection && (
                   <th scope="col" className={s.selectCell}>
-                    <input
-                      ref={selectAll}
-                      type="checkbox"
-                      aria-label={selection.selectAllLabel}
-                      checked={allSelected}
-                      onChange={toggleAll}
-                    />
+                    {showSelectAll && (
+                      <input
+                        ref={selectAll}
+                        type="checkbox"
+                        aria-label={selection.selectAllLabel}
+                        checked={allSelected}
+                        onChange={toggleAll}
+                      />
+                    )}
                   </th>
                 )}
                 {group.headers.map((header) => {

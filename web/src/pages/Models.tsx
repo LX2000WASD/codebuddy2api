@@ -49,6 +49,17 @@ import {
   specRange,
 } from "../modelMetadata";
 import { useFusionResource } from "../fusion/client";
+import {
+  HealthSparkline,
+  ModelHealthCell,
+  SPARKLINE_LIMIT,
+  healthFor,
+  sparklineKeys,
+  useModelHealth,
+  useModelSparklines,
+  type ModelHealth,
+  type SparklineEntry,
+} from "../insights";
 import { t } from "../i18n";
 import s from "../ui.module.scss";
 export const profiles = ["cn-cli", "cn-work", "intl-cli", "intl-work"];
@@ -640,6 +651,8 @@ export function legacyScope(model: ModelRule): boolean {
 function modelColumns({
   totalAccounts,
   locks,
+  health,
+  sparks,
   onDetails,
   onEdit,
   onDelete,
@@ -647,6 +660,8 @@ function modelColumns({
 }: {
   totalAccounts: number | null;
   locks: ModelLock[];
+  health: Map<string, ModelHealth>;
+  sparks: Map<string, SparklineEntry>;
   onDetails: (model: ModelRule) => void;
   onEdit: (model: ModelRule) => void;
   onDelete: (model: ModelRule) => void;
@@ -693,6 +708,35 @@ function modelColumns({
       cell: (m) => (
         <AvailabilityCell model={m} total={totalAccounts} locks={locksForModel(locks, m)} />
       ),
+    },
+    {
+      // Seven-day health: the aggregate badge is available for every row (one shared
+      // dimensions query), the sparkline only for the busiest rows in the current
+      // view (one series request each, capped — see insights.tsx).
+      id: "health",
+      header: t("models.health.column"),
+      cell: (m) => {
+        // Aggregates are keyed by the requested model name (public_id); the rule id
+        // is only a local handle and would match nothing in the audit store.
+        const spark = sparks.get(m.public_id) ?? sparks.get(m.id);
+        return (
+          <ModelHealthCell
+            name={m.public_id}
+            health={healthFor(health, m)}
+            spark={
+              spark?.rows ? (
+                <HealthSparkline name={m.public_id} rows={spark.rows} />
+              ) : spark?.loading ? (
+                <span className={s.sparklineEmpty}>{t("models.health.loading")}</span>
+              ) : undefined
+            }
+          />
+        );
+      },
+      optional: true,
+      // The same breakpoint the rate and capability columns use: a phone shows
+      // identity, availability and health, and drops the rest.
+      hideBelow: 900,
     },
     {
       id: "context",
@@ -825,11 +869,21 @@ export function Models() {
   const [bulkAction, setBulkAction] = useState<BulkAction | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set<string>());
+  // Seven-day health: one shared aggregate covers every row, while sparklines are
+  // loaded only for the busiest rows of the current view (see insights.tsx).
+  const modelHealth = useModelHealth();
+  const sparkKeys = useMemo(
+    () => sparklineKeys(rows, modelHealth.byModel),
+    [rows, modelHealth.byModel],
+  );
+  const sparks = useModelSparklines(sparkKeys);
   const columns = useMemo(
     () =>
       modelColumns({
         totalAccounts,
         locks,
+        health: modelHealth.byModel,
+        sparks,
         onDetails: (model) => setDetailsId(model.id),
         onEdit: (model) => {
           setEditorRevision(resource.data?.revision ?? null);
@@ -846,7 +900,9 @@ export function Models() {
       }),
     // `bulkBusy` is a dependency, not a late-bound read: the dependency array is
     // evaluated during render, so the value must already be initialised above.
-    [totalAccounts, locks, resource.data?.revision, bulkBusy],
+    // `health` and `sparks` are maps rebuilt only when their payload changes, so the
+    // column identities stay stable and TanStack does not rebuild every row.
+    [totalAccounts, locks, resource.data?.revision, bulkBusy, modelHealth.byModel, sparks],
   );
   const { hidden, toggle: toggleColumn } = useColumnVisibility({
     storageKey: COLUMNS_KEY,
@@ -1085,6 +1141,11 @@ export function Models() {
           </div>
         </div>
         <p className={s.note}>{t("models.select.scope", { count: rows?.length ?? 0 })}</p>
+        {/* Say where the sparklines stop: a row without one means "not loaded",
+            not "no traffic", and the two must not be confused. */}
+        {sparkKeys.length > 0 && (
+          <p className={s.muted}>{t("models.health.partial", { count: SPARKLINE_LIMIT })}</p>
+        )}
         <DataTable
           rows={rows ?? []}
           columns={columns}

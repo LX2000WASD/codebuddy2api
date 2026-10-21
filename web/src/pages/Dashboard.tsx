@@ -115,6 +115,7 @@ function OfficialCredits({ value }: { value: unknown }) {
     </div>
   );
 }
+import { CostCards } from "../insights";
 import { KpiCards, UsageTrend } from "../UsageOverview";
 import { t, useDateFormat, useT } from "../i18n";
 export { Trend } from "../Trend";
@@ -208,6 +209,16 @@ export function Dashboard() {
             </div>
           )}
           <KpiCards summary={d.summary} previous={d.previous} series={d.series} />
+          {/* Cost is a re-projection of this same payload — see insights.tsx for why
+              /admin/stats/summary is deliberately not called. */}
+          <Panel title={t("cost.title")} hint={t("cost.hint")}>
+            <CostCards
+              summary={d.summary}
+              series={d.series}
+              range={d.range}
+              partial={period.partial === true}
+            />
+          </Panel>
           <Panel title={t("dash.usageTrend")} hint={t("dash.usageTrendHint")}>
             {period.partial === true && (
               <p className={s.note} role="status">

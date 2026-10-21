@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { metric, number, object, text } from "../api";
 import {
   Badge,
@@ -11,9 +11,10 @@ import {
   Skeleton,
 } from "../components";
 import { useFusionResource, FUSION_DEVELOPMENT } from "../fusion/client";
-import type { CreditExpiryResponse } from "../fusion/types";
+import type { CreditExpiryResponse, CreditSegment } from "../fusion/types";
 import { profileLabel } from "../values";
 import { t, useDateFormat, useT } from "../i18n";
+import { DataTable, type DataTableColumn, type SortingState } from "../dataTable";
 import s from "../ui.module.scss";
 
 function normalizeExpiry(value: unknown): CreditExpiryResponse {
@@ -72,6 +73,80 @@ function distribution(items: CreditExpiryResponse["items"]) {
   }
   const peak = Math.max(1, ...bands.map((band) => band.credits));
   return { bands, peak, total: bands.reduce((sum, band) => sum + band.credits, 0) };
+}
+
+/**
+ * One account's FEFO batch list.
+ *
+ * It is a component of its own because sorting is per-card state: the page shows
+ * several accounts side by side, and a sort chosen on one account's batches must
+ * not reorder the others. DataTable supplies the header, the sticky row and the
+ * empty shell; the ordering the backend returns (soonest expiry first) is what the
+ * "batch" column documents, and the two numeric columns are sortable on top of it.
+ */
+function SegmentTable({
+  segments,
+  format,
+}: {
+  segments: CreditSegment[];
+  format: ReturnType<typeof useDateFormat>;
+}) {
+  const t = useT();
+  const [sorting, setSorting] = useState<SortingState>([]);
+  // A segment carries no id of its own, so the row key is derived once here —
+  // source + expiry + position, because two batches of the same package can share
+  // both source and expiry and only their order tells them apart.
+  const rows = useMemo(
+    () =>
+      segments.map((segment, index) => ({
+        ...segment,
+        key: `${segment.source}|${segment.expires_at}|${index}`,
+      })),
+    [segments],
+  );
+  const columns = useMemo<DataTableColumn<(typeof rows)[number]>[]>(
+    () => [
+      {
+        id: "batch",
+        header: t("fusion.credits.colBatch"),
+        sortValue: (segment) => segment.source,
+        cell: (segment) => (
+          <>
+            <strong>{text(segment.source)}</strong>
+            <small>{segment.package_code ?? t("fusion.credits.noPackageCode")}</small>
+          </>
+        ),
+      },
+      {
+        id: "remaining",
+        header: t("fusion.credits.colRemainingTotal"),
+        sortValue: (segment) => segment.remaining,
+        sortDescFirst: true,
+        cell: (segment) => `${metric(segment.remaining)} / ${metric(segment.total)}`,
+      },
+      {
+        id: "expiry",
+        header: t("fusion.credits.colExpiry"),
+        sortValue: (segment) => segment.expires_at,
+        sortUndefined: "last",
+        cell: (segment) =>
+          number(segment.expires_at) === null
+            ? t("fusion.common.unknown")
+            : format.date(new Date(segment.expires_at * 1000)),
+      },
+    ],
+    [t, format],
+  );
+  return (
+    <DataTable
+      rows={rows}
+      columns={columns}
+      rowId={(segment) => segment.key}
+      sorting={sorting}
+      onSortingChange={setSorting}
+      empty={<Empty title={t("fusion.credits.noBatches")} />}
+    />
+  );
 }
 
 export function Credits() {
@@ -261,37 +336,7 @@ export function Credits() {
                       </dd>
                     </div>
                   </dl>
-                  <div className={s.tableWrap}>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th scope="col">{t("fusion.credits.colBatch")}</th>
-                          <th scope="col">{t("fusion.credits.colRemainingTotal")}</th>
-                          <th scope="col">{t("fusion.credits.colExpiry")}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {item.segments.map((segment, index) => (
-                          <tr key={index}>
-                            <td>
-                              <strong>{text(segment.source)}</strong>
-                              <small>
-                                {segment.package_code ?? t("fusion.credits.noPackageCode")}
-                              </small>
-                            </td>
-                            <td>
-                              {metric(segment.remaining)} / {metric(segment.total)}
-                            </td>
-                            <td>
-                              {number(segment.expires_at) === null
-                                ? t("fusion.common.unknown")
-                                : format.date(new Date(segment.expires_at * 1000))}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <SegmentTable segments={item.segments} format={format} />
                 </section>
               ))}
             </div>

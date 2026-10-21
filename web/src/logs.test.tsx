@@ -163,6 +163,63 @@ describe("log detail request lifetime", () => {
   });
 });
 
+describe("request trace timeline", () => {
+  // The shape the backend stores: attempts in the order they happened, each with the
+  // stage, the dial it belongs to and (only sometimes) a duration.
+  const attempts = [
+    {
+      stage: "upstream_attempt",
+      attempt_index: 1,
+      credential: "acct-a",
+      upstream_request_id: "up-req-1",
+    },
+    { stage: "upstream_http", attempt_index: 1, status_code: 429, duration_ms: 120 },
+    { stage: "upstream_http_error", attempt_index: 1, status_code: 429, error_code: "429001" },
+    { stage: "failover_recovered", code: "upstream_429" },
+    { stage: "upstream_attempt", attempt_index: 2, credential: "acct-b" },
+    { stage: "upstream_http", attempt_index: 2, status_code: 200, duration_ms: 380 },
+  ];
+
+  it("renders the recorded attempts as an ordered timeline instead of a flat dump", async () => {
+    const request = pending();
+    vi.spyOn(api, "get").mockReturnValue(request.promise);
+    const { container } = render(<Logs />);
+    open();
+    await act(async () =>
+      request.resolve({ data: { id: "current-b", duration_ms: 640, attempts } }),
+    );
+    const steps = [...container.querySelectorAll("[data-trace-stage]")];
+    expect(steps.map((row) => row.getAttribute("data-trace-stage"))).toEqual([
+      "upstream_attempt",
+      "upstream_http",
+      "upstream_http_error",
+      "failover_recovered",
+      "upstream_attempt",
+      "upstream_http",
+    ]);
+    // A stage with an error code is visually separated from the ones that succeeded.
+    expect(steps[2].getAttribute("data-trace-tone")).toBe("failed");
+    expect(steps[2].textContent).toContain("429001");
+    // The cumulative total follows the recorded order, not a re-sort by duration.
+    expect(steps[1].textContent).toContain("累计 120 ms");
+    expect(steps[5].textContent).toContain("累计 500 ms");
+    expect(
+      within(screen.getByRole("dialog")).getByText(
+        "6 段 · 请求总计 640 ms，其中 500 ms 有分段记录",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("still says so when a request recorded no attempts", async () => {
+    const request = pending();
+    vi.spyOn(api, "get").mockReturnValue(request.promise);
+    render(<Logs />);
+    open();
+    await act(async () => request.resolve({ data: { id: "empty", attempts: [] } }));
+    expect(screen.getByText("暂无尝试记录。")).toBeTruthy();
+  });
+});
+
 it("shows the persisted daily Buddy warning from event details", () => {
   vi.mocked(useResource).mockReturnValue({
     data: {

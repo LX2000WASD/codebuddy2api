@@ -241,6 +241,13 @@
   而不是静默变成「—」。
 - 已知数（`*_known`）用于前端展示数据完整度；`null` 表示该指标无已知样本。
 - 维度 `credential` 的 key 与 `/admin/credentials` 的 `id` 一致（account_key）。
+- **日粒度一律是 UTC 自然日**，不是本地日：`stats_daily` 的桶键由
+  `int(now // 86400) * 86400` 得出（`app/audit_store.py`），窗口起点也是同一个公式。
+  因此「今日花费」「日均花费」这类展示必须写明 UTC，否则东八区用户会以为是本地 0 点翻页。
+  小时粒度同理（UTC 整点）。
+- **`granularity=auto` 的解析只有一处**（`resolve_granularity`）：`days == 1` → `hour`，
+  其余 → `day`。`/admin/dashboard` 与 `/admin/stats/*` 共用它；此前两个端点各写一份，
+  `days=1&auto` 时 dashboard 给 12 个小时桶、series 给 1 个日桶，同一窗口画出两张不同的图。
 
 ---
 

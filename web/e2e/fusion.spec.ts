@@ -2,12 +2,25 @@ import { expect, test, type Page } from "@playwright/test";
 
 // The fusion views ship with a local fixture layer while the Fusion-B backend
 // lands, so the new pages must render WITHOUT any /admin request beyond the session.
+//
+// One shell-level request is expected and is not one of theirs: the sidebar shows how
+// many accounts have credits expiring soon, which it reads from the same shared
+// /admin/credentials snapshot the credentials page uses (identical request key, so
+// visiting that page is a TTL hit rather than another fetch). Excluding exactly that
+// one path keeps the assertion meaningful — it still proves these views issue no
+// /admin request of their own, and it would still fail if one started to.
+const SHELL_REQUESTS = new Set(["GET /admin/credentials"]);
 async function mockSession(page: Page) {
   const fusionPaths: string[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (url.pathname.startsWith("/admin/") && !url.pathname.startsWith("/admin/session"))
-      fusionPaths.push(`${request.method()} ${url.pathname}`);
+    const call = `${request.method()} ${url.pathname}`;
+    if (
+      url.pathname.startsWith("/admin/") &&
+      !url.pathname.startsWith("/admin/session") &&
+      !SHELL_REQUESTS.has(call)
+    )
+      fusionPaths.push(call);
   });
   await page.route("**/admin/session", (route) =>
     route.fulfill({ json: { authenticated: true, csrf_token: "fusion-fixture" } }),

@@ -3935,3 +3935,196 @@ tr.selectedRow {
 .tableSortActive {
   color: var(--strong);
 }
+
+/* ===== Request trace timeline =====
+   One row per attempt, in ordinal order, with a cumulative bar. The bar is scaled
+   against the request's total duration so the eye can see which stage ate the time;
+   a stage that never reported a duration keeps a hairline marker instead of a gap. */
+.traceTimeline {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.traceStep {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 12px;
+}
+.traceStep + .traceStep {
+  border-top-color: var(--line);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.traceOrdinal {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.traceBody {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.traceLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.traceStage {
+  font-weight: 500;
+}
+.traceMeta {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.traceBar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--soft);
+  overflow: hidden;
+}
+.traceBar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 140ms ease;
+}
+.traceDuration {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* A stage that failed: the row keeps its place but reads as a problem. */
+.traceStepFailed {
+  background: color-mix(in srgb, var(--error-bg) 55%, transparent);
+  border-color: color-mix(in srgb, var(--error) 24%, transparent);
+}
+.traceStepFailed .traceOrdinal {
+  background: color-mix(in srgb, var(--error) 18%, transparent);
+  color: var(--error);
+}
+.traceStepFailed .traceBar > span {
+  background: var(--error);
+}
+/* A retry or recovery marker: informational, not an error. */
+.traceStepWarn {
+  background: color-mix(in srgb, var(--warning-bg) 45%, transparent);
+}
+.traceStepWarn .traceBar > span {
+  background: var(--warning);
+}
+
+/* ===== Compact metric tile (cost / health summaries) ===== */
+.metricTile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  min-width: 0;
+}
+.metricLabel {
+  font-size: 11px;
+  color: var(--muted);
+}
+.metricValue {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+  font-variant-numeric: tabular-nums;
+}
+.metricDelta {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.metricUp {
+  color: var(--warning);
+}
+.metricDown {
+  color: var(--good);
+}
+.metricGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+/* ===== Sparkline (7-day model health) ===== */
+.sparkline {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 18px;
+}
+.sparkline > span {
+  display: block;
+  width: 4px;
+  min-height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0.75;
+}
+.sparkline > .sparklineError {
+  background: var(--error);
+  opacity: 1;
+}
+.sparklineEmpty {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* Sidebar count badge (e.g. accounts with credits expiring soon). Sits inside a nav
+   item, so it must survive both the collapsed icon strip and the active row. */
+.navBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: auto;
+  border-radius: 999px;
+  background: var(--warning);
+  color: var(--surface);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.navItem.active .navBadge {
+  background: var(--strong);
+  color: var(--surface);
+}
+/* The collapsed strip has no room for a count; the dot alone carries the signal. */
+.collapsed .navBadge {
+  display: none;
+}
+.collapsed .navDot {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  margin: 0;
+}

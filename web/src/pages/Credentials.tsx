@@ -35,6 +35,7 @@ import {
 import { prepareImports, type ImportResult } from "../imports";
 import { downloadFilename } from "../downloads";
 import { useDateFormat } from "../i18n";
+import { DataTable, sortRows, type DataTableColumn, type SortingState } from "../dataTable";
 import s from "../ui.module.scss";
 
 // Locale-aware timestamps: a hard-coded toLocaleString("zh-CN") kept rendering
@@ -497,6 +498,9 @@ export function Credentials() {
   const [view, setView] = useState<ViewMode>(savedViewMode);
   const [pageSize, setPageSize] = useState<number>(savedPageSize);
   const [page, setPage] = useState(1);
+  // The list view sorts before it slices, so the sort lives here rather than in
+  // the table: sorting only the visible page would reshuffle on "next".
+  const [sorting, setSorting] = useState<SortingState>([]);
   const chooseView = (next: ViewMode) => {
     setView(next);
     try {
@@ -536,9 +540,6 @@ export function Credentials() {
       .filter(Boolean)
       .some((v) => String(v).toLowerCase().includes(q));
   });
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const safePage = Math.min(page, totalPages);
-  const paged = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
   const liveSelected = selected.filter((id) => allItems.some((c) => c.id === id));
   const channelDefs: [ChannelKey, string, string][] = [
     ["all", "全部账号", "个人区域与企业账号汇总"],
@@ -733,6 +734,116 @@ export function Credentials() {
       </>
     );
   };
+  /**
+   * The list view's columns.
+   *
+   * Every cell delegates to the same renderer the card view uses, so the two
+   * views can never drift: a change to how a balance or a breaker reads lands in
+   * both places at once. Sorting values are declared here and consumed by
+   * `sortRows` above — before the page slice, not after it.
+   */
+  const listColumns: DataTableColumn<Credential>[] = [
+    {
+      id: "name",
+      header: "凭证 / 产品",
+      sortValue: (c) => text(c.name ?? c.id),
+      cell: (c) => (
+        <>
+          <strong>{c.name ?? "安全文件名不可用"}</strong>
+          <small>
+            {isEnterprise(c)
+              ? `企业账号 · ${profileLabel(text(c.profile))}`
+              : profileLabel(text(c.profile))}{" "}
+            · {text(c.nickname ?? c.uid)}
+          </small>
+        </>
+      ),
+    },
+    {
+      id: "catalog",
+      header: "目录与同步状态",
+      cell: (c) => renderSyncAndCatalog(c),
+    },
+    {
+      id: "balance",
+      header: "官方余额 / 到期",
+      sortValue: (c) => {
+        const bal = c.credits && typeof c.credits === "object" ? object(c.credits) : null;
+        if (bal?.unlimited && bal?.enterprise) return Number.POSITIVE_INFINITY;
+        return number(bal?.credits ?? bal?.remaining) ?? undefined;
+      },
+      sortDescFirst: true,
+      sortUndefined: "last",
+      cell: (c) => {
+        const balance = c.credits && typeof c.credits === "object" ? object(c.credits) : null;
+        return (
+          <>
+            <div className={s.credStatHead}>
+              <strong>
+                {balance
+                  ? balance.unlimited && balance.enterprise
+                    ? "无限"
+                    : metric(balance.credits ?? balance.remaining)
+                  : "未知"}
+              </strong>
+              {renderSyncIcon(c)}
+            </div>
+            <small>
+              {c.token_expires_at !== undefined
+                ? expiry(c.token_expires_at, format.dateTime, true)
+                : c.expiresAt !== undefined
+                  ? expiry(c.expiresAt, format.dateTime, true)
+                  : expiry(c.expires_at ?? balance?.soonest_expiry, format.dateTime)}
+            </small>
+          </>
+        );
+      },
+    },
+    {
+      id: "usage",
+      header: "请求与用量",
+      sortValue: (c) => {
+        const stats =
+          c.usage_stats && typeof c.usage_stats === "object" ? object(c.usage_stats) : null;
+        return number(stats?.requests) ?? undefined;
+      },
+      sortDescFirst: true,
+      sortUndefined: "last",
+      cell: (c) => renderUsageBlock(c, true),
+    },
+    {
+      id: "status",
+      header: "认证与启用",
+      sortValue: (c) => (isReady(c) ? 2 : c.enabled === false ? 0 : 1),
+      sortDescFirst: true,
+      cell: (c) => (
+        <div className={s.credCardBadges}>
+          {renderHealthBadge(c)}
+          {renderEnableSwitch(c)}
+        </div>
+      ),
+    },
+    {
+      id: "actions",
+      header: "操作",
+      cell: (c) => renderActions(c),
+    },
+  ];
+  /**
+   * The list view pages on the client, so its sort runs *before* the slice.
+   *
+   * Sorting inside the table would only reorder the visible page and then
+   * reshuffle it on "next". The comparators are read out of the column definitions
+   * rather than restated, so a column can never sort one way and display another.
+   */
+  const ordered = sortRows(
+    filtered,
+    Object.fromEntries(listColumns.map((column) => [column.id, column.sortValue])),
+    sorting,
+  );
+  const totalPages = Math.max(1, Math.ceil(ordered.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const paged = ordered.slice((safePage - 1) * pageSize, safePage * pageSize);
   const renderUsageBlock = (c: Credential, compactTable = false) => {
     const stats = c.usage_stats && typeof c.usage_stats === "object" ? object(c.usage_stats) : null;
     const reqs = number(stats?.requests) ?? 0;
@@ -1116,87 +1227,28 @@ export function Credentials() {
                   })}
                 </div>
               ) : (
-                <div className={s.tableWrap}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th scope="col"></th>
-                        <th scope="col">凭证 / 产品</th>
-                        <th scope="col">目录与同步状态</th>
-                        <th scope="col">官方余额 / 到期</th>
-                        <th scope="col">请求与用量</th>
-                        <th scope="col">认证与启用</th>
-                        <th scope="col">操作</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {paged.map((raw) => {
-                        // Fusion increment: same optimistic overlay as the card view.
-                        const c = optimistic.view(raw);
-                        const balance =
-                          c.credits && typeof c.credits === "object" ? object(c.credits) : null;
-                        return (
-                          <tr key={c.id}>
-                            <td>
-                              <input
-                                aria-label={`选择 ${c.name ?? c.id}`}
-                                type="checkbox"
-                                checked={liveSelected.includes(c.id)}
-                                onChange={(e) =>
-                                  setSelected(
-                                    e.target.checked
-                                      ? [...selected, c.id]
-                                      : selected.filter((id) => id !== c.id),
-                                  )
-                                }
-                              />
-                            </td>
-                            <td>
-                              <strong>{c.name ?? "安全文件名不可用"}</strong>
-                              <small>
-                                {isEnterprise(c)
-                                  ? `企业账号 · ${profileLabel(text(c.profile))}`
-                                  : profileLabel(text(c.profile))}{" "}
-                                · {text(c.nickname ?? c.uid)}
-                              </small>
-                            </td>
-                            <td>{renderSyncAndCatalog(c)}</td>
-                            <td>
-                              <div className={s.credStatHead}>
-                                <strong>
-                                  {balance
-                                    ? balance.unlimited && balance.enterprise
-                                      ? "无限"
-                                      : metric(balance.credits ?? balance.remaining)
-                                    : "未知"}
-                                </strong>
-                                {renderSyncIcon(c)}
-                              </div>
-                              <small>
-                                {c.token_expires_at !== undefined
-                                  ? expiry(c.token_expires_at, format.dateTime, true)
-                                  : c.expiresAt !== undefined
-                                    ? expiry(c.expiresAt, format.dateTime, true)
-                                    : expiry(
-                                        c.expires_at ?? balance?.soonest_expiry,
-                                        format.dateTime,
-                                      )}
-                              </small>
-                            </td>
-                            <td>{renderUsageBlock(c, true)}</td>
-                            <td>
-                              <div className={s.credCardBadges}>
-                                {renderHealthBadge(c)}
-                                {renderEnableSwitch(c)}
-                              </div>
-                            </td>
-                            <td>{renderActions(c)}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                <DataTable
+                  // The optimistic overlay is applied per row here, exactly as the
+                  // card view does: a paused/enabled write flips the row before the
+                  // server answers, and a failed write rolls it back.
+                  rows={paged.map((raw) => optimistic.view(raw))}
+                  columns={listColumns}
+                  rowId={(c) => c.id}
+                  sorting={sorting}
+                  onSortingChange={setSorting}
+                  // The page sorts and slices before handing rows over, so the
+                  // table must not re-sort the visible page underneath it.
+                  manualSorting
+                  selection={{
+                    selected: new Set(liveSelected),
+                    onChange: (next) => setSelected([...next]),
+                    rowLabel: (c) => `选择 ${c.name ?? c.id}`,
+                    selectAllLabel: "全选当前页",
+                    // The toolbar's 全选 means the whole pool; a second header box
+                    // selecting a different set on the same screen is a trap.
+                    headerCheckbox: false,
+                  }}
+                />
               )}
               <div className={s.credPager}>
                 <span>

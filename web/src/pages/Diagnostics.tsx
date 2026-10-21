@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import { object, text } from "../api";
 import { t, useT } from "../i18n";
 import {
@@ -15,7 +16,13 @@ import { FreshnessHint } from "../components";
 import { useNow } from "../hooks";
 import { useFusionResource } from "../fusion/client";
 import { FUSION_DEVELOPMENT } from "../fusion/client";
-import type { DiagnosticAccount, DiagnosticResponse, ServiceStatus } from "../fusion/types";
+import type {
+  DiagnosticAccount,
+  DiagnosticResponse,
+  ModelLock,
+  ServiceStatus,
+} from "../fusion/types";
+import { DataTable, type DataTableColumn, type SortingState } from "../dataTable";
 import s from "../ui.module.scss";
 
 function normalizeStatus(value: unknown): ServiceStatus {
@@ -78,6 +85,167 @@ function BreakerCell({ account }: { account: DiagnosticAccount }) {
   );
 }
 
+/**
+ * Account table columns.
+ *
+ * The renderers live in a factory (not inline JSX in the page body) because
+ * DataTable takes column definitions as data — but the *cell component* stays
+ * module-level inside DataTable, so rebuilding this array never remounts a cell.
+ * Sorting is added where the value is unambiguous: name, health and the number of
+ * cooling models. The breaker cell has no comparable value (it is a live
+ * countdown), so its header stays plain text instead of a button that does nothing.
+ */
+function accountColumns(t: ReturnType<typeof useT>): DataTableColumn<DiagnosticAccount>[] {
+  return [
+    {
+      id: "account",
+      header: t("fusion.diagnostics.colAccountProduct"),
+      sortValue: (account) => account.name,
+      cell: (account) => (
+        <>
+          <strong>{account.name}</strong>
+          <small>{profileLabel(account.profile)}</small>
+        </>
+      ),
+    },
+    {
+      id: "status",
+      header: t("fusion.diagnostics.colStatus"),
+      sortValue: (account) => account.health,
+      cell: (account) => (
+        <>
+          <Badge tone={healthTone(account.health)}>{text(account.health)}</Badge>
+          {account.paused && <Badge tone="neutral">{t("fusion.common.paused")}</Badge>}
+        </>
+      ),
+    },
+    {
+      id: "circuit",
+      header: t("fusion.diagnostics.colCircuit"),
+      cell: (account) => <BreakerCell account={account} />,
+    },
+    {
+      id: "cooldowns",
+      header: t("fusion.diagnostics.colModelCooldown"),
+      sortValue: (account) => account.model_cooldowns.length,
+      sortDescFirst: true,
+      cell: (account) =>
+        account.model_cooldowns.length ? (
+          account.model_cooldowns.map((cooldown, index) => (
+            <small key={index}>
+              {text(cooldown.model)} · <Countdown until={cooldown.until} />
+            </small>
+          ))
+        ) : (
+          <span>{t("fusion.common.none")}</span>
+        ),
+    },
+    {
+      id: "reason",
+      header: t("fusion.diagnostics.colDisabledReason"),
+      cell: (account) => (
+        <>
+          {account.disabled_reason && <small>{account.disabled_reason}</small>}
+          {account.sync_error && (
+            <small>{t("fusion.diagnostics.syncFailed", { message: account.sync_error })}</small>
+          )}
+          {account.transport_penalty_remaining > 0 && (
+            <Badge tone="warn">
+              {t("fusion.diagnostics.transportPenalty", {
+                seconds: Math.ceil(account.transport_penalty_remaining),
+              })}
+            </Badge>
+          )}
+          {account.transport_fails > 0 && account.transport_penalty_remaining <= 0 && (
+            <small>
+              {t("fusion.diagnostics.transportFails", { count: account.transport_fails })}
+            </small>
+          )}
+          {!account.disabled_reason &&
+            !account.sync_error &&
+            account.transport_penalty_remaining <= 0 &&
+            account.transport_fails <= 0 && (
+              <span className={s.muted}>{t("fusion.common.normal")}</span>
+            )}
+        </>
+      ),
+    },
+  ];
+}
+
+/**
+ * Model-lock columns. Locks are grouped by (profile, model) upstream, so a model
+ * can appear once per profile; sorting by locked accounts answers "what is holding
+ * the most accounts right now", which is the question this table exists for.
+ */
+function lockColumns(t: ReturnType<typeof useT>): DataTableColumn<ModelLock>[] {
+  return [
+    {
+      id: "model",
+      header: t("fusion.diagnostics.colProductModel"),
+      sortValue: (lock) => lock.model,
+      cell: (lock) => (
+        <>
+          <strong>{text(lock.model)}</strong>
+          <small>{profileLabel(lock.profile)}</small>
+        </>
+      ),
+    },
+    {
+      id: "locked",
+      header: t("fusion.diagnostics.colLocked"),
+      sortValue: (lock) => lock.locked_accounts,
+      sortDescFirst: true,
+      cell: (lock) => (
+        <>
+          <Badge tone={lock.kind === "model_block" ? "warn" : "bad"}>
+            {t("fusion.diagnostics.lockedAccounts", { count: lock.locked_accounts })}
+          </Badge>
+          <small>{lock.account_ids.join(t("fusion.common.listSeparator"))}</small>
+        </>
+      ),
+    },
+    {
+      id: "unlock",
+      header: t("fusion.diagnostics.colPoolUnlock"),
+      sortValue: (lock) => lock.all_unlock_in_seconds ?? undefined,
+      sortDescFirst: true,
+      sortUndefined: "last",
+      cell: (lock) => (
+        <>
+          {lock.all_unlock_in_seconds !== null && lock.all_unlock_in_seconds > 0 ? (
+            <Countdown until={lock.latest_unlock_at} fallback={t("fusion.common.unknown")} />
+          ) : (
+            <Badge tone="good">{t("fusion.diagnostics.unlocked")}</Badge>
+          )}
+          {lock.earliest_unlock_at !== null && (
+            <small>
+              {t("fusion.diagnostics.earliestUnlock")} <Countdown until={lock.earliest_unlock_at} />
+            </small>
+          )}
+        </>
+      ),
+    },
+    {
+      id: "kind",
+      header: t("fusion.diagnostics.colKind"),
+      sortValue: (lock) => lock.kind,
+      cell: (lock) => (
+        <Badge tone={lock.kind === "model_block" ? "warn" : "neutral"}>
+          {lock.kind === "model_block"
+            ? t("fusion.diagnostics.kindModelBlock")
+            : t("fusion.diagnostics.kindQuotaCooldown")}
+        </Badge>
+      ),
+    },
+    {
+      id: "reason",
+      header: t("fusion.diagnostics.colReason"),
+      cell: (lock) => <small>{lock.reason}</small>,
+    },
+  ];
+}
+
 function StatCard({ label, value, icon }: { label: string; value: string; icon: string }) {
   return (
     <section className={s.stat}>
@@ -96,8 +264,14 @@ export function Diagnostics() {
   const t = useT();
   const status = useFusionResource("/admin/status", null, normalizeStatus);
   const diagnostic = useFusionResource("/admin/diagnostic", null, normalizeDiagnostic);
-  const accounts = diagnostic.data?.accounts ?? [];
-  const locks = diagnostic.data?.model_locks ?? [];
+  // Memoized on the payload identity: TanStack keys its core row model on the
+  // `data` array, so a fresh literal per render would rebuild every row.
+  const accounts = useMemo(() => diagnostic.data?.accounts ?? [], [diagnostic.data]);
+  const locks = useMemo(() => diagnostic.data?.model_locks ?? [], [diagnostic.data]);
+  const accountDefs = useMemo(() => accountColumns(t), [t]);
+  const lockDefs = useMemo(() => lockColumns(t), [t]);
+  const [accountSort, setAccountSort] = useState<SortingState>([]);
+  const [lockSort, setLockSort] = useState<SortingState>([]);
   // This page deliberately holds no clock. It used to call useNow() at the root,
   // which re-rendered the status cards and both tables once a second. Every live
   // deadline is now rendered by <Countdown>, which subscribes to the shared clock
@@ -238,150 +412,38 @@ export function Diagnostics() {
             : undefined
         }
       >
-        {diagnostic.loading ? (
-          <Skeleton variant="table" label={t("fusion.diagnostics.accountsLoading")} />
-        ) : accounts.length ? (
-          <div className={s.tableWrap}>
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">{t("fusion.diagnostics.colAccountProduct")}</th>
-                  <th scope="col">{t("fusion.diagnostics.colStatus")}</th>
-                  <th scope="col">{t("fusion.diagnostics.colCircuit")}</th>
-                  <th scope="col">{t("fusion.diagnostics.colModelCooldown")}</th>
-                  <th scope="col">{t("fusion.diagnostics.colDisabledReason")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {accounts.map((account) => (
-                  <tr key={account.id}>
-                    <td>
-                      <strong>{account.name}</strong>
-                      <small>{profileLabel(account.profile)}</small>
-                    </td>
-                    <td>
-                      <Badge tone={healthTone(account.health)}>{text(account.health)}</Badge>
-                      {account.paused && <Badge tone="neutral">{t("fusion.common.paused")}</Badge>}
-                    </td>
-                    <td>
-                      <BreakerCell account={account} />
-                    </td>
-                    <td>
-                      {account.model_cooldowns.length ? (
-                        account.model_cooldowns.map((cooldown, index) => (
-                          <small key={index}>
-                            {text(cooldown.model)} · <Countdown until={cooldown.until} />
-                          </small>
-                        ))
-                      ) : (
-                        <span>{t("fusion.common.none")}</span>
-                      )}
-                    </td>
-                    <td>
-                      {account.disabled_reason && <small>{account.disabled_reason}</small>}
-                      {account.sync_error && (
-                        <small>
-                          {t("fusion.diagnostics.syncFailed", { message: account.sync_error })}
-                        </small>
-                      )}
-                      {account.transport_penalty_remaining > 0 && (
-                        <Badge tone="warn">
-                          {t("fusion.diagnostics.transportPenalty", {
-                            seconds: Math.ceil(account.transport_penalty_remaining),
-                          })}
-                        </Badge>
-                      )}
-                      {account.transport_fails > 0 && account.transport_penalty_remaining <= 0 && (
-                        <small>
-                          {t("fusion.diagnostics.transportFails", {
-                            count: account.transport_fails,
-                          })}
-                        </small>
-                      )}
-                      {!account.disabled_reason &&
-                        !account.sync_error &&
-                        account.transport_penalty_remaining <= 0 &&
-                        account.transport_fails <= 0 && (
-                          <span className={s.muted}>{t("fusion.common.normal")}</span>
-                        )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <Empty title={t("fusion.diagnostics.noAccounts")} />
-        )}
+        <DataTable
+          rows={accounts}
+          columns={accountDefs}
+          rowId={(account) => account.id}
+          sorting={accountSort}
+          onSortingChange={setAccountSort}
+          loading={diagnostic.loading}
+          loadingLabel={t("fusion.diagnostics.accountsLoading")}
+          empty={<Empty title={t("fusion.diagnostics.noAccounts")} />}
+        />
       </Panel>
 
       <Panel
         title={t("fusion.diagnostics.locks")}
         hint={locks.length ? t("fusion.diagnostics.lockCount", { count: locks.length }) : undefined}
       >
-        {diagnostic.loading ? (
-          <Skeleton variant="table" label={t("fusion.diagnostics.locksLoading")} />
-        ) : locks.length ? (
-          <div className={s.tableWrap}>
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">{t("fusion.diagnostics.colProductModel")}</th>
-                  <th scope="col">{t("fusion.diagnostics.colLocked")}</th>
-                  <th scope="col">{t("fusion.diagnostics.colPoolUnlock")}</th>
-                  <th scope="col">{t("fusion.diagnostics.colKind")}</th>
-                  <th scope="col">{t("fusion.diagnostics.colReason")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {locks.map((lock) => (
-                  <tr key={`${lock.profile}|${lock.model}`}>
-                    <td>
-                      <strong>{text(lock.model)}</strong>
-                      <small>{profileLabel(lock.profile)}</small>
-                    </td>
-                    <td>
-                      <Badge tone={lock.kind === "model_block" ? "warn" : "bad"}>
-                        {t("fusion.diagnostics.lockedAccounts", { count: lock.locked_accounts })}
-                      </Badge>
-                      <small>{lock.account_ids.join(t("fusion.common.listSeparator"))}</small>
-                    </td>
-                    <td>
-                      {lock.all_unlock_in_seconds !== null && lock.all_unlock_in_seconds > 0 ? (
-                        <Countdown
-                          until={lock.latest_unlock_at}
-                          fallback={t("fusion.common.unknown")}
-                        />
-                      ) : (
-                        <Badge tone="good">{t("fusion.diagnostics.unlocked")}</Badge>
-                      )}
-                      {lock.earliest_unlock_at !== null && (
-                        <small>
-                          {t("fusion.diagnostics.earliestUnlock")}{" "}
-                          <Countdown until={lock.earliest_unlock_at} />
-                        </small>
-                      )}
-                    </td>
-                    <td>
-                      <Badge tone={lock.kind === "model_block" ? "warn" : "neutral"}>
-                        {lock.kind === "model_block"
-                          ? t("fusion.diagnostics.kindModelBlock")
-                          : t("fusion.diagnostics.kindQuotaCooldown")}
-                      </Badge>
-                    </td>
-                    <td>
-                      <small>{lock.reason}</small>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <Empty title={t("fusion.diagnostics.noLocks")}>
-            {t("fusion.diagnostics.noLocksHint")}
-          </Empty>
-        )}
+        <DataTable
+          rows={locks}
+          columns={lockDefs}
+          // Locks are keyed by (profile, model): the same model may be locked on
+          // several profiles, and neither field alone is unique.
+          rowId={(lock) => `${lock.profile}|${lock.model}`}
+          sorting={lockSort}
+          onSortingChange={setLockSort}
+          loading={diagnostic.loading}
+          loadingLabel={t("fusion.diagnostics.locksLoading")}
+          empty={
+            <Empty title={t("fusion.diagnostics.noLocks")}>
+              {t("fusion.diagnostics.noLocksHint")}
+            </Empty>
+          }
+        />
       </Panel>
     </>
   );
