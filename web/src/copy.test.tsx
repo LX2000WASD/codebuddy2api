@@ -6,6 +6,7 @@ import { api, useResource, useSession } from "./api";
 import { Empty, PageTitle } from "./components";
 import { Dashboard } from "./pages/Dashboard";
 import { Settings } from "./pages/Settings";
+import { CONFIRM_PHRASE } from "./settingsSchema";
 
 vi.mock("./api", async (original) => ({
   ...(await original<typeof import("./api")>()),
@@ -93,10 +94,14 @@ describe("concise user-facing copy", () => {
   it("keeps configuration source, locks, and pending effective values clear", () => {
     resource(settings);
     const { container } = render(<Settings />);
-    expect(screen.getByText("当前生效：30")).toBeTruthy();
+    // Settings are grouped by domain now; locked keys live in 服务与接入,
+    // the pending-value key lives in 存储与审计.
+    expect(screen.getByText("环境变量")).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: /存储与审计/ }));
+    expect(screen.getByText(/当前生效：30/)).toBeTruthy();
     expect(screen.getByText("已保存：60")).toBeTruthy();
     expect(screen.queryByText("当前生效：未知")).toBeNull();
-    fireEvent.click(screen.getByRole("tab", { name: /外部锁定/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /服务与接入/ }));
     expect(screen.getByText("环境变量")).toBeTruthy();
     expect(screen.getByText("命令行")).toBeTruthy();
     expect(screen.getByText("重启后生效")).toBeTruthy();
@@ -124,9 +129,15 @@ describe("concise user-facing copy", () => {
     resource(settings);
     const patch = vi.spyOn(api, "patch").mockResolvedValue({ data: {} });
     render(<Settings />);
+    fireEvent.click(screen.getByRole("tab", { name: /存储与审计/ }));
     fireEvent.change(screen.getByLabelText("日志保留天数"), { target: { value: "90" } });
-    expect(screen.getByText("1 项待保存")).toBeTruthy();
+    expect(screen.getByText(/1 项待保存/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "保存更改" }));
+    // audit_retention_days is high risk: the drawer asks for the phrase first.
+    fireEvent.change(screen.getByLabelText(`输入“${CONFIRM_PHRASE}”以继续`), {
+      target: { value: CONFIRM_PHRASE },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认修改" }));
     await waitFor(() =>
       expect(patch).toHaveBeenCalledWith("/settings", {
         revision: 7,

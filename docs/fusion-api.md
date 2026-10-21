@@ -221,11 +221,24 @@
   `0, 100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200, +∞`（11 桶）。
   P50/P95/P99 为桶内线性插值结果；样本数 < 5 时分位数返回 `null`。
   直方图随审计聚合持久化，明细清理（clear / 超额淘汰）不影响分位数。
+
+  **两个 P95 口径并存，且都带来源标注。** 本节的 `latency_p95_ms`（`/admin/stats/*`）
+  是**直方图近似值**，字段 `p95_source` 为 `"histogram_approx"`；
+  `/admin/dashboard` 的 `summary.p95_duration_ms` 是**明细精确最近秩**，
+  `p95_source` 为 `"detail_exact"`，并附 `p95_coverage`（0–1）。
+
+  两者对同一窗口可以不同（实测线上 days=7 相差 11.3%，双峰长尾分布下可达 23%），
+  这是**口径差异而非缺陷**：近似值在明细被清理后仍可用，精确值在明细完整时更准。
+  前端必须如实标注来源，不要把它们当作同一个数。统一算法属产品决策，尚未实施。
 - **tokens/s**（生成速率）：`sum(output_tokens) / sum(effective_seconds)`，其中单请求
   `effective_seconds = (duration_ms - first_token_ms) / 1000`（流式且 first_token_ms ≥ 阈值
   `stats_tokens_rate_ttfb_ms`，默认 200ms），否则回退为 `duration_ms / 1000`（端到端口径）。
   仅统计 duration_ms 与 output_tokens 均已知的请求（`tokens_per_s_known`）。
   该口径扣除了 TTFB（首字节等待），更接近真实生成速率；TTFB 过小（如上游本地缓存命中）时自动回退，避免除数过小导致虚高。
+- **`p95_coverage`**（仅 `/admin/dashboard` 的 `summary`）：参与计算的明细行数占聚合计数的比例。
+  明细被审计保留策略淘汰时该值会低于 1；低于 `P95_COVERAGE_FLOOR`（0.99）时
+  `p95_duration_ms` 返回 `null`，否则返回精确值并附覆盖率。这样「明细不完整」是显式的，
+  而不是静默变成「—」。
 - 已知数（`*_known`）用于前端展示数据完整度；`null` 表示该指标无已知样本。
 - 维度 `credential` 的 key 与 `/admin/credentials` 的 `id` 一致（account_key）。
 

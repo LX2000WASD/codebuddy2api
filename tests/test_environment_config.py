@@ -207,12 +207,16 @@ class EnvironmentConfigTests(unittest.TestCase):
             'key': 'responses_projection_mode', 'value': 'passthrough', 'stored': 'passthrough',
             'source': 'management', 'mode': 'hot', 'type': 'string',
             'label': 'Responses 投影模式', 'locked': False,
-            'choices': ['balanced', 'passthrough']})
+            'choices': ['balanced', 'passthrough'],
+            # Published so a locked row can name the variable to edit instead of only
+            # saying "set by the environment".
+            'env': 'CODEBUDDY2API_RESPONSES_PROJECTION_MODE'})
         self.assertEqual(items['responses_projection_max_bytes'], {
             'key': 'responses_projection_max_bytes', 'value': 0, 'stored': 0,
             'source': 'management', 'mode': 'hot', 'type': 'integer',
             'label': 'Responses 单项字节上限（0 或 ≥256）', 'locked': False,
-            'min': 0, 'max': 33554432})
+            'min': 0, 'max': 33554432,
+            'env': 'CODEBUDDY2API_RESPONSES_PROJECTION_MAX_BYTES'})
         _, items, config = self.start({
             'CODEBUDDY2API_RESPONSES_PROJECTION_MODE': 'balanced',
             'CODEBUDDY2API_RESPONSES_PROJECTION_MAX_BYTES': '33554432'}, saved={

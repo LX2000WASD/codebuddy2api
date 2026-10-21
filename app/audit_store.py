@@ -39,7 +39,27 @@ BUCKET_COUNT = len(LATENCY_EDGES) + 1
 # 为端到端口径。阈值固定，理由同桶边界。
 RATE_TTFB_THRESHOLD_MS = 200.0
 PERCENTILE_MIN_SAMPLES = 5
+# P95 from request details is exact, but the detail rows can be pruned, archived
+# or cleared independently of the daily aggregates. Report it whenever the
+# retained sample covers at least this share of the aggregate count, and always
+# publish the coverage so a shrinking sample stays visible instead of silently
+# turning the whole percentile into null over a single missing row.
+P95_COVERAGE_FLOOR = 0.99
 DIMENSIONS = ("global", "model", "profile", "credential")
+
+
+def resolve_granularity(days, granularity):
+    """Resolve a requested granularity into "hour" or "day".
+
+    The dashboard and the fusion dimension queries must agree on what "auto"
+    means, otherwise the same window renders at two different resolutions. The
+    contract (docs/fusion-api.md section 4.2) fixes the meaning: a one-day
+    window is hourly, every longer window is daily. Both callers go through
+    here so the policy has exactly one definition.
+    """
+    if granularity != "auto":
+        return granularity
+    return "hour" if int(days) == 1 else "day"
 
 
 def latency_bucket_index(value):
@@ -128,6 +148,11 @@ def stats_view(stats):
     view["latency_p50_ms"] = percentiles[0.5]
     view["latency_p95_ms"] = percentiles[0.95]
     view["latency_p99_ms"] = percentiles[0.99]
+    # These percentiles are interpolated from the fixed latency histogram, so they
+    # survive detail cleanup but are an approximation. The dashboard reports an
+    # exact nearest-rank P95 from the detail rows; the label keeps the two
+    # definitions distinguishable instead of silently reconciling them.
+    view["p95_source"] = "histogram_approx"
     effective = stats.get("effective_ms_sum")
     rate_known = stats.get("tokens_rate_known") or 0
     rate_output = stats.get("tokens_rate_output_sum")
@@ -727,7 +752,7 @@ class AuditStore:
         days = int(days)
         if not 1 <= days <= 36500 or granularity not in ("auto", "hour", "day"):
             raise ValueError("invalid dashboard range or granularity")
-        grain = ("hour" if days == 1 else "day") if granularity == "auto" else granularity
+        grain = resolve_granularity(days, granularity)
         if grain == "hour" and days > 90:
             raise ValueError("hourly range exceeds 90 days")
         now = time.time()
@@ -772,19 +797,31 @@ class AuditStore:
                 "SELECT COUNT(*) FROM requests WHERE started_at>=? AND started_at<=? AND duration_ms IS NOT NULL",
                 (start, now)).fetchone()[0]
             # Detail rows can be pruned, archived, or cleared independently of daily
-            # aggregates; only report P95 when the detail sample covers the period.
+            # aggregates. Requiring the retained sample to cover the aggregate count
+            # exactly made a single evicted row collapse the whole percentile to null
+            # (measured: 88189 retained vs 88190 aggregated hid P95 for 30 days), so
+            # report it from the coverage floor upwards and publish that coverage.
+            expected = summary["duration_ms_known"] or 0
+            coverage = known / expected if expected else 0.0
             summary["p95_duration_ms"] = (
                 db.execute(
                     "SELECT duration_ms FROM requests WHERE started_at>=? AND started_at<=? AND duration_ms IS NOT NULL"
                     " ORDER BY duration_ms LIMIT 1 OFFSET ?",
                     (start, now, max(0, math.ceil(known * 0.95) - 1))).fetchone()[0]
-                if known and known >= summary["duration_ms_known"]
+                if known and coverage >= P95_COVERAGE_FLOOR
                 else None)
+            # Always publish how much of the period the exact sample covers, so a
+            # shrinking detail table reads as "approximate sample" rather than as a
+            # silently missing metric. "source" keeps the two P95 definitions apart:
+            # this one is exact, the fusion histogram one is interpolated.
+            summary["p95_coverage"] = round(coverage, 4)
+            summary["p95_source"] = "detail_exact"
             return {"summary": summary, "previous": previous, "series": series,
                     "models": [{"model": key, **value} for key, value in models.items()],
                     "profiles": [{"profile": key, **value} for key, value in profiles.items()],
                     "generated_at": now, "range": {**period, "partial": partial}}
-        return self._read_run(fetch, {"summary": {**self._empty_stats(), "p95_duration_ms": None},
+        return self._read_run(fetch, {"summary": {**self._empty_stats(), "p95_duration_ms": None,
+                                       "p95_coverage": None, "p95_source": "detail_exact"},
                                  "previous": None, "series": [], "models": [], "profiles": [],
                                  "generated_at": now, "range": period, "degraded": True})
 
@@ -806,7 +843,7 @@ class AuditStore:
         days = int(days)
         if not 1 <= days <= 36500:
             raise ValueError("invalid stats range")
-        granularity = "day" if granularity == "auto" else granularity
+        granularity = resolve_granularity(days, granularity)
         if granularity not in ("hour", "day"):
             raise ValueError("invalid granularity")
         if granularity == "hour" and days > 90:
@@ -878,6 +915,11 @@ class AuditStore:
                 "AND bucket>=? AND bucket<=? ORDER BY bucket",
                 (dimension, start, now)).fetchall()
             for row in rows:
+                # Legacy rows recorded an empty key for unidentified models; skip
+                # them here exactly like dashboard() does, otherwise an anonymous
+                # "" entry reaches the picker and the trends page rejects it.
+                if not row["dimension_key"]:
+                    continue
                 self._merge(merged.setdefault(row["dimension_key"], self._empty_stats()),
                             json.loads(row["payload"]))
             ordered = sorted(merged.items(), key=lambda item: item[1].get("requests") or 0, reverse=True)

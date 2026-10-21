@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   api,
@@ -29,6 +29,13 @@ import {
   Skeleton,
   profileLabel,
 } from "../components";
+import {
+  ColumnMenu,
+  DataTable,
+  useColumnVisibility,
+  type DataTableColumn,
+  type SortingState,
+} from "../dataTable";
 import {
   CapabilityChips,
   EffortChips,
@@ -545,23 +552,15 @@ const emptyRule: ModelRule = {
   profile: "",
   credential_ids: [],
 };
-type SortKey = "catalog" | "rate" | "context" | "output" | "name";
 type CatalogFilter = { region: string; capability: string; effort: string; price: string };
 const emptyFilter: CatalogFilter = { region: "", capability: "", effort: "", price: "" };
 const EFFORT_FILTERS = ["low", "medium", "high", "xhigh", "max"];
-function rateValue(model: ModelRule): number {
-  return rateOf(model.credits) ?? Number.POSITIVE_INFINITY;
+/** Unknown rates sort last: "not reported" must not read as the cheapest model. */
+function rateValue(model: ModelRule): number | undefined {
+  return rateOf(model.credits) ?? undefined;
 }
-function sortModels(list: ModelRule[], key: SortKey): ModelRule[] {
-  if (key === "catalog") return list;
-  const out = list.slice();
-  const widest = (model: ModelRule, kind: "input" | "output") =>
-    specRange(model, kind === "input" ? "maxInputTokens" : "maxOutputTokens").at(-1) ?? 0;
-  if (key === "rate") out.sort((a, b) => rateValue(a) - rateValue(b));
-  else if (key === "context") out.sort((a, b) => widest(b, "input") - widest(a, "input"));
-  else if (key === "output") out.sort((a, b) => widest(b, "output") - widest(a, "output"));
-  else out.sort((a, b) => a.public_id.localeCompare(b.public_id));
-  return out;
+function widestWindow(model: ModelRule, kind: "input" | "output"): number | undefined {
+  return specRange(model, kind === "input" ? "maxInputTokens" : "maxOutputTokens").at(-1);
 }
 function matchesCatalog(model: ModelRule, query: string, filter: CatalogFilter): boolean {
   if (query) {
@@ -593,31 +592,20 @@ function matchesCatalog(model: ModelRule, query: string, filter: CatalogFilter):
 /**
  * Optional columns start hidden: eight columns already forced a horizontal scroll at
  * 1280px, so identity, rate, capability, availability, route boundary and actions win.
- * The choice persists per browser, like the credential page's page size.
+ * The choice persists per browser, like the credential page's page size. Below
+ * 900px the rate and capability columns drop out too — a phone should show the
+ * identity and whether the model can serve, not a horizontal scrollbar.
  */
 const COLUMNS_KEY = "codebuddy.models.columns";
-type ColumnKey = "rate" | "capability" | "context" | "output" | "effort" | "boundary";
-const OPTIONAL_COLUMNS: [ColumnKey, string][] = [
-  ["rate", "models.col.rate"],
-  ["capability", "models.col.capability"],
-  ["context", "models.col.context"],
-  ["output", "models.col.output"],
-  ["effort", "models.col.effort"],
-  ["boundary", "models.col.boundary"],
-];
+type ColumnKey =
+  | "rate"
+  | "capability"
+  | "availability"
+  | "context"
+  | "output"
+  | "effort"
+  | "boundary";
 const DEFAULT_HIDDEN: ColumnKey[] = ["context", "output", "effort"];
-function savedHiddenColumns(): ColumnKey[] {
-  try {
-    const raw = localStorage.getItem(COLUMNS_KEY);
-    if (raw === null) return DEFAULT_HIDDEN;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return DEFAULT_HIDDEN;
-    const known = new Set<string>(OPTIONAL_COLUMNS.map(([key]) => key));
-    return parsed.filter((key): key is ColumnKey => typeof key === "string" && known.has(key));
-  } catch {
-    return DEFAULT_HIDDEN;
-  }
-}
 
 type BulkAction = "enable" | "disable";
 /**
@@ -643,72 +631,135 @@ export function legacyScope(model: ModelRule): boolean {
 }
 
 /**
- * Column visibility menu. <details> is keyboard reachable but cannot close on Escape or
- * return focus, so this is a real button + menu with the drawer's keyboard contract.
+ * The catalog's columns. `id` doubles as the DataTable sort key and the
+ * localStorage visibility key, so it must stay stable across releases.
+ *
+ * Built per render rather than at module scope because the cells read live page
+ * state (account total, diagnostic locks, the row actions' callbacks).
  */
-function ColumnToggle({
-  hidden,
-  onToggle,
+function modelColumns({
+  totalAccounts,
+  locks,
+  onDetails,
+  onEdit,
+  onDelete,
+  actionsDisabled,
 }: {
-  hidden: ColumnKey[];
-  onToggle: (key: ColumnKey) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.stopPropagation();
-      setOpen(false);
-      trigger.current?.focus();
-    };
-    const onPointer = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (menu.current?.contains(target) || trigger.current?.contains(target)) return;
-      setOpen(false);
-    };
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("pointerdown", onPointer);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.removeEventListener("pointerdown", onPointer);
-    };
-  }, [open]);
-  return (
-    <div className={s.colToggle}>
-      <button
-        type="button"
-        ref={trigger}
-        aria-expanded={open}
-        aria-haspopup="true"
-        onClick={() => setOpen((value) => !value)}
-      >
-        {t("models.col.toggle")}
-      </button>
-      {open && (
-        <div
-          className={s.colToggleMenu}
-          ref={menu}
-          role="group"
-          aria-label={t("models.col.toggle")}
-        >
-          {OPTIONAL_COLUMNS.map(([key, label]) => (
-            <label key={key}>
-              <input
-                type="checkbox"
-                checked={!hidden.includes(key)}
-                onChange={() => onToggle(key)}
-              />
-              {t(label)}
-            </label>
-          ))}
+  totalAccounts: number | null;
+  locks: ModelLock[];
+  onDetails: (model: ModelRule) => void;
+  onEdit: (model: ModelRule) => void;
+  onDelete: (model: ModelRule) => void;
+  actionsDisabled: boolean;
+}): DataTableColumn<ModelRule>[] {
+  return [
+    {
+      id: "id",
+      header: t("models.col.id"),
+      cell: (m) => (
+        <div className={s.modelCell}>
+          <div className={s.modelIdLine}>
+            <strong className={s.modelName}>{m.public_id}</strong>
+            {!m.enabled && <Badge tone="neutral">{t("models.avail.disabled")}</Badge>}
+            {m.custom && <Badge>自建</Badge>}
+          </div>
+          <small className={s.mono}>{m.upstream_id ?? m.id}</small>
+          {modelDisplayName(m) && <small>{modelDisplayName(m)}</small>}
+          {m.keep_original && <small>同时保留 {m.id}</small>}
         </div>
-      )}
-    </div>
-  );
+      ),
+      sortValue: (m) => m.public_id,
+    },
+    {
+      id: "rate",
+      header: t("models.col.rate"),
+      cell: (m) => <RateCell model={m} />,
+      sortValue: rateValue,
+      sortUndefined: "last",
+      optional: true,
+      hideBelow: 900,
+    },
+    {
+      id: "capability",
+      header: t("models.col.capability"),
+      cell: (m) => <CapabilityChips model={m} />,
+      className: s.capCell,
+      optional: true,
+      hideBelow: 900,
+    },
+    {
+      id: "availability",
+      header: t("models.avail.title"),
+      cell: (m) => (
+        <AvailabilityCell model={m} total={totalAccounts} locks={locksForModel(locks, m)} />
+      ),
+    },
+    {
+      id: "context",
+      header: t("models.col.context"),
+      cell: (m) => <SpecValue model={m} kind="input" />,
+      className: s.specCell,
+      sortValue: (m) => widestWindow(m, "input"),
+      sortDescFirst: true,
+      sortUndefined: "last",
+      optional: true,
+    },
+    {
+      id: "output",
+      header: t("models.col.output"),
+      cell: (m) => <SpecValue model={m} kind="output" />,
+      className: s.specCell,
+      sortValue: (m) => widestWindow(m, "output"),
+      sortDescFirst: true,
+      sortUndefined: "last",
+      optional: true,
+    },
+    {
+      id: "effort",
+      header: t("models.col.effort"),
+      cell: (m) => <EffortChips model={m} />,
+      optional: true,
+    },
+    {
+      id: "boundary",
+      header: t("models.col.boundary"),
+      cell: (m) => (
+        <>
+          {m.credential_ids.length
+            ? `${m.credential_ids.length} 个指定账号`
+            : m.region
+              ? profileLabel(m.region)
+              : "自动选择"}
+          <small>
+            {m.profile
+              ? profileLabel(m.profile)
+              : m.credential_ids.length
+                ? "严格绑定，不越界回退"
+                : "按账号能力选择"}
+          </small>
+          {bindingMode(m) === "legacy" && <Badge tone="warn">旧联合范围</Badge>}
+        </>
+      ),
+      optional: true,
+    },
+    {
+      id: "actions",
+      header: t("models.col.actions"),
+      cell: (m) => (
+        <div className={s.rowActions}>
+          <button onClick={() => onDetails(m)}>模型详情</button>
+          <button disabled={actionsDisabled} onClick={() => onEdit(m)}>
+            编辑规则
+          </button>
+          {m.custom && (
+            <button className={s.textDanger} disabled={actionsDisabled} onClick={() => onDelete(m)}>
+              删除
+            </button>
+          )}
+        </div>
+      ),
+    },
+  ];
 }
 
 export function Models() {
@@ -717,7 +768,11 @@ export function Models() {
   // Advisory only: without the diagnostic endpoint the table still shows the account
   // counts the model catalog itself reports.
   const diagnostic = useFusionResource("/admin/diagnostic", null, normalizeModelLocks);
-  const locks = diagnostic.data?.model_locks ?? [];
+  // Stable identity matters: a fresh `[]` on every render rebuilds the column
+  // definitions, which makes TanStack rebuild every row and replace the row DOM
+  // nodes. That is exactly the e2e "element is not attached to the DOM" failure,
+  // and it would also throw away focus and the scroll anchor on every render.
+  const locks = useMemo(() => diagnostic.data?.model_locks ?? [], [diagnostic.data]);
   const totalAccounts = credentials.data?.length ?? null;
   const [query, setQuery] = useState("");
   const [detailsId, setDetailsId] = useState<string | null>(null);
@@ -751,53 +806,54 @@ export function Models() {
       .finally(() => setBusy(false));
   };
   const [filter, setFilter] = useState<CatalogFilter>(emptyFilter);
-  const [sort, setSort] = useState<SortKey>("catalog");
+  const [sorting, setSorting] = useState<SortingState>([]);
   const filtering = Boolean(
     query || filter.region || filter.capability || filter.effort || filter.price,
   );
-  const matched = resource.data?.models.filter((m) => matchesCatalog(m, query, filter));
-  const rows = matched && sortModels(matched, sort);
-
-  const [hidden, setHidden] = useState<ColumnKey[]>(savedHiddenColumns);
-  const visible = (key: ColumnKey) => !hidden.includes(key);
-  const toggleColumn = (key: ColumnKey) =>
-    setHidden((old) => {
-      const next = old.includes(key) ? old.filter((value) => value !== key) : [...old, key];
-      try {
-        localStorage.setItem(COLUMNS_KEY, JSON.stringify(next));
-      } catch {
-        /* ignore */
-      }
-      return next;
-    });
-
-  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set<string>());
-  const selectAll = useRef<HTMLInputElement>(null);
-  const visibleIds = rows?.map((m) => m.id) ?? [];
-  const selectedVisible = visibleIds.filter((id) => selected.has(id));
-  const allSelected = visibleIds.length > 0 && selectedVisible.length === visibleIds.length;
-  const someSelected = selectedVisible.length > 0 && !allSelected;
-  useEffect(() => {
-    // `indeterminate` is a DOM property, not a prop React can set on a checkbox.
-    if (selectAll.current) selectAll.current.indeterminate = someSelected;
-  }, [someSelected]);
-  const toggleAll = () =>
-    setSelected((old) => {
-      const next = new Set(old);
-      if (allSelected) for (const id of visibleIds) next.delete(id);
-      else for (const id of visibleIds) next.add(id);
-      return next;
-    });
-  const toggleRow = (id: string) =>
-    setSelected((old) => {
-      const next = new Set(old);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  // The table sorts; the page only decides which rows are eligible. Keeping the
+  // filter here (not in a column filter model) is what makes "select all" mean
+  // "these visible rows" for the bulk action below.
+  //
+  // Memoized on purpose: TanStack keys its core row model on the `data` identity, so
+  // a fresh array per render rebuilds every row (and every row's DOM nodes) on each
+  // keystroke, scroll tick and unrelated parent re-render.
+  const rows = useMemo(
+    () => resource.data?.models.filter((m) => matchesCatalog(m, query, filter)),
+    [resource.data, query, filter],
+  );
 
   const [bulkAction, setBulkAction] = useState<BulkAction | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const columns = useMemo(
+    () =>
+      modelColumns({
+        totalAccounts,
+        locks,
+        onDetails: (model) => setDetailsId(model.id),
+        onEdit: (model) => {
+          setEditorRevision(resource.data?.revision ?? null);
+          setEditing(model);
+        },
+        onDelete: (model) => {
+          setDeleting(model);
+          setError(null);
+        },
+        // Row-level edit/delete stay disabled while a batch runs (unchanged from
+        // the pre-DataTable page); the list itself stays scrollable and readable,
+        // which is the whole point of showing progress.
+        actionsDisabled: bulkBusy,
+      }),
+    // `bulkBusy` is a dependency, not a late-bound read: the dependency array is
+    // evaluated during render, so the value must already be initialised above.
+    [totalAccounts, locks, resource.data?.revision, bulkBusy],
+  );
+  const { hidden, toggle: toggleColumn } = useColumnVisibility({
+    storageKey: COLUMNS_KEY,
+    columns,
+    defaultHidden: DEFAULT_HIDDEN,
+  });
+
   const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
@@ -973,29 +1029,25 @@ export function Models() {
               <option value="free">限时免费</option>
               <option value="paid">收费</option>
             </select>
-            <select
-              aria-label="排序方式"
-              value={sort}
-              onChange={(e) => setSort(e.target.value as SortKey)}
-            >
-              <option value="catalog">目录顺序</option>
-              <option value="rate">倍率 低 → 高</option>
-              <option value="context">上下文 大 → 小</option>
-              <option value="output">最大输出 大 → 小</option>
-              <option value="name">模型 ID A → Z</option>
-            </select>
-            {filtering && (
+            {(filtering || sorting.length > 0) && (
               <button
                 onClick={() => {
                   setQuery("");
                   setFilter(emptyFilter);
-                  setSort("catalog");
+                  setSorting([]);
                 }}
               >
                 重置
               </button>
             )}
-            <ColumnToggle hidden={hidden} onToggle={toggleColumn} />
+            <ColumnMenu
+              label={t("models.col.toggle")}
+              columns={columns
+                .filter((column) => column.optional)
+                .map(({ id, header }) => ({ id, header }))}
+              hidden={hidden}
+              onToggle={toggleColumn}
+            />
             <label className={s.enableSwitch}>
               <input
                 type="checkbox"
@@ -1032,143 +1084,29 @@ export function Models() {
             </label>
           </div>
         </div>
-        {rows &&
-          (rows.length ? (
-            <>
-              <p className={s.note}>{t("models.select.scope", { count: rows.length })}</p>
-              <div className={`${s.tableWrap} ${s.tableScroll}`}>
-                <table>
-                  <thead>
-                    <tr>
-                      <th scope="col" className={s.selectCell}>
-                        <input
-                          ref={selectAll}
-                          type="checkbox"
-                          aria-label={t("models.select.all")}
-                          checked={allSelected}
-                          onChange={toggleAll}
-                        />
-                      </th>
-                      <th scope="col">{t("models.col.id")}</th>
-                      {visible("rate") && <th scope="col">{t("models.col.rate")}</th>}
-                      {visible("capability") && <th scope="col">{t("models.col.capability")}</th>}
-                      <th scope="col">{t("models.avail.title")}</th>
-                      {visible("context") && <th scope="col">{t("models.col.context")}</th>}
-                      {visible("output") && <th scope="col">{t("models.col.output")}</th>}
-                      {visible("effort") && <th scope="col">{t("models.col.effort")}</th>}
-                      {visible("boundary") && <th scope="col">{t("models.col.boundary")}</th>}
-                      <th scope="col">{t("models.col.actions")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((m) => (
-                      <tr key={m.id} className={selected.has(m.id) ? s.selectedRow : undefined}>
-                        <td className={s.selectCell}>
-                          <input
-                            type="checkbox"
-                            aria-label={t("models.select.row", { name: m.public_id })}
-                            checked={selected.has(m.id)}
-                            onChange={() => toggleRow(m.id)}
-                          />
-                        </td>
-                        <td>
-                          <div className={s.modelCell}>
-                            <div className={s.modelIdLine}>
-                              <strong className={s.modelName}>{m.public_id}</strong>
-                              {!m.enabled && <Badge tone="neutral">已停用</Badge>}
-                              {m.custom && <Badge>自建</Badge>}
-                            </div>
-                            <small className={s.mono}>{m.upstream_id ?? m.id}</small>
-                            {modelDisplayName(m) && <small>{modelDisplayName(m)}</small>}
-                            {m.keep_original && <small>同时保留 {m.id}</small>}
-                          </div>
-                        </td>
-                        {visible("rate") && (
-                          <td>
-                            <RateCell model={m} />
-                          </td>
-                        )}
-                        {visible("capability") && (
-                          <td className={s.capCell}>
-                            <CapabilityChips model={m} />
-                          </td>
-                        )}
-                        <td>
-                          <AvailabilityCell
-                            model={m}
-                            total={totalAccounts}
-                            locks={locksForModel(locks, m)}
-                          />
-                        </td>
-                        {visible("context") && (
-                          <td className={s.specCell}>
-                            <SpecValue model={m} kind="input" />
-                          </td>
-                        )}
-                        {visible("output") && (
-                          <td className={s.specCell}>
-                            <SpecValue model={m} kind="output" />
-                          </td>
-                        )}
-                        {visible("effort") && (
-                          <td>
-                            <EffortChips model={m} />
-                          </td>
-                        )}
-                        {visible("boundary") && (
-                          <td>
-                            {m.credential_ids.length
-                              ? `${m.credential_ids.length} 个指定账号`
-                              : m.region
-                                ? profileLabel(m.region)
-                                : "自动选择"}
-                            <small>
-                              {m.profile
-                                ? profileLabel(m.profile)
-                                : m.credential_ids.length
-                                  ? "严格绑定，不越界回退"
-                                  : "按账号能力选择"}
-                            </small>
-                            {bindingMode(m) === "legacy" && <Badge tone="warn">旧联合范围</Badge>}
-                          </td>
-                        )}
-                        <td>
-                          <div className={s.rowActions}>
-                            <button onClick={() => setDetailsId(m.id)}>模型详情</button>
-                            <button
-                              disabled={bulkBusy}
-                              onClick={() => {
-                                setEditorRevision(resource.data?.revision ?? null);
-                                setEditing(m);
-                              }}
-                            >
-                              编辑规则
-                            </button>
-                            {m.custom && (
-                              <button
-                                className={s.textDanger}
-                                disabled={bulkBusy}
-                                onClick={() => {
-                                  setDeleting(m);
-                                  setError(null);
-                                }}
-                              >
-                                删除
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          ) : (
+        <p className={s.note}>{t("models.select.scope", { count: rows?.length ?? 0 })}</p>
+        <DataTable
+          rows={rows ?? []}
+          columns={columns}
+          hidden={hidden}
+          rowId={(m) => m.id}
+          sorting={sorting}
+          onSortingChange={setSorting}
+          selection={{
+            selected,
+            onChange: setSelected,
+            rowLabel: (m) => t("models.select.row", { name: m.public_id }),
+            selectAllLabel: t("models.select.all"),
+          }}
+          loading={resource.loading}
+          loadingLabel={t("models.loading")}
+          scroll
+          empty={
             <Empty title={query ? "没有匹配的模型" : "模型目录为空"}>
               可新增模型映射，或添加凭证以同步目录。
             </Empty>
-          ))}
+          }
+        />
       </Panel>
       {/* Portalled: the page shell's enter animation sets a transform, which would turn
           position:fixed into a containing block and pin this bar to the page, not the

@@ -66,6 +66,14 @@ export type StatsSummary = {
   latency_known: number;
   tokens_per_s: number | null;
   tokens_per_s_known: number;
+  /**
+   * Where the percentiles above came from. These aggregates are read from the
+   * latency histogram, so they are interpolated approximations — unlike the exact
+   * nearest-rank P95 on /admin/dashboard, which is computed from retained detail
+   * rows. The two definitions can legitimately disagree by ~11% on the same window;
+   * the label is what stops that from reading as a bug.
+   */
+  p95_source?: "histogram_approx" | "detail_exact";
 };
 
 export type StatsSummaryResponse = {

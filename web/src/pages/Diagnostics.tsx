@@ -11,6 +11,7 @@ import {
   Skeleton,
 } from "../components";
 import { profileLabel } from "../values";
+import { FreshnessHint } from "../components";
 import { useNow } from "../hooks";
 import { useFusionResource } from "../fusion/client";
 import { FUSION_DEVELOPMENT } from "../fusion/client";
@@ -34,16 +35,47 @@ const healthTone = (health: string) =>
   health === "ready" ? "good" : health === "disabled" ? "neutral" : "warn";
 
 /**
- * The live breaker deadline, or null when there is none.
+ * The breaker deadline as epoch seconds, or null when there is none.
  *
  * `fail_until` is an absolute epoch (seconds). A past deadline is a cooldown that
  * already lifted, and 0 means "no breaker at all" — neither may render a badge, and
  * the truthiness test alone kept an expired timestamp on screen forever.
+ *
+ * Expiry is now decided *inside* <Countdown>, which is the component that already
+ * subscribes to the shared clock. Deciding it here would have forced the page root
+ * to subscribe, and that re-rendered both tables once a second.
  */
-function coolingUntil(account: DiagnosticAccount, now: number): number | null {
+function coolingUntil(account: DiagnosticAccount): number | null {
   const until = account.cooldown?.fail_until;
-  if (typeof until !== "number" || !Number.isFinite(until)) return null;
-  return until * 1000 > now ? until : null;
+  return typeof until === "number" && Number.isFinite(until) && until > 0 ? until : null;
+}
+
+/**
+ * The circuit-breaker cell for one account.
+ *
+ * It is a component (not an inline expression) because a live breaker is the only
+ * thing in this row that changes second to second. The clock subscription lives
+ * here — and only here, and only while the deadline is still in the future — so a
+ * tick re-renders this one cell instead of the status cards and both tables.
+ *
+ * The expiry test has to run *inside* the clock subscriber: the backend keeps
+ * reporting a stale reason until an explicit reset, so a past `fail_until` is a
+ * breaker that already lifted and must read 无熔断, not a countdown stuck at 0.
+ */
+function BreakerCell({ account }: { account: DiagnosticAccount }) {
+  const t = useT();
+  const deadline = coolingUntil(account);
+  // Subscribe only for a deadline that could still be live; an absent or expired
+  // one has nothing to tick and must not hold a timer open.
+  const now = useNow(deadline !== null);
+  const until = deadline !== null && deadline * 1000 > now ? deadline : null;
+  if (until === null) return <Badge>{t("fusion.diagnostics.noCircuit")}</Badge>;
+  return (
+    <>
+      <Countdown until={until} />
+      {account.cooldown?.reason ? <small>{account.cooldown.reason}</small> : null}
+    </>
+  );
 }
 
 function StatCard({ label, value, icon }: { label: string; value: string; icon: string }) {
@@ -66,9 +98,10 @@ export function Diagnostics() {
   const diagnostic = useFusionResource("/admin/diagnostic", null, normalizeDiagnostic);
   const accounts = diagnostic.data?.accounts ?? [];
   const locks = diagnostic.data?.model_locks ?? [];
-  // One shared clock for every row: a deadline that has already passed is not a
-  // live breaker, so the badge must disappear instead of counting down from 0.
-  const now = useNow();
+  // This page deliberately holds no clock. It used to call useNow() at the root,
+  // which re-rendered the status cards and both tables once a second. Every live
+  // deadline is now rendered by <Countdown>, which subscribes to the shared clock
+  // on its own and only while it still has something to count down.
 
   return (
     <>
@@ -77,6 +110,7 @@ export function Diagnostics() {
         description={t("fusion.diagnostics.pageDesc")}
         actions={
           <>
+            <FreshnessHint path="/admin/status" />
             {FUSION_DEVELOPMENT && <Badge tone="warn">{t("fusion.common.demoData")}</Badge>}
             <button
               onClick={() => {
@@ -230,16 +264,7 @@ export function Diagnostics() {
                       {account.paused && <Badge tone="neutral">{t("fusion.common.paused")}</Badge>}
                     </td>
                     <td>
-                      {coolingUntil(account, now) !== null ? (
-                        <>
-                          <Countdown until={coolingUntil(account, now)} />
-                          {account.cooldown?.reason ? (
-                            <small>{account.cooldown.reason}</small>
-                          ) : null}
-                        </>
-                      ) : (
-                        <Badge>{t("fusion.diagnostics.noCircuit")}</Badge>
-                      )}
+                      <BreakerCell account={account} />
                     </td>
                     <td>
                       {account.model_cooldowns.length ? (

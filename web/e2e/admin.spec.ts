@@ -60,6 +60,19 @@ const settings = {
       mode: "restart",
       locked: true,
     },
+    // An externally locked row: the backend ships the variable name so the row can say
+    // which variable to edit. /admin/settings started sending `env` for this reason.
+    {
+      key: "max_images",
+      label: "单请求图片上限",
+      type: "integer",
+      value: 16,
+      stored: null,
+      source: "environment",
+      mode: "hot",
+      locked: true,
+      env: "CODEBUDDY2API_MAX_IMAGES",
+    },
   ],
   audit: {
     logical_bytes: 1024,
@@ -187,7 +200,9 @@ test("isolated dashboard, deep routes, model conflict and schema settings", asyn
   await expect(page.getByRole("heading", { name: "运行概览" })).toBeVisible();
   await expect(page.getByText("45,678", { exact: true }).first()).toBeVisible();
   await page.screenshot({ path: "test-results/dashboard-desktop.png", fullPage: true });
-  await page.getByRole("link", { name: "模型路由" }).click();
+  // Navigation is consolidated into five task areas; "模型路由" is the first section
+  // of "路由与账号" now. The legacy /dashboard/models URL still redirects here.
+  await page.getByRole("link", { name: "路由与账号" }).click();
   await page.getByRole("button", { name: "编辑规则" }).click();
   await page.getByLabel("对外 ID").fill("my-alias");
   await page.getByRole("button", { name: "预览候选路由" }).click();
@@ -197,13 +212,23 @@ test("isolated dashboard, deep routes, model conflict and schema settings", asyn
   await page.screenshot({ path: "test-results/model-drawer.png", fullPage: true });
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await page.getByRole("link", { name: "系统设置" }).click();
-  // Externally locked items live behind their own tab now.
-  await page.getByRole("tab", { name: /外部锁定/ }).click();
+  await page.getByRole("link", { name: "系统" }).click();
+  // Settings are grouped by domain now, not by "who locked it". A locked row must still
+  // be visible and must say *why* it cannot be edited — and which variable to edit.
+  await page.getByRole("tab", { name: /请求与协议/ }).click();
+  await expect(page.getByText("单请求图片上限")).toBeVisible();
   await expect(page.getByText("外部锁定", { exact: true })).toBeVisible();
-  await page.getByRole("tab", { name: /可修改/ }).click();
+  await expect(page.getByText(/由环境变量 CODEBUDDY2API_MAX_IMAGES 锁定/)).toBeVisible();
+  await expect(page.getByLabel("单请求图片上限")).toHaveCount(0);
+  await page.getByRole("tab", { name: /存储与审计/ }).click();
   await page.getByLabel("审计明细保留天数").fill("60");
   await page.getByRole("button", { name: "保存更改" }).click();
+  // Retention is a high-risk key: it deletes history when lowered, so saving it opens a
+  // drawer that requires the typed phrase. Nothing is written before the phrase is in.
+  await expect(page.getByRole("heading", { name: "确认修改高风险配置" })).toBeVisible();
+  expect(mock.calls.some((call) => call.method === "PATCH")).toBe(false);
+  await page.getByLabel("输入“修改线上配置”以继续").fill("修改线上配置");
+  await page.getByRole("button", { name: "确认修改" }).click();
   await expect
     .poll(() =>
       mock.calls.some((call) => call.method === "PATCH" && call.path === "/admin/settings"),
@@ -356,4 +381,79 @@ test("anonymous login never persists API key and API failure is not zero-data su
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("隔离测试：存储不可用");
   await expect(page.getByText("请求总量", { exact: true })).toHaveCount(0);
+});
+
+test("consolidated navigation keeps every retired URL working", async ({ page }) => {
+  const mock = await mockAPI(page);
+  // The five task areas are the navigation now. Every former top-level page is a
+  // section of one of them, and its old URL must redirect rather than 404 — a
+  // bookmark or an external link that suddenly breaks is the failure mode this
+  // test exists to catch.
+  await page.goto("/dashboard");
+  const nav = page.getByRole("navigation", { name: "主导航" });
+  await expect(nav.getByRole("link")).toHaveCount(5);
+  await expect(nav.getByText("运行")).toBeVisible();
+  await expect(nav.getByText("配置")).toBeVisible();
+
+  const retired: [string, string][] = [
+    ["/dashboard/models", "/dashboard/routing"],
+    ["/dashboard/credentials", "/dashboard/routing?section=credentials"],
+    ["/dashboard/logs", "/dashboard/requests"],
+    ["/dashboard/trends", "/dashboard/usage"],
+    ["/dashboard/credits", "/dashboard/usage?section=credits"],
+    ["/dashboard/settings", "/dashboard/system"],
+    ["/dashboard/storage", "/dashboard/system?section=storage"],
+    ["/dashboard/alerts", "/dashboard/system?section=alerts"],
+    ["/dashboard/diagnostics", "/dashboard/system?section=diagnostics"],
+  ];
+  for (const [from, to] of retired) {
+    await page.goto(from);
+    // Landing on the right URL is only half of it: the shell must have rendered the
+    // section rather than a blank outlet. The fixture answers 500 for endpoints it
+    // does not mock, so this asserts on the URL and the shell, not on a clean page.
+    await expect(page).toHaveURL(new RegExp(to.replace(/[?]/g, "\\?").replace(/\//g, "\\/") + "$"));
+    await expect(page.getByRole("navigation", { name: "主导航" })).toBeVisible();
+    expect((await page.locator("#main").innerText()).length).toBeGreaterThan(0);
+  }
+
+  // Sections are addressed in the query string, so the backend page whitelist stays
+  // one entry per area and a hard refresh lands on the same section.
+  await page.goto("/dashboard/system?section=storage");
+  await page.reload();
+  await expect(page).toHaveURL(/\/dashboard\/system\?section=storage$/);
+  const switcher = page.getByRole("navigation", { name: "系统分区" });
+  await expect(switcher.getByRole("button", { name: "存储管理" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await switcher.getByRole("button", { name: "告警中心" }).click();
+  await expect(page).toHaveURL(/\/dashboard\/system\?section=alerts$/);
+  expect(mock.calls.length).toBeGreaterThan(0);
+});
+
+test("the command palette jumps and acts, not only jumps", async ({ page }) => {
+  await mockAPI(page);
+  await page.goto("/dashboard");
+  await page.keyboard.press("Control+k");
+  const input = page.getByPlaceholder("搜索页面或动作…");
+  await expect(input).toBeVisible();
+  // Grouped results: destinations and actions in one list.
+  await expect(page.getByText("跳转", { exact: true })).toBeVisible();
+  await expect(page.getByText("动作", { exact: true })).toBeVisible();
+
+  await input.fill("存储");
+  await page.getByRole("option", { name: /存储管理/ }).click();
+  await expect(page).toHaveURL(/\/dashboard\/system\?section=storage$/);
+
+  // An action the sidebar cannot do: switching to dark mode from anywhere.
+  await page.keyboard.press("Control+k");
+  await page.getByPlaceholder("搜索页面或动作…").fill("深色");
+  await page.getByRole("option", { name: /外观：深色/ }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+
+  await page.keyboard.press("Control+k");
+  await page.getByPlaceholder("搜索页面或动作…").fill("zzz");
+  await expect(page.getByText("没有匹配的页面或动作")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByPlaceholder("搜索页面或动作…")).toHaveCount(0);
 });

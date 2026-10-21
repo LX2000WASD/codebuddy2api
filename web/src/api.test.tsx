@@ -1,4 +1,5 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
+import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import {
   AxiosError,
   AxiosHeaders,
@@ -22,9 +23,130 @@ afterEach(() => {
   api.defaults.adapter = adapter;
   useSession.setState({ status: "checking", csrf: null, error: null });
 });
+/**
+ * Registers an abort listener on a request config signal.
+ *
+ * axios types `signal` as `AbortSignal | GenericAbortSignal`, where the generic
+ * variant only guarantees `aborted` — so `addEventListener` is "possibly undefined"
+ * and the optional-call form trips the type checker. Real adapters always pass an
+ * AbortSignal; the guard keeps the tests honest without a cast at each call site.
+ */
+function onAbort(config: InternalAxiosRequestConfig, listener: () => void) {
+  const signal = config.signal;
+  if (signal && typeof signal.addEventListener === "function")
+    signal.addEventListener("abort", listener);
+}
+
 function response(data: unknown, config: InternalAxiosRequestConfig) {
   return { data, status: 200, statusText: "OK", headers: new AxiosHeaders(), config };
 }
+/**
+ * An adapter that behaves like the real one where it matters: it honours the abort
+ * signal. `mockResolvedValue` does not, which is exactly why the StrictMode
+ * double-fetch bug shipped green unit tests and a red e2e run.
+ */
+function abortableAdapter(reply: (config: InternalAxiosRequestConfig) => unknown, delayMs = 20) {
+  const seen: string[] = [];
+  const adapter = ((config) => {
+    seen.push(String(config.url));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(response(reply(config), config)), delayMs);
+      onAbort(config, () => {
+        clearTimeout(timer);
+        reject(new AxiosError("canceled", "ERR_CANCELED", config));
+      });
+    });
+  }) satisfies AxiosAdapter;
+  return { adapter, seen };
+}
+
+/**
+ * Module-level on purpose: useResource depends on `normalize`, so an inline parser
+ * would restart the effect on every render (and, with a real request, spin).
+ */
+const asOk = (value: unknown) => value as { ok: boolean };
+
+describe("shared snapshot requests", () => {
+  function Probe({ path }: { path: string }) {
+    const resource = useResource(path, asOk, { cache: true });
+    return <span>{resource.error ?? String(resource.data?.ok ?? "none")}</span>;
+  }
+
+  it("survives the StrictMode mount/cleanup/mount pass with one request", async () => {
+    // StrictMode mounts the effect, immediately cleans it up, then mounts it again.
+    // The cleanup used to abort the request the second pass had just joined, so the
+    // page rendered "cannot reach the admin API" even though the data was in flight.
+    const { adapter: mock, seen } = abortableAdapter(() => ({ ok: true }), 25);
+    api.defaults.adapter = mock;
+    render(
+      <StrictMode>
+        <Probe path="/strict-probe" />
+      </StrictMode>,
+    );
+    expect(await screen.findByText("true")).toBeTruthy();
+    // De-duplication: the second pass re-joined the first request instead of firing
+    // its own, and nothing was left in an error state.
+    expect(seen).toEqual(["/strict-probe"]);
+  });
+
+  it("does not merge requests that differ only in params", async () => {
+    const { adapter: mock, seen } = abortableAdapter((config) => ({ ok: config.url === "/p?a=1" }));
+    api.defaults.adapter = mock;
+    render(
+      <>
+        <Probe path="/p?a=1" />
+        <Probe path="/p?a=2" />
+      </>,
+    );
+    await waitFor(() => expect(seen.length).toBe(2));
+    expect(seen.sort()).toEqual(["/p?a=1", "/p?a=2"]);
+  });
+
+  it("aborts an abandoned request once its last caller unmounts", async () => {
+    // The other half of the contract: "not cancelled by one caller" must not become
+    // "never cancelled". The last release aborts, so a page the user navigated away
+    // from does not hold a connection open.
+    let aborted = false;
+    const seen: string[] = [];
+    api.defaults.adapter = ((config) => {
+      seen.push(String(config.url));
+      return new Promise((_resolve, reject) => {
+        onAbort(config, () => {
+          aborted = true;
+          reject(new AxiosError("canceled", "ERR_CANCELED", config));
+        });
+      });
+    }) satisfies AxiosAdapter;
+    const view = render(<Probe path="/abandoned" />);
+    await waitFor(() => expect(seen).toEqual(["/abandoned"]));
+    expect(aborted).toBe(false);
+    view.unmount();
+    // The grace period is a macrotask, so the abort lands on the next tick.
+    await waitFor(() => expect(aborted).toBe(true));
+  });
+
+  it("keeps the request alive across a StrictMode remount instead of aborting it", async () => {
+    // Regression guard for the bug this layer shipped with: the cleanup of the first
+    // StrictMode pass aborted the request the second pass had just joined.
+    let aborted = false;
+    const { adapter: mock, seen } = abortableAdapter(() => ({ ok: true }), 30);
+    api.defaults.adapter = ((config) => {
+      onAbort(config, () => {
+        aborted = true;
+      });
+      return mock(config);
+    }) satisfies AxiosAdapter;
+    render(
+      <StrictMode>
+        <Probe path="/strict-alive" />
+      </StrictMode>,
+    );
+    expect(await screen.findByText("true")).toBeTruthy();
+    expect(seen).toEqual(["/strict-alive"]);
+    expect(aborted).toBe(false);
+  });
+});
+
 describe("API and session state", () => {
   it("keeps unknown distinct from explicit zero", () => {
     expect(metric(undefined)).toBe("—");

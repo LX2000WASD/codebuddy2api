@@ -10,7 +10,14 @@
 //     pointing the vite dev proxy at a real backend while keeping DEV=true.
 // No page code reads this flag; only the request seam below does.
 import axios from "axios";
-import { api, errorMessage } from "../api";
+import {
+  acquireShared,
+  api,
+  errorMessage,
+  rememberSnapshot,
+  releaseShared,
+  sharedSnapshot,
+} from "../api";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { mockDelay, mockRequest } from "./mock";
 
@@ -140,14 +147,36 @@ export function useFusionResource<T>(
   // (path/query/revision/enabled) without an eslint suppression.
   const normalizeRef = useRef(normalize);
   normalizeRef.current = normalize;
+  // The snapshot key is the full request URL, so /admin/diagnostic and
+  // /admin/diagnostic?profile=cn never collide.
+  const key = path === null ? null : fusionSnapshotKey(path, params);
   useEffect(() => {
-    if (!enabled || path === null) {
+    if (!enabled || path === null || key === null) {
       setState({ data: null, loading: false, error: null });
       return;
     }
     const controller = new AbortController();
     setState({ data: null, loading: true, error: null });
-    void fusionGet(path, new URLSearchParams(query), { signal: controller.signal })
+    // Same snapshot layer as useResource, so Diagnostics and Models share one
+    // /admin/diagnostic fetch instead of each pulling it on mount. A reload
+    // (revision > 0) is a forced fetch and bypasses the TTL.
+    const snapshot = revision === 0 ? sharedSnapshot(key) : null;
+    let held = false;
+    const request = snapshot
+      ? Promise.resolve(snapshot.data)
+      : (() => {
+          held = true;
+          // The shared request owns its own AbortController (see acquireShared): the
+          // caller's controller only decides whether this component still wants the
+          // result, so a StrictMode remount re-joins instead of cancelling.
+          return acquireShared(key, (signal) =>
+            fusionGet(path, new URLSearchParams(query), { signal }).then((raw) => {
+              rememberSnapshot(key, raw);
+              return raw;
+            }),
+          );
+        })();
+    void request
       .then((raw) => {
         if (controller.signal.aborted) return;
         try {
@@ -165,8 +194,26 @@ export function useFusionResource<T>(
         if (controller.signal.aborted || error instanceof FusionAbortError) return;
         setState({ data: null, loading: false, error: errorMessage(error) });
       });
-    return () => controller.abort();
-  }, [path, query, revision, enabled]);
+    return () => {
+      controller.abort();
+      if (held) releaseShared(key);
+    };
+  }, [path, key, query, revision, enabled]);
   const reload = useCallback(() => setRevision((value) => value + 1), []);
   return { ...state, reload };
+}
+
+/**
+ * Snapshot key for a fusion GET.
+ *
+ * The key is the full request URL, so two calls that differ only in params
+ * (/admin/logs?days=1 vs ?days=7, or /admin/diagnostic?profile=cn vs intl) never
+ * share a snapshot or an in-flight promise. The TTL decision sits outside
+ * perform(), so it applies identically to the mock branch (vitest, e2e serve.mjs)
+ * and the live branch — an e2e test that counts requests sees exactly what the
+ * live UI would send.
+ */
+export function fusionSnapshotKey(path: string, params: URLSearchParams | null): string {
+  const query = params?.toString() ?? "";
+  return query ? path + "?" + query : path;
 }

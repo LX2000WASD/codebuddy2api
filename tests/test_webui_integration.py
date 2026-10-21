@@ -254,10 +254,18 @@ class ManagedRoutingTests(fixtures.RegionRoutingTests):
         # Every route in web/src/App.tsx must be reachable as a deep link. A page
         # missing from install_pages' whitelist is redirected to /dashboard, so a
         # bookmark or a browser refresh would bounce the user to the home page.
-        for path in ("/dashboard", "/dashboard/models", "/dashboard/login",
-                     "/dashboard/credentials", "/dashboard/logs", "/dashboard/settings",
-                     "/dashboard/storage", "/dashboard/trends", "/dashboard/diagnostics",
-                     "/dashboard/alerts", "/dashboard/credits"):
+        for path in ("/dashboard", "/dashboard/login",
+                     # Current navigation: five task areas.
+                     "/dashboard/routing", "/dashboard/requests", "/dashboard/usage",
+                     "/dashboard/system",
+                     # Legacy page URLs, still served so old bookmarks redirect in-app
+                     # instead of bouncing at the server. These are the SPA's legacy table
+                     # (web/src/navigation.tsx); retire a name here only after removing it
+                     # from that table, otherwise the bookmark bounces at the server before
+                     # the redirect can run.
+                     "/dashboard/models", "/dashboard/credentials", "/dashboard/logs",
+                     "/dashboard/settings", "/dashboard/storage", "/dashboard/trends",
+                     "/dashboard/diagnostics", "/dashboard/alerts", "/dashboard/credits"):
             response = self.client.get(path, follow_redirects=False)
             self.assertEqual(response.status_code, 200, f"{path} -> {response.status_code}")
             self.assertIn("isolated management shell", response.text)

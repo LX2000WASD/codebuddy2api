@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useDebouncedValue } from "../hooks";
 import {
   api,
@@ -23,6 +23,7 @@ import {
   Panel,
   ResourceState,
 } from "../components";
+import { DataTable, writeUrlParams, type DataTableColumn, type SortingState } from "../dataTable";
 import { eventActionLabel, eventKindLabel } from "../values";
 import { profiles } from "./Models";
 import s from "../ui.module.scss";
@@ -58,6 +59,7 @@ export function Logs() {
   const [draft, setDraft] = useState(emptyFilters);
   const [filters, setFilters] = useState(emptyFilters);
   const [cursors, setCursors] = useState<string[]>([]);
+  const [sorting, setSorting] = useState<SortingState>([]);
   // Live filter: typing debounces and re-fetches on its own; the Apply button stays
   // for an immediate submit. Each new filter resets pagination to the first page.
   // The effect fires only when the debounced value actually changes, not when it
@@ -72,6 +74,14 @@ export function Logs() {
     setFilters(debouncedDraft);
     setCursors([]);
   }, [debouncedDraft]);
+  /**
+   * The applied filters live in the address bar, so a refresh keeps them and a
+   * pasted link reproduces the view. Only the applied set is written (not the
+   * draft): a half-typed search box must not churn the URL on every keystroke.
+   */
+  useEffect(() => {
+    writeUrlParams({ ...filters, kind: kind === "request" ? "" : kind });
+  }, [filters, kind]);
   const [detail, setDetail] = useState<RecordValue | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -121,6 +131,128 @@ export function Logs() {
         }
       });
   };
+  /**
+   * A cursor page has no single unique field (runtime events may repeat an id), so
+   * the row key stays "id + position" exactly as the hand-written table had it.
+   * Sorting is applied by DataTable on top of this fixed order.
+   */
+  const rows = (resource.data?.items ?? []).map((item, index) => ({
+    ...item,
+    __key: text(item.id) + index,
+  }));
+  const columns = useMemo<DataTableColumn<RecordValue>[]>(() => {
+    const outcomeOf = (item: RecordValue) =>
+      kind === "request" ? item.outcome : object(item.details ?? {}).outcome;
+    const list: DataTableColumn<RecordValue>[] = [
+      {
+        id: "time",
+        header: t("logs.col.time"),
+        sortValue: (item) => (typeof item.started_at === "number" ? item.started_at : undefined),
+        sortDescFirst: true,
+        sortUndefined: "last",
+        cell: (item) => (
+          <>
+            {typeof item.started_at === "number"
+              ? new Date(item.started_at * 1000).toLocaleString("zh-CN")
+              : text(item.started_at)}
+            <small className={s.mono}>{text(item.id)}</small>
+          </>
+        ),
+      },
+      {
+        id: "subject",
+        header: kind === "request" ? t("logs.col.modelProfile") : t("logs.col.action"),
+        cell: (item) => (
+          <>
+            <strong title={kind === "request" ? undefined : text(item.action)}>
+              {text(
+                kind === "request"
+                  ? item.model
+                  : eventActionLabel(item.action)
+                    ? t(eventActionLabel(item.action)!)
+                    : item.action,
+              )}
+            </strong>
+            <small title={kind === "request" ? undefined : text(item.kind)}>
+              {text(
+                kind === "request"
+                  ? item.profile
+                  : eventKindLabel(item.kind)
+                    ? t(eventKindLabel(item.kind)!)
+                    : item.kind,
+              )}
+            </small>
+            {kind === "request" && item.client_ip ? (
+              <small className={s.mono}>{text(item.client_ip)}</small>
+            ) : null}
+          </>
+        ),
+      },
+      {
+        id: "status",
+        header: t("logs.col.status"),
+        cell: (item) => {
+          const outcome = outcomeOf(item);
+          return (
+            <>
+              <Badge
+                tone={
+                  outcome === "success"
+                    ? "good"
+                    : outcome === "error"
+                      ? "bad"
+                      : outcome === "warning"
+                        ? "warn"
+                        : "neutral"
+                }
+              >
+                {(typeof outcome === "string" ? t(outcomeLabels[outcome]) : undefined) ??
+                  text(outcome ?? item.level ?? item.status)}
+              </Badge>
+              {item.status_code !== undefined && <small>HTTP {text(item.status_code)}</small>}
+            </>
+          );
+        },
+      },
+    ];
+    if (kind === "request") {
+      list.push(
+        {
+          id: "duration",
+          header: t("logs.col.duration"),
+          sortValue: (item) =>
+            typeof item.duration_ms === "number" ? item.duration_ms : undefined,
+          sortDescFirst: true,
+          sortUndefined: "last",
+          cell: (item) => `${metric(item.duration_ms)} ms`,
+        },
+        {
+          id: "tokens",
+          header: "Token / Credit",
+          sortValue: (item) =>
+            typeof item.total_tokens === "number" ? item.total_tokens : undefined,
+          sortDescFirst: true,
+          sortUndefined: "last",
+          cell: (item) => (
+            <>
+              {metric(item.total_tokens)}
+              <small>{metric(item.credit)} Credit</small>
+            </>
+          ),
+        },
+      );
+    }
+    list.push({
+      id: "actions",
+      header: t("logs.col.actions"),
+      cell: (item) => (
+        <button disabled={detailLoading} onClick={() => openDetail(item)}>
+          {t("logs.viewDetail")}
+        </button>
+      ),
+    });
+    return list;
+  }, [kind, t, detailLoading]);
   return (
     <>
       <PageTitle
@@ -243,104 +375,15 @@ export function Logs() {
             {t("logs.degraded")}
           </div>
         )}
-        {resource.data &&
-          (resource.data.items.length ? (
-            <div className={s.tableWrap}>
-              <table>
-                <thead>
-                  <tr>
-                    <th scope="col">{t("logs.col.time")}</th>
-                    <th scope="col">
-                      {kind === "request" ? t("logs.col.modelProfile") : t("logs.col.action")}
-                    </th>
-                    <th scope="col">{t("logs.col.status")}</th>
-                    {kind === "request" && (
-                      <>
-                        <th scope="col">{t("logs.col.duration")}</th>
-                        <th scope="col">Token / Credit</th>
-                      </>
-                    )}
-                    <th scope="col">{t("logs.col.actions")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {resource.data.items.map((item, i) => {
-                    const outcome =
-                      kind === "request" ? item.outcome : object(item.details ?? {}).outcome;
-                    return (
-                      <tr key={text(item.id) + i}>
-                        <td>
-                          {typeof item.started_at === "number"
-                            ? new Date(item.started_at * 1000).toLocaleString("zh-CN")
-                            : text(item.started_at)}
-                          <small className={s.mono}>{text(item.id)}</small>
-                        </td>
-                        <td>
-                          <strong title={kind === "request" ? undefined : text(item.action)}>
-                            {text(
-                              kind === "request"
-                                ? item.model
-                                : eventActionLabel(item.action)
-                                  ? t(eventActionLabel(item.action)!)
-                                  : item.action,
-                            )}
-                          </strong>
-                          <small title={kind === "request" ? undefined : text(item.kind)}>
-                            {text(
-                              kind === "request"
-                                ? item.profile
-                                : eventKindLabel(item.kind)
-                                  ? t(eventKindLabel(item.kind)!)
-                                  : item.kind,
-                            )}
-                          </small>
-                          {kind === "request" && item.client_ip ? (
-                            <small className={s.mono}>{text(item.client_ip)}</small>
-                          ) : null}
-                        </td>
-                        <td>
-                          <Badge
-                            tone={
-                              outcome === "success"
-                                ? "good"
-                                : outcome === "error"
-                                  ? "bad"
-                                  : outcome === "warning"
-                                    ? "warn"
-                                    : "neutral"
-                            }
-                          >
-                            {(typeof outcome === "string"
-                              ? t(outcomeLabels[outcome])
-                              : undefined) ?? text(outcome ?? item.level ?? item.status)}
-                          </Badge>
-                          {item.status_code !== undefined && (
-                            <small>HTTP {text(item.status_code)}</small>
-                          )}
-                        </td>
-                        {kind === "request" && (
-                          <>
-                            <td>{metric(item.duration_ms)} ms</td>
-                            <td>
-                              {metric(item.total_tokens)}
-                              <small>{metric(item.credit)} Credit</small>
-                            </td>
-                          </>
-                        )}
-                        <td>
-                          <button disabled={detailLoading} onClick={() => openDetail(item)}>
-                            {t("logs.viewDetail")}
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <Empty title={t("logs.noMatch")}>{t("logs.adjustFilters")}</Empty>
-          ))}
+        <DataTable
+          rows={rows}
+          columns={columns}
+          rowId={(item) => text(item.__key)}
+          sorting={sorting}
+          onSortingChange={setSorting}
+          loading={resource.loading}
+          empty={<Empty title={t("logs.noMatch")}>{t("logs.adjustFilters")}</Empty>}
+        />
         <div className={s.pagination}>
           <span>第 {cursors.length + 1} 页</span>
           <div className={s.actions}>

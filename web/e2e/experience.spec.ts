@@ -223,9 +223,9 @@ test("daily range uses hourly points, with desktop and mobile glass layouts", as
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: "test-results/glass-overview-mobile.png" });
   // The collapsed mobile sidebar stows the nav strip; only the expand bar remains.
-  await expect(page.getByRole("link", { name: "模型路由", exact: true })).toBeHidden();
+  await expect(page.getByRole("link", { name: "路由与账号", exact: true })).toBeHidden();
   await page.getByRole("button", { name: "展开侧栏" }).click();
-  await page.getByRole("link", { name: "模型路由", exact: true }).click();
+  await page.getByRole("link", { name: "路由与账号", exact: true }).click();
   await page.getByRole("button", { name: "新增模型" }).click();
   await page.getByRole("radio", { name: /指定账号/ }).check();
   const dialog = page.getByRole("dialog");

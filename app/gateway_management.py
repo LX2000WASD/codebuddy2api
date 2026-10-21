@@ -259,8 +259,19 @@ def install_pages(app, directory):
     root = Path(directory).resolve()
     # Keep in step with the routes in web/src/App.tsx: a page missing here is
     # redirected to /dashboard, so a deep link (bookmark, refresh, shared URL)
-    # would silently bounce the user to the home page.
-    pages = {"", "models", "credentials", "logs", "settings", "login",
+    # would silently bounce the user to the home page. The UI test server is a Vite
+    # dev server with its own SPA fallback, so neither Playwright nor a route-only
+    # assertion catches a missing entry — this list is the real gate.
+    #
+    # The five task areas are the current navigation. The ten page names below them
+    # are retained because the SPA still accepts those URLs and redirects them to
+    # their task area: dropping one here would turn a working bookmark into a bounce
+    # before the redirect could run.
+    pages = {"", "login",
+             # Task areas (current navigation).
+             "routing", "requests", "usage", "system",
+             # Legacy page URLs, redirected inside the SPA.
+             "models", "credentials", "logs", "settings",
              "storage", "trends", "diagnostics", "alerts", "credits"}
     assets = StaticFiles(directory=root / "assets", check_dir=False)
 

@@ -15,6 +15,32 @@ function share(part: number | null, total: number | null): string | null {
   return `${((part / total) * 100).toFixed(1)}%`;
 }
 
+/**
+ * How the P95 on screen was computed.
+ *
+ * Two endpoints answer "what was P95" and they disagree on purpose: /admin/dashboard
+ * takes an exact nearest-rank percentile from the retained request rows, while
+ * /admin/stats/series interpolates from a fixed latency histogram that survives
+ * detail cleanup. Measured on a 7-day window they differed by 11.3% (19688 vs 21914),
+ * which reads as a bug unless each number says where it came from.
+ *
+ * The coverage share matters for the exact one: detail rows can be pruned or
+ * archived, and an exact percentile over 60% of the period is a different claim
+ * than one over 100% of it.
+ */
+function p95SourceLabel(
+  t: (key: string, vars?: Record<string, string | number>) => string,
+  source: unknown,
+  coverage: number | null,
+): string {
+  if (source === "histogram_approx") return t("dash.p95Approx");
+  // Anything else is the exact dashboard path; an unknown source still names the
+  // definition we are showing rather than silently claiming precision.
+  if (coverage !== null && coverage < 1)
+    return t("dash.p95Exact", { pct: `${(coverage * 100).toFixed(1)}%` });
+  return t("dash.p95ExactFull");
+}
+
 function smoothPath(pts: [number, number][]): string {
   if (pts.length < 2) return pts.length ? `M${pts[0][0]},${pts[0][1]}` : "";
   // Fritsch–Carlson tangents keep the curve monotone between points: no
@@ -112,6 +138,9 @@ export function KpiCards({
   const t = useT();
   const rate = number(summary.success_rate);
   const p95 = number(summary.p95_duration_ms);
+  // The same window answered by the fusion histogram endpoint reads ~11% higher;
+  // naming the source is what keeps the two pages from looking like a bug.
+  const p95Source = p95SourceLabel(t, summary.p95_source, number(summary.p95_coverage));
   const total = number(summary.total_tokens);
   const input = number(summary.input_tokens);
   const cacheRead = number(summary.cache_read_tokens);
@@ -129,7 +158,20 @@ export function KpiCards({
     const requests = number(row.requests);
     return requests ? (number(row.success) ?? 0) / requests : null;
   });
-  const cards: [string, string, string, string | null, string, (number | null)[], string][] = [
+  // The eighth slot is an optional provenance note (currently only the P95 card uses
+  // it). It is rendered as a sibling span rather than concatenated into the caption:
+  // the caption keeps its exact text, so existing assertions on it stay meaningful,
+  // and the note can carry its own muted styling.
+  const cards: [
+    string,
+    string,
+    string,
+    string | null,
+    string,
+    (number | null)[],
+    string,
+    string?,
+  ][] = [
     [
       t("dash.kpi.requests"),
       "arrow",
@@ -146,9 +188,12 @@ export function KpiCards({
       "shield",
       rate === null ? "—" : `${(rate * 100).toFixed(1)}%`,
       rate === null ? null : `${(rate * 100).toFixed(2)}%`,
-      t("dash.p95Latency", { value: p95 === null ? "—" : `${(p95 / 1000).toFixed(1)}s` }),
+      p95 === null
+        ? t("dash.p95Latency", { value: "—" })
+        : t("dash.p95Latency", { value: `${(p95 / 1000).toFixed(1)}s` }),
       rateSpark,
       "var(--series-tokens)",
+      p95 === null ? undefined : p95Source,
     ],
     [
       t("dash.kpi.failures"),
@@ -207,7 +252,7 @@ export function KpiCards({
   ];
   return (
     <div className={s.kpiGrid}>
-      {cards.map(([label, icon, value, exactText, sub, spark, color]) => (
+      {cards.map(([label, icon, value, exactText, sub, spark, color, note]) => (
         <section className={s.kpiCard} key={label}>
           <div>
             <span>{label}</span>
@@ -216,7 +261,10 @@ export function KpiCards({
             </span>
           </div>
           <KpiValue label={label} display={value} exact={exactText} />
-          <small>{sub}</small>
+          <small>
+            <span>{sub}</span>
+            {note ? <span className={s.muted}> · {note}</span> : null}
+          </small>
           <Spark values={spark} color={color} />
         </section>
       ))}

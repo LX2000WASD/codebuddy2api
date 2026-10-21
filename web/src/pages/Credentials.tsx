@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { OAuth } from "../OAuth";
-import { useNow, useOptimisticOverrides } from "../hooks";
-import { countdownText } from "../hooks";
+import { countdownText, useCoarseNow, useNow, useOptimisticOverrides } from "../hooks";
 import { fusionMutate } from "../fusion/client";
 import { Trial } from "../Trial";
 import { TravelSummary } from "../Travel";
@@ -212,6 +211,57 @@ function channelOf(c: Credential): Exclude<ChannelKey, "all"> {
   return "cn";
 }
 
+/**
+ * Live "认证熔断 m:ss" badge for one credential.
+ *
+ * The page root used to hold the clock, so every tick re-rendered the channel
+ * summary cards, the whole filtered account list and the pager — and re-ran the
+ * filter over every account. Subscribing here instead confines a tick to the one
+ * badge that actually changes, and the subscription drops out entirely when the
+ * deadline is absent or already in the past.
+ */
+function BreakerCountdown({ failUntil, health }: { failUntil: number | null; health: string }) {
+  const live = failUntil !== null && failUntil > 0;
+  const now = useNow(live);
+  // A deadline already in the past means the breaker lifted and must not keep
+  // showing a stale 0:00 badge (upstream leaves the timestamp behind).
+  const cooling = live && Math.ceil(failUntil - now / 1000) > 0;
+  return (
+    <Badge tone={cooling ? "bad" : health === "ready" ? "good" : "warn"}>
+      {cooling
+        ? `认证熔断 ${countdownText(failUntil, "", now)}`
+        : health === "ready"
+          ? "认证正常"
+          : health}
+    </Badge>
+  );
+}
+
+/**
+ * Compact "model · m:ss" cooldown text, ticking on the shared clock.
+ *
+ * `fallback` is the backend's own remaining-seconds figure: it is what renders
+ * before the first tick arrives, and it is what keeps a cooldown readable when the
+ * `until` deadline is missing.
+ */
+function ModelCooldownText({
+  model,
+  until,
+  fallback,
+}: {
+  model: string;
+  until: number | null;
+  fallback: string;
+}) {
+  const live = until !== null && until > 0;
+  const now = useNow(live);
+  return (
+    <small>
+      {model} · {countdownText(until, fallback, now)}
+    </small>
+  );
+}
+
 function MoreMenu({
   label,
   title = "更多",
@@ -365,9 +415,11 @@ export function Credentials() {
     setNotice("授权完成，凭证已添加。");
     resource.reload();
   }, [resource.reload]);
-  // One ticking clock drives every countdown text on this page (one interval,
-  // not one per row).
-  const now = useNow();
+  // No page-root clock: this page used to call useNow() here, which re-rendered
+  // the channel summary cards, the whole filtered list and the pager once a second
+  // (and re-ran the filter over every account each time). Countdown text is now
+  // produced by <BreakerCountdown> / <ModelCooldownText>, which subscribe to the
+  // shared clock themselves — see the comment above each.
   // One locale-aware formatter for every timestamp on the page.
   const format = useDateFormat();
   const togglePaused = (credential: Credential, paused: boolean) => {
@@ -463,9 +515,14 @@ export function Credentials() {
     }
   };
   const allItems = resource.data ?? [];
+  // Coarse clock (10 s), not the 1 Hz one: the filter and the "N ready" counters only
+  // need a cooldown to *expire*, and a per-second snapshot here would re-filter the
+  // whole account list once a second — the exact cost this refactor removes. The
+  // second-by-second digits are rendered by the leaf countdown components instead.
+  const coarseNow = useCoarseNow(10);
   const isReady = (c: Credential) => {
     const until = number(c.fail_until);
-    const cooling = until !== null && Math.ceil(until - now / 1000) > 0;
+    const cooling = until !== null && Math.ceil(until - coarseNow / 1000) > 0;
     return c.enabled !== false && !cooling && c.health === "ready";
   };
   const filtered = allItems.filter((c) => {
@@ -624,23 +681,12 @@ export function Credentials() {
       </label>
     </>
   );
-  const renderHealthBadge = (c: Credential) => {
-    const until = number(c.fail_until);
-    // Fusion increment: one shared clock + compact countdown text (m:ss / h:mm:ss)
-    // instead of the raw second counter, so long breakers stay readable. The
-    // "cooling" test stays upstream's — a deadline already in the past means the
-    // breaker has expired and must not keep showing a stale 0:00 badge.
-    const cooling = until !== null && Math.ceil(until - now / 1000) > 0;
-    return (
-      <Badge tone={cooling ? "bad" : c.health === "ready" ? "good" : "warn"}>
-        {cooling
-          ? `认证熔断 ${countdownText(until, "", now)}`
-          : c.health === "ready"
-            ? "认证正常"
-            : text(c.health)}
-      </Badge>
-    );
-  };
+  const renderHealthBadge = (c: Credential) => (
+    // A live breaker ticks once a second, but only that badge re-renders: the
+    // countdown is its own clock subscriber (see BreakerCountdown), instead of the
+    // page root subscribing and re-rendering every card and the whole pager.
+    <BreakerCountdown failUntil={number(c.fail_until)} health={text(c.health)} />
+  );
   const renderSyncAndCatalog = (c: Credential) => {
     const cooldowns = Array.isArray(c.cooldowns) ? list(c.cooldowns) : null;
     const trip = c.travel && typeof c.travel === "object" ? object(c.travel) : null;
@@ -658,10 +704,12 @@ export function Credentials() {
           {cooldowns ? (
             cooldowns.length ? (
               cooldowns.map((cooldown, i) => (
-                <small key={i}>
-                  {text(cooldown.model)} ·{" "}
-                  {countdownText(number(cooldown.until), text(cooldown.remaining_seconds), now)}
-                </small>
+                <ModelCooldownText
+                  key={i}
+                  model={text(cooldown.model)}
+                  until={number(cooldown.until)}
+                  fallback={text(cooldown.remaining_seconds)}
+                />
               ))
             ) : (
               <Badge>无模型冷却</Badge>

@@ -147,14 +147,18 @@ describe("collapsible navigation", () => {
     expect(screen.getByRole("button", { name: "展开侧栏" }).getAttribute("aria-expanded")).toBe(
       "false",
     );
-    expect(screen.getByRole("link", { name: "模型路由" }).getAttribute("href")).toBe(
-      "/dashboard/models",
+    // The ten former pages are sections of five task areas now; the sidebar links to
+    // the area, and /dashboard/models still redirects into the routing area.
+    expect(screen.getByRole("link", { name: "路由与账号" }).getAttribute("href")).toBe(
+      "/dashboard/routing",
     );
     expect(localStorage.getItem("codebuddy.sidebar.collapsed")).toBe("true");
     first.unmount();
     mount();
     await waitFor(() => expect(screen.getByRole("button", { name: "展开侧栏" })).toBeTruthy());
-    expect(screen.getByRole("link", { name: "凭证管理" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "系统" }).getAttribute("href")).toBe(
+      "/dashboard/system",
+    );
   });
   it("can still fold when preference storage is blocked", () => {
     vi.spyOn(api, "get").mockReturnValue(new Promise(() => {}));

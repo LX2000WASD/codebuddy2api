@@ -301,6 +301,11 @@ def resolve_settings(config):
         item = {"key": key, "value": None if spec["sensitive"] else (config[key] if config.get(key) is not None else spec["default"]),
                 "stored": None if spec["sensitive"] else saved.get(key), "source": source,
                 "mode": spec["mode"], "type": spec["type"], "label": spec["label"], "locked": locked}
+        # Publish the environment variable name so a locked row can say *which* variable to
+        # edit instead of only "set by the environment". Never for secrets: naming the
+        # variable is harmless, but a UI that echoes secret names invites pasting values.
+        if spec.get("env") and not spec["sensitive"]:
+            item["env"] = spec["env"]
         item.update({field: spec[field] for field in ("choices", "min", "max") if field in spec})
         result.append(item)
     return result

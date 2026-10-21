@@ -21,16 +21,30 @@ function normalizeSeries(value: unknown): StatsSeriesResponse {
   return { ...(data as StatsSeriesResponse), series: series as StatsSeriesResponse["series"] };
 }
 
+/**
+ * Splits a dimension response into usable items.
+ *
+ * A single unusable row used to throw, which turned the whole trends page into an
+ * error state — one dirty key from the aggregate table and the user loses every
+ * chart. Invalid rows are now dropped instead: the page renders what it can, and the
+ * count of skipped rows is returned so the view can say so rather than silently
+ * pretending the data was complete.
+ */
 function normalizeDimensions(value: unknown): {
   items: Array<{ key: string; label: string | null }>;
+  skipped: number;
 } {
   const data = object(value, t("fusion.trends.dimensionsContext"));
-  const items = list(data.items, t("fusion.trends.dimensionsContext")).map((item) => {
-    if (typeof item.key !== "string" || !item.key)
-      throw new Error(t("fusion.trends.dimensionKeyMissing"));
-    return { key: item.key, label: typeof item.label === "string" ? item.label : null };
-  });
-  return { items };
+  const items: Array<{ key: string; label: string | null }> = [];
+  let skipped = 0;
+  for (const item of list(data.items, t("fusion.trends.dimensionsContext"))) {
+    if (typeof item.key !== "string" || !item.key) {
+      skipped += 1;
+      continue;
+    }
+    items.push({ key: item.key, label: typeof item.label === "string" ? item.label : null });
+  }
+  return { items, skipped };
 }
 
 const percentiles = [
@@ -79,6 +93,10 @@ export function Trends() {
   const buckets: ChartBucket[] = rows;
   const actualGrain = series.data?.range.granularity === "hour" ? "hour" : "day";
   const summary = series.data?.summary;
+  // Rows the backend could not key are dropped in normalizeDimensions instead of
+  // failing the page; say how many, because silently showing a partial dimension
+  // list is the same lie as a switch that reports the wrong state.
+  const skipped = dimensions.data?.skipped ?? 0;
   const successRate =
     summary && summary.requests ? (summary.success / summary.requests) * 100 : null;
   const selection = dimensions.data?.items.find((item) => item.key === key);
@@ -192,6 +210,11 @@ export function Trends() {
             ))}
           </div>
         </div>
+        {skipped > 0 && (
+          <p className={s.muted} role="status">
+            {t("fusion.trends.dimensionsSkipped", { n: skipped })}
+          </p>
+        )}
         <ErrorNotice message={dimensions.error} retry={dimensions.reload} />
       </Panel>
 
@@ -208,7 +231,7 @@ export function Trends() {
               t("fusion.trends.summary.p95"),
               summary.latency_p95_ms === null
                 ? t("fusion.trends.insufficientSamples")
-                : `${metric(summary.latency_p95_ms)} ms`,
+                : `${metric(summary.latency_p95_ms)} ms · ${t("dash.p95Approx")}`,
               "pulse",
             ],
             [

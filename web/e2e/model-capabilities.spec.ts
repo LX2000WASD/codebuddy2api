@@ -113,7 +113,19 @@ for (const width of [1440, 375]) {
     });
     await page.goto("/dashboard/models");
     await expect(page.getByText("能力预检：开启")).toBeVisible();
-    await expect(page.getByText("图片因路由而异")).toBeVisible();
+    // Below 900px the capability column is hidden by the breakpoint (narrow screens
+    // hide secondary columns instead of scrolling sideways). Both halves are asserted:
+    // the default hides it, and the column menu brings it back — which is what the
+    // old unconditional assertion used to take for granted.
+    const capability = page.getByText("图片因路由而异");
+    const columnMenu = page.getByRole("button", { name: "列可见性" });
+    if (width < 900) {
+      await expect(capability).toBeHidden();
+      await columnMenu.click();
+      await page.getByRole("checkbox", { name: "模型能力" }).check();
+      await page.keyboard.press("Escape");
+    }
+    await expect(capability).toBeVisible();
     const trigger = page.getByRole("button", { name: "模型详情" });
     await trigger.click();
     const dialog = page.getByRole("dialog");

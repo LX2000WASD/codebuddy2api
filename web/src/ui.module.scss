@@ -3659,3 +3659,279 @@ tr.selectedRow {
     display: none;
   }
 }
+
+/* ===== Command palette (Cmd+K) =====
+   A single overlay for "go to page" and "run action". Fixed to the viewport and
+   rendered through a portal by the caller: .pageEnter carries a transform for the
+   route transition, which would otherwise become the containing block. */
+.commandBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 14vh 16px 16px;
+  background: var(--veil);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+.commandPanel {
+  width: min(560px, 100%);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 24px 64px var(--shadow);
+  overflow: hidden;
+}
+.commandInput {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 15px 18px;
+  background: transparent;
+  font-size: 14px;
+}
+.commandInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.commandList {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.commandItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.commandItem[aria-selected="true"] {
+  background: var(--selected);
+  color: var(--strong);
+}
+.commandItemHint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+.commandGroup {
+  padding: 8px 12px 4px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.commandEmpty {
+  padding: 22px 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ===== Section navigation inside a merged page =====
+   Used where several former top-level pages become tabs of one task area. */
+.sectionNav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 18px;
+  border-radius: 12px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+}
+.sectionNav button {
+  min-height: 32px;
+  padding: 5px 14px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+.sectionNav button:hover:not(:disabled) {
+  background: var(--card);
+  border-color: var(--line);
+}
+.sectionNav .sectionActive {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--strong);
+  box-shadow: 0 2px 8px var(--shadow);
+}
+
+/* ===== Dangerous settings =====
+   A group of controls that change live behaviour; the whole block is tinted so it
+   never reads as an ordinary preference. */
+.dangerZone {
+  border: 1px solid color-mix(in srgb, var(--error) 34%, transparent);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: color-mix(in srgb, var(--error-bg) 55%, transparent);
+}
+.dangerZone > h4 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--error);
+}
+.dangerZone > p {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ===== Pending restart banner =====
+   A restart-mode setting was saved but is not live yet. Sticky so it stays
+   visible while the operator edits the rest of the page. */
+.pendingRestart {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+  background: color-mix(in srgb, var(--warning-bg) 88%, transparent);
+  color: var(--warning);
+  font-size: 12px;
+}
+.pendingRestart code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+.pendingRestart button {
+  margin-left: auto;
+  min-height: 28px;
+  padding: 3px 10px;
+  font-size: 11px;
+}
+
+/* Nav dot for "a restart is pending somewhere". */
+.navDot {
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+  flex-shrink: 0;
+}
+
+/* ===== Column visibility menu (shared by every DataTable) ===== */
+.colVis {
+  position: relative;
+  display: inline-flex;
+}
+.colVisMenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 190px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 14px 34px var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.colVisMenu label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.colVisMenu label:hover {
+  background: var(--soft);
+}
+.colVisMenu input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+/* Narrow viewports: the trigger sits far enough left that right-aligning a 190px menu
+   pushes it past the left edge (measured at 375px: menu x = -76, checkbox x = -61), so
+   the menu rendered but could not be clicked. Anchor to the left edge and clamp to the
+   viewport. The breakpoint matches the one the table uses to hide columns, which is
+   exactly when this menu matters most. */
+@media (max-width: 900px) {
+  .colVisMenu {
+    left: 0;
+    right: auto;
+    min-width: 0;
+    width: max-content;
+    max-width: calc(100vw - 24px);
+  }
+}
+
+/* ===== Dense table density switch ===== */
+.densityCompact td,
+.densityCompact th {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+/* ===== Sortable table header button =====
+   The whole <th> stays the click target so the hit area does not shrink to the text.
+   aria-sort carries the state for assistive tech; the arrow is decorative. */
+.tableSort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+.tableSort:hover:not(:disabled) {
+  background: transparent;
+  color: var(--strong);
+}
+.tableSort:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.tableSortArrow {
+  flex-shrink: 0;
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0.45;
+}
+.tableSortActive .tableSortArrow {
+  opacity: 1;
+  color: var(--accent);
+}
+.tableSortActive {
+  color: var(--strong);
+}

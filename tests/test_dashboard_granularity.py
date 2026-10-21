@@ -103,5 +103,78 @@ class UnidentifiedModelTests(unittest.TestCase):
         self.assertEqual(models[0]["requests"], 1)  # The anonymous 7 are not merged anywhere.
 
 
+class CrossSeriesConsistencyTests(unittest.TestCase):
+    """The dashboard and the fusion series must agree on window and resolution.
+
+    Both read the same stats_hourly/stats_daily aggregates, so the numbers match by
+    construction; what used to diverge was the meaning of granularity="auto"
+    (dashboard said hour for a one-day window, the dimension query always said day).
+    """
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.start = datetime(2026, 9, 14, tzinfo=timezone.utc).timestamp()
+        self.enterContext(patch("app.audit_store.time.time", return_value=self.start + 12.5 * 3600))
+        self.store = AuditStore(self.root / "logs.sqlite3")
+        self.addCleanup(self.store.close)
+        for hour in (2, 9):
+            self.assertTrue(self.store.record_request({
+                "id": f"hour-{hour}", **self.store.ticket(), "started_at": self.start + hour * 3600,
+                "public_model": "synthetic-model", "profile": "cn-cli", "protocol": "chat",
+                "status_code": 200, "outcome": "success"})["ok"])
+
+    def test_auto_granularity_matches_between_dashboard_and_series(self):
+        """auto on a one-day window resolves to hour on both surfaces (docs §4.2)."""
+        for days in (1, 7, 30, 90):
+            with self.subTest(days=days):
+                dash = self.store.dashboard(days, "auto")
+                series = self.store.dimension_query("global", None, days, "auto")
+                self.assertEqual(dash["range"]["granularity"], series["range"]["granularity"])
+                self.assertEqual(dash["range"]["start"], series["range"]["start"])
+                self.assertEqual(dash["range"]["partial"], series["range"]["partial"])
+                self.assertEqual(dash["series"], series["series"])
+        self.assertEqual(self.store.dimension_query("global", None, 1, "auto")["range"]["granularity"], "hour")
+        self.assertEqual(self.store.dimension_query("global", None, 7, "auto")["range"]["granularity"], "day")
+
+    def test_one_day_auto_buckets_and_last_bucket_match(self):
+        """Same days=1/auto: identical bucket count and identical final bucket."""
+        dash = self.store.dashboard(1, "auto")
+        series = self.store.dimension_query("global", None, 1, "auto")
+        self.assertEqual(len(dash["series"]), len(series["series"]))
+        self.assertEqual(len(dash["series"]), 13)  # 00:00 through 12:00 UTC
+        self.assertEqual(dash["series"][-1]["bucket"], series["series"][-1]["bucket"])
+        self.assertEqual(dash["series"][-1]["requests"], series["series"][-1]["requests"])
+        self.assertEqual([r["requests"] for r in dash["series"]],
+                         [r["requests"] for r in series["series"]])
+
+    def test_explicit_granularity_is_unchanged_by_the_shared_resolver(self):
+        """The resolver only interprets auto; explicit hour/day pass straight through."""
+        for grain in ("hour", "day"):
+            with self.subTest(granularity=grain):
+                dash = self.store.dashboard(1, grain)
+                series = self.store.dimension_query("global", None, 1, grain)
+                self.assertEqual(dash["range"]["granularity"], grain)
+                self.assertEqual(series["range"]["granularity"], grain)
+                self.assertEqual(dash["series"], series["series"])
+
+    def test_legacy_empty_key_is_skipped_by_dimension_keys(self):
+        """dimension_keys drops anonymous keys exactly like dashboard() does."""
+        self.assertTrue(self.store.record_request({
+            "id": "named", **self.store.ticket(), "started_at": self.start,
+            "public_model": "synthetic-model", "profile": "cn-cli", "protocol": "chat",
+            "status_code": 200, "outcome": "success"})["ok"])
+        stats = self.store._empty_stats()
+        stats["requests"] = 7
+        bucket = int(self.start // 86400) * 86400
+        self.store._db.execute("INSERT OR REPLACE INTO stats_daily VALUES(?,?,?,?)",
+                               (bucket, "model", "", json.dumps(stats)))
+        keys = self.store.dimension_keys("model", 1)["keys"]
+        self.assertEqual(list(keys), ["synthetic-model"])
+        self.assertNotIn("", keys)
+        # dashboard() already skipped it: both surfaces now report the same key set.
+        self.assertEqual([m["model"] for m in self.store.dashboard(1)["models"]],
+                         list(keys))
+
+
 if __name__ == "__main__":
     unittest.main()

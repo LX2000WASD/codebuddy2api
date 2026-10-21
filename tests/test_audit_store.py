@@ -1,6 +1,7 @@
 """Audit regressions: isolated temporary databases, no app/server imports."""
 import concurrent.futures
 from contextlib import closing
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
@@ -12,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.audit_store import SCHEMA_VERSION, AuditStore, _CLEANUP_BATCH
+from app.audit_store import SCHEMA_VERSION, AuditStore, _CLEANUP_BATCH, stats_view
 
 
 class ArchiveAndStorageStatsTests(unittest.TestCase):
@@ -806,6 +807,77 @@ class AuditStoreTests(unittest.TestCase):
         accounting = reopened._db.execute("SELECT request_count FROM detail_accounting").fetchone()[0]
         raw_count = reopened._db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
         self.assertEqual(accounting, raw_count)
+
+
+class P95CoverageGuardTests(unittest.TestCase):
+    """The exact P95 must not vanish because a single detail row was evicted.
+
+    The dashboard computes P95 by nearest rank over the retained request details,
+    while the aggregate keeps counting every request. Requiring the two counts to
+    be exactly equal meant one pruned row hid the percentile for the whole window
+    (measured on production: 88189 retained vs 88190 aggregated -> 30 days of null).
+    """
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.start = datetime(2026, 9, 14, tzinfo=timezone.utc).timestamp()
+        self.enterContext(patch("app.audit_store.time.time", return_value=self.start + 12.5 * 3600))
+        self.store = AuditStore(self.root / "logs.sqlite3")
+        self.addCleanup(self.store.close)
+
+    def _seed(self, count):
+        for index in range(count):
+            self.assertTrue(self.store.record_request({
+                "id": f"r{index}", **self.store.ticket(), "started_at": self.start + 3600,
+                "public_model": "m-a", "profile": "cn-cli", "protocol": "chat",
+                "status_code": 200, "outcome": "success",
+                "duration_ms": 100.0 + index})["ok"])
+
+    def _drop_details(self, count):
+        """Evict the newest detail rows, leaving the aggregates untouched."""
+        self.store._db.execute(
+            "DELETE FROM requests WHERE id IN (SELECT id FROM requests ORDER BY id DESC LIMIT ?)",
+            (count,))
+
+    def test_single_missing_detail_row_no_longer_hides_p95(self):
+        self._seed(100)
+        self._drop_details(1)
+        summary = self.store.dashboard(1, "hour")["summary"]
+        self.assertEqual(summary["duration_ms_known"], 100)  # Aggregates keep all 100.
+        self.assertIsNotNone(summary["p95_duration_ms"])
+        self.assertAlmostEqual(summary["p95_coverage"], 0.99)
+        self.assertEqual(summary["p95_source"], "detail_exact")
+
+    def test_coverage_below_the_floor_still_withholds_p95(self):
+        self._seed(100)
+        self._drop_details(5)
+        summary = self.store.dashboard(1, "hour")["summary"]
+        self.assertIsNone(summary["p95_duration_ms"])
+        self.assertAlmostEqual(summary["p95_coverage"], 0.95)
+        self.assertEqual(summary["p95_source"], "detail_exact")
+
+    def test_full_coverage_reports_one(self):
+        self._seed(10)
+        summary = self.store.dashboard(1, "hour")["summary"]
+        self.assertEqual(summary["p95_coverage"], 1.0)
+        self.assertEqual(summary["p95_duration_ms"], 109.0)
+
+    def test_empty_window_reports_zero_coverage_and_no_p95(self):
+        summary = self.store.dashboard(1, "hour")["summary"]
+        self.assertIsNone(summary["p95_duration_ms"])
+        self.assertEqual(summary["p95_coverage"], 0.0)
+
+    def test_histogram_percentile_is_labelled_approximate(self):
+        """The fusion percentile survives detail cleanup, so it is labelled."""
+        self._seed(10)
+        view = stats_view(self.store.dimension_query("global", None, 1, "hour")["summary"])
+        self.assertEqual(view["p95_source"], "histogram_approx")
+        self.store.clear("details")
+        after = stats_view(self.store.dimension_query("global", None, 1, "hour")["summary"])
+        self.assertEqual(after["p95_source"], "histogram_approx")
+        self.assertIsNotNone(after["latency_p95_ms"])
+        # The exact one has nothing left to measure: the two definitions diverge.
+        self.assertIsNone(self.store.dashboard(1, "hour")["summary"]["p95_duration_ms"])
 
 
 if __name__ == "__main__":

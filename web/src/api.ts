@@ -152,18 +152,185 @@ export async function establishSession(apiKey?: string) {
     if (apiKey !== undefined) throw error;
   }
 }
-// Session-level response cache for heavy pages (model routing): reopening the
-// page renders the last snapshot instantly while a fresh fetch replaces it.
-const resourceCache = new Map<string, unknown>();
+/**
+ * Shared read-through snapshot layer.
+ *
+ * Every page used to own its GET: switching Models → Credentials → Models fetched
+ * /models and /credentials again each time, even when the data was one second old.
+ * This layer keys a snapshot by request path and reuses it for TTL_MS.
+ *
+ * Three rules keep it honest:
+ *   1. Only GETs are cached. Every mutating verb invalidates the whole cache (see
+ *      installWriteInvalidation), so "batch-disable a model, go back to the list"
+ *      can never show the pre-write snapshot.
+ *   2. reload() always bypasses the TTL — every explicit refresh button is a
+ *      forced fetch, never a cache hit.
+ *   3. TTL_MS is deliberately small (5 s). A longer window would make the refresh
+ *      button look broken rather than fast.
+ */
+export const SNAPSHOT_TTL_MS = 5000;
+type Snapshot = { data: unknown; fetchedAt: number };
+const snapshots = new Map<string, Snapshot>();
+
+/**
+ * One shared GET, with the callers that currently care about it.
+ *
+ * `controller` belongs to the *request*, never to a caller: two components asking for
+ * the same key share one promise, so letting either one's unmount abort it would
+ * reject the request the other caller is still waiting on. React StrictMode mounts,
+ * cleans up and remounts every effect, which made that failure routine — the first
+ * pass aborted the request the second pass had already joined, and the page rendered
+ * "cannot reach the admin API" with the data one tick away.
+ *
+ * `refs` is what decides when the request really dies: the last caller releasing it
+ * aborts the request, so an abandoned fetch never holds a connection open.
+ */
+type InflightEntry = {
+  promise: Promise<unknown>;
+  controller: AbortController;
+  refs: number;
+  /** Pending "nobody wants this any more" check, cancelled by a re-acquiring caller. */
+  disposal: ReturnType<typeof setTimeout> | null;
+};
+const inflight = new Map<string, InflightEntry>();
+
+/** Drop every snapshot (and any in-flight bookkeeping). Called on session change. */
+export function clearSnapshots() {
+  snapshots.clear();
+  for (const entry of inflight.values()) {
+    if (entry.disposal !== null) clearTimeout(entry.disposal);
+    entry.controller.abort();
+  }
+  inflight.clear();
+}
+
+/** Drop the snapshots whose key starts with `prefix` (e.g. "/models"). */
+export function invalidateSnapshots(prefix?: string) {
+  if (prefix === undefined) {
+    snapshots.clear();
+    return;
+  }
+  // Copy the keys first: deleting from a Map while iterating it is undefined behaviour.
+  for (const key of Array.from(snapshots.keys())) {
+    if (key.startsWith(prefix)) snapshots.delete(key);
+  }
+}
+
+/**
+ * Freshness of a cached key in epoch ms, or null when it was never fetched.
+ * Pages render "updated N seconds ago" from this instead of guessing.
+ */
+export function snapshotAge(key: string): { fetchedAt: number; ageMs: number } | null {
+  const snapshot = snapshots.get(key);
+  return snapshot
+    ? { fetchedAt: snapshot.fetchedAt, ageMs: Date.now() - snapshot.fetchedAt }
+    : null;
+}
+
+/** A fresh snapshot, or null when it is missing or older than ttlMs. */
+export function sharedSnapshot(key: string, ttlMs = SNAPSHOT_TTL_MS): Snapshot | null {
+  const snapshot = snapshots.get(key);
+  if (!snapshot) return null;
+  return Date.now() - snapshot.fetchedAt <= ttlMs ? snapshot : null;
+}
+
+export function rememberSnapshot(key: string, data: unknown) {
+  snapshots.set(key, { data, fetchedAt: Date.now() });
+}
+
+/**
+ * Joins (or starts) the shared GET for `key` and returns its promise.
+ *
+ * Every caller must pair this with `releaseShared(key)` when it stops caring — on
+ * unmount, or when a newer request supersedes it. The last release aborts the
+ * underlying request after a short grace period, so a StrictMode remount (cleanup
+ * then immediate remount) re-joins the same request instead of killing and refetching
+ * it, while a genuinely abandoned fetch still gets cleaned up.
+ */
+export function acquireShared(
+  key: string,
+  start: (signal: AbortSignal) => Promise<unknown>,
+): Promise<unknown> {
+  const existing = inflight.get(key);
+  if (existing) {
+    // A remount that lands inside the grace period cancels the pending disposal:
+    // this request is wanted again.
+    if (existing.disposal !== null) {
+      clearTimeout(existing.disposal);
+      existing.disposal = null;
+    }
+    existing.refs += 1;
+    return existing.promise;
+  }
+  const controller = new AbortController();
+  const entry: InflightEntry = {
+    promise: start(controller.signal),
+    controller,
+    refs: 1,
+    disposal: null,
+  };
+  inflight.set(key, entry);
+  void entry.promise
+    .catch(() => undefined)
+    .finally(() => {
+      if (inflight.get(key) === entry) inflight.delete(key);
+    });
+  return entry.promise;
+}
+
+/** Releases one caller's interest in a shared GET (see acquireShared). */
+export function releaseShared(key: string) {
+  const entry = inflight.get(key);
+  if (!entry) return;
+  entry.refs -= 1;
+  if (entry.refs > 0 || entry.disposal !== null) return;
+  // Grace period, not an immediate abort: React StrictMode unmounts and remounts the
+  // same effect synchronously, and aborting here would kill the request the remount
+  // is about to re-join (the exact bug this whole layer was rewritten to fix).
+  entry.disposal = setTimeout(() => {
+    if (entry.refs > 0) return;
+    if (inflight.get(key) === entry) inflight.delete(key);
+    entry.controller.abort();
+  }, 0);
+}
+
+/** True when a shared GET for `key` is already on the wire. */
+export function sharedInflight(key: string): Promise<unknown> | null {
+  return inflight.get(key)?.promise ?? null;
+}
+
+/** Reads a snapshot ignoring its age (the `cache: true` seed path). */
+function readAnySnapshot<T>(path: string, normalize: (value: unknown) => T): T | null {
+  const snapshot = snapshots.get(path);
+  return snapshot ? normalize(snapshot.data) : null;
+}
+
+/**
+ * Writes invalidate instead of patching: we never guess which paths a mutation
+ * touched. Hooking axios (rather than each page) means a new page cannot forget.
+ */
+function installWriteInvalidation() {
+  api.interceptors.request.use((config) => {
+    const method = (config.method ?? "get").toUpperCase();
+    if (method !== "GET" && method !== "HEAD") clearSnapshots();
+    return config;
+  });
+}
+installWriteInvalidation();
+
+// A new session means new data: never serve the previous user's snapshot.
 useSession.subscribe((state, prev) => {
-  if (state.status !== "authenticated" || state.csrf !== prev.csrf) resourceCache.clear();
+  if (state.status !== "authenticated" || state.csrf !== prev.csrf) clearSnapshots();
 });
 export function useResource<T>(
   path: string,
   normalize: (value: unknown) => T,
-  options?: { cache?: boolean },
+  options?: { cache?: boolean; ttlMs?: number },
 ) {
-  const cached = options?.cache ? resourceCache.get(path) : undefined;
+  // `cache: true` only seeds the first render synchronously, so a remount paints the
+  // previous payload instead of a spinner. It no longer forces a refetch: whether a
+  // snapshot is still fresh is decided by the TTL below, in exactly one place.
+  const seed = options?.cache ? snapshots.get(path)?.data : undefined;
   const [state, setState] = useState<{
     path: string;
     data: T | null;
@@ -171,15 +338,16 @@ export function useResource<T>(
     error: string | null;
   }>({
     path,
-    data: cached === undefined ? null : normalize(cached),
-    loading: cached === undefined,
+    data: seed === undefined ? null : normalize(seed),
+    loading: seed === undefined,
     error: null,
   });
   const [revision, setRevision] = useState(0);
   const reload = useCallback(() => setRevision((v) => v + 1), []);
+  const ttlMs = options?.ttlMs ?? SNAPSHOT_TTL_MS;
   useEffect(() => {
     const controller = new AbortController();
-    const cachedForPath = options?.cache ? resourceCache.get(path) : undefined;
+    const cachedForPath = options?.cache ? snapshots.get(path)?.data : undefined;
     // Keep same-path data (or a cached snapshot) on screen during refresh;
     // clear stale data when switching to a different path without a cache hit.
     setState((prev) => {
@@ -191,12 +359,27 @@ export function useResource<T>(
             : normalize(cachedForPath);
       return { path, data, loading: data === null, error: null };
     });
-    void api
-      .get<unknown>(path, { signal: controller.signal })
-      .then((response) => {
+    // An explicit reload (revision > 0) is a forced fetch: the user pressed refresh,
+    // so the TTL must never answer with the very snapshot they are replacing.
+    const snapshot = revision === 0 ? sharedSnapshot(path, ttlMs) : null;
+    // `held` tracks whether this effect still owns a reference on the shared request,
+    // so cleanup releases exactly once (and never releases a snapshot hit).
+    let held = false;
+    const request = snapshot
+      ? Promise.resolve(snapshot.data)
+      : (() => {
+          held = true;
+          return acquireShared(path, (signal) =>
+            api.get<unknown>(path, { signal }).then((response) => {
+              rememberSnapshot(path, response.data);
+              return response.data;
+            }),
+          );
+        })();
+    void request
+      .then((data) => {
         if (controller.signal.aborted) return;
-        if (options?.cache) resourceCache.set(path, response.data);
-        setState({ path, data: normalize(response.data), loading: false, error: null });
+        setState({ path, data: normalize(data), loading: false, error: null });
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -207,13 +390,18 @@ export function useResource<T>(
           error: errorMessage(error),
         }));
       });
-    return () => controller.abort();
-  }, [path, revision, normalize, options?.cache]);
+    return () => {
+      // Unmount only says "I no longer care": the caller-side controller stops the
+      // setState, and releaseShared decides whether the request itself may die.
+      controller.abort();
+      if (held) releaseShared(path);
+    };
+  }, [path, revision, normalize, options?.cache, ttlMs]);
   const currentData =
-    state.path === path ? state.data : cached === undefined ? null : normalize(cached);
+    state.path === path ? state.data : options?.cache ? readAnySnapshot(path, normalize) : null;
   return {
     data: currentData,
-    loading: state.path === path ? state.loading : cached === undefined,
+    loading: state.path === path ? state.loading : !options?.cache,
     error: state.path === path ? state.error : null,
     reload,
   };
