@@ -69,13 +69,28 @@ test("fusion chart tick labels stay readable at 390px without distorting the plo
   expect(Number(metrics.viewBox?.split(" ")[2])).toBeLessThan(400);
 
   // Hover detail still lands on the bucket under the cursor at this width.
+  //
+  // The fixture series is generated relative to *now*, so the expected dates move with
+  // the calendar. Pinning literal dates made this assertion expire the day after it was
+  // written (it read "2026-10-15" on 2026-10-21 and could never pass again). Compare the
+  // hovered bucket against the series the page actually received instead.
   const box = (await chart.boundingBox())!;
   await page.mouse.move(box.x + box.width * 0.1, box.y + box.height / 2, { steps: 3 });
   const left = await page.locator("[role=status]").first().textContent();
   await page.mouse.move(box.x + box.width * 0.9, box.y + box.height / 2, { steps: 3 });
   const right = await page.locator("[role=status]").first().textContent();
-  expect(left).toContain("2026-10-12");
-  expect(right).toContain("2026-10-18");
+  // The fixture builds 7 daily buckets ending on the current UTC day
+  // (mock.ts seriesSeed: end = floor(now / 86400) * 86400, count = days), so the
+  // expected labels are derived from the browser clock rather than pinned.
+  const bounds = await page.evaluate(() => {
+    const step = 86400;
+    const end = Math.floor(Date.now() / 1000 / step) * step;
+    const first = end - 6 * step;
+    const day = (seconds: number) => new Date(seconds * 1000).toISOString().slice(0, 10);
+    return { first: day(first), last: day(end) };
+  });
+  expect(left).toContain(bounds.first);
+  expect(right).toContain(bounds.last);
 });
 
 test("fusion chart keeps readable ticks on a desktop viewport too", async ({ page }) => {

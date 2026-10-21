@@ -244,12 +244,20 @@ export function UsageTrend({
   hourlyPartial = false,
   granularity = "day",
   partial = false,
+  onNeedHourly,
 }: {
   rows: RecordValue[];
   hourlyRows?: RecordValue[];
   hourlyPartial?: boolean;
   granularity?: string;
   partial?: boolean;
+  /**
+   * Called once the chart is zoomed in far enough that hourly buckets would be
+   * used. The hourly payload is ~1.35 MB, so the owner fetches it on demand
+   * instead of on mount; without this the dashboard paid for a second full
+   * request on every range change even when nobody zoomed.
+   */
+  onNeedHourly?: () => void;
 }) {
   const t = useT();
   const id = useId();
@@ -307,6 +315,15 @@ export function UsageTrend({
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   });
+
+  // First zoom is the signal that the user wants detail: ask the owner to load
+  // the hourly buckets. It cannot be a "window <= 48h" test, because the zoom
+  // floor itself is 4 days until hourly rows exist — that test could never fire.
+  // Declared before the empty-state return so the hook order stays constant.
+  const wantsHourly = zoom !== null;
+  useEffect(() => {
+    if (wantsHourly) onNeedHourly?.();
+  }, [wantsHourly, onNeedHourly]);
 
   if (!rows.length)
     return <Empty title={partial ? t("trend.partialRange") : t("trend.emptyRange")} />;

@@ -35,11 +35,15 @@ import {
 } from "../components";
 import { prepareImports, type ImportResult } from "../imports";
 import { downloadFilename } from "../downloads";
+import { useDateFormat } from "../i18n";
 import s from "../ui.module.scss";
 
-function expiry(value: unknown, milliseconds = false) {
+// Locale-aware timestamps: a hard-coded toLocaleString("zh-CN") kept rendering
+// a Chinese date order inside the English UI. The formatter comes from
+// useDateFormat() so the output follows the active UI language.
+function expiry(value: unknown, format: (date: Date) => string, milliseconds = false) {
   return typeof value === "number"
-    ? new Date(milliseconds ? value : value * 1000).toLocaleString("zh-CN")
+    ? format(new Date(milliseconds ? value : value * 1000))
     : text(value);
 }
 
@@ -277,6 +281,13 @@ export function Credentials() {
   // flips immediately and rolls back if the write fails. Declared before the
   // derived views below, which read through it.
   const optimistic = useOptimisticOverrides<string>();
+  const detailTab = detail?.tab ?? null;
+  // The effect below keys on the credential *identity*, never on the derived row
+  // object: optimistic.view() is re-evaluated on every render (and always returns
+  // a fresh object while an override is pending), so using it as a dependency
+  // re-ran the fetch on every render — ~520 /admin/logs requests per second after
+  // any toggle inside the drawer, which only stopped when the drawer closed.
+  const detailKey = detail ? text(detail.credential.account_key ?? detail.credential.id) : null;
   // Fusion increment: the drawer reads through the same optimistic overlay as the
   // list so a paused/enabled toggle reflects immediately inside the open drawer.
   const liveDetail = detail
@@ -285,11 +296,10 @@ export function Credentials() {
       )
     : null;
   useEffect(() => {
-    if (!liveDetail || detail?.tab !== "overview") return;
+    if (detailKey === null || detailTab !== "overview") return;
     let cancelled = false;
-    const credKey = text(liveDetail.account_key ?? liveDetail.id);
     void api
-      .get(`/logs?credential=${encodeURIComponent(credKey)}&limit=8`)
+      .get(`/logs?credential=${encodeURIComponent(detailKey)}&limit=8`)
       .then((res) => {
         if (cancelled) return;
         const items = object(res.data).items;
@@ -301,7 +311,7 @@ export function Credentials() {
     return () => {
       cancelled = true;
     };
-  }, [liveDetail, detail?.tab]);
+  }, [detailKey, detailTab]);
   const maintain = (
     action:
       | "refresh"
@@ -358,9 +368,13 @@ export function Credentials() {
   // One ticking clock drives every countdown text on this page (one interval,
   // not one per row).
   const now = useNow();
+  // One locale-aware formatter for every timestamp on the page.
+  const format = useDateFormat();
   const togglePaused = (credential: Credential, paused: boolean) => {
     if (busy) return;
-    optimistic.apply(credential.id, { enabled: !paused, paused });
+    // Only paused is written: the two flags are orthogonal server-side, so
+    // mirroring paused into enabled would show a rollback that never happened.
+    optimistic.apply(credential.id, { paused });
     setBusy(true);
     setError(null);
     // fused contract: PATCH {paused} equals enabled=false
@@ -588,19 +602,25 @@ export function Credentials() {
       </label>
       {/* Fusion increment: paused is orthogonal to enabled — pausing only leaves
           credential selection while check-in / travel / keepalive keep running.
-          /admin/credentials rows do not carry an authoritative "paused" field, so
-          the optimistic overlay (which mirrors paused as enabled=false) is what
-          makes the switch reflect the write. */}
+          The row *does* carry the authoritative flag: the admin whitelist
+          (app/admin_api.py:74) keeps "paused" and pool.snapshot()
+          (converter.py:1942) fills it, so the switch reads c.paused and nothing
+          else. Deriving it from enabled made an externally paused account show
+          "运行中" after a refresh, and made a disabled-but-not-paused account
+          show "已暂停". Unknown (missing) is not paused. */}
       <label className={s.enableSwitch}>
         <input
           type="checkbox"
           role="switch"
           aria-label={`暂停账号 ${c.name ?? c.id}`}
-          checked={c.enabled === false}
-          disabled={busy || typeof c.enabled !== "boolean"}
+          checked={c.paused === true}
+          // Deliberately not gated on the field being present: a row that omits
+          // it must stay operable (the write itself is authoritative), and a
+          // missing flag reads as "not paused" rather than blocking the switch.
+          disabled={busy}
           onChange={(e) => togglePaused(c, e.target.checked)}
         />
-        <span>{c.enabled === false ? "已暂停" : "运行中"}</span>
+        <span>{c.paused === true ? "已暂停" : c.paused === false ? "运行中" : "未知"}</span>
       </label>
     </>
   );
@@ -653,7 +673,9 @@ export function Credentials() {
         {c.last_error_code != null && (
           <small>
             最近错误：{text(lastErrorLabel(c.last_error_code))}
-            {number(c.last_failure_at) !== null ? ` · ${expiry(c.last_failure_at)}` : ""}
+            {number(c.last_failure_at) !== null
+              ? ` · ${expiry(c.last_failure_at, format.dateTime)}`
+              : ""}
           </small>
         )}
         {typeof c.sync_error === "string" && c.sync_error !== "" && (
@@ -714,7 +736,9 @@ export function Credentials() {
           <span>最近调用</span>
           <strong>{stats?.last_model ? text(stats.last_model) : "—"}</strong>
           <small>
-            {stats?.last_request_at !== undefined ? expiry(stats.last_request_at) : "尚无调用"}
+            {stats?.last_request_at !== undefined
+              ? expiry(stats.last_request_at, format.dateTime)
+              : "尚无调用"}
           </small>
         </div>
       </div>
@@ -1023,10 +1047,13 @@ export function Credentials() {
                             </strong>
                             <small>
                               {c.token_expires_at !== undefined
-                                ? expiry(c.token_expires_at, true)
+                                ? expiry(c.token_expires_at, format.dateTime, true)
                                 : c.expiresAt !== undefined
-                                  ? expiry(c.expiresAt, true)
-                                  : expiry(c.expires_at ?? balance?.soonest_expiry)}
+                                  ? expiry(c.expiresAt, format.dateTime, true)
+                                  : expiry(
+                                      c.expires_at ?? balance?.soonest_expiry,
+                                      format.dateTime,
+                                    )}
                             </small>
                           </div>
                           <div>
@@ -1099,10 +1126,13 @@ export function Credentials() {
                               </div>
                               <small>
                                 {c.token_expires_at !== undefined
-                                  ? expiry(c.token_expires_at, true)
+                                  ? expiry(c.token_expires_at, format.dateTime, true)
                                   : c.expiresAt !== undefined
-                                    ? expiry(c.expiresAt, true)
-                                    : expiry(c.expires_at ?? balance?.soonest_expiry)}
+                                    ? expiry(c.expiresAt, format.dateTime, true)
+                                    : expiry(
+                                        c.expires_at ?? balance?.soonest_expiry,
+                                        format.dateTime,
+                                      )}
                               </small>
                             </td>
                             <td>{renderUsageBlock(c, true)}</td>
@@ -1272,7 +1302,7 @@ export function Credentials() {
                           <tbody>
                             {detailLogs.map((log, i) => (
                               <tr key={typeof log.id === "string" ? log.id : i}>
-                                <td>{expiry(log.started_at)}</td>
+                                <td>{expiry(log.started_at, format.dateTime)}</td>
                                 <td>{text(log.public_model ?? log.model)}</td>
                                 <td>
                                   <Badge tone={log.outcome === "success" ? "good" : "warn"}>

@@ -192,7 +192,14 @@ class PauseLedgerBoundTests(unittest.TestCase):
 
 
 class CostLedgerBoundTests(unittest.TestCase):
-    """CostLedger: 256x64 observations must land inside 256 KiB and still read back."""
+    """CostLedger: a full table must fit its own bound, and the bound stays a safety net.
+
+    Same two contracts as AccountPauses above, and for the same reason: at MAX_MODELS=64
+    the declared 256x64 = 16,384 rows measured 1.49 MB against a 256 KiB bound, so the
+    writer shed ~224 accounts on every save and a restart silently lost their cost
+    observations -- the credit floor then judged 81% of accounts on catalog rates alone.
+    Capacity now fits, so shedding is only reachable by overriding MAX_BYTES.
+    """
 
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -202,12 +209,58 @@ class CostLedgerBoundTests(unittest.TestCase):
         with ledger._lock:
             ledger._data = cost_rows(accounts, models)
 
-    def test_a_full_ledger_lands_inside_the_bound_and_still_reads_back(self):
-        """The pre-fix writer produced 1,328,410 B against a 262,144 B reader: 0 rows."""
+    def bounded(self, limit):
+        """A CostLedger whose byte bound is small enough to be reachable in a test."""
+        return type("BoundedCostLedger", (CostLedger,), {"MAX_BYTES": limit})(self.path, ttl=21600)
+
+    # -- A. capacity: a full table fits and round-trips whole -----------------
+
+    def test_a_full_ledger_fits_and_reads_back_whole(self):
+        """Every declared account must survive a restart, not just the freshest 48."""
         ledger = CostLedger(self.path, ttl=21600)
         self.fill(ledger, COST_ACCOUNTS, COST_MODELS)
-        self.assertFalse(ledger._save_locked())
+        self.assertTrue(ledger._save_locked())          # Fully durable, nothing shed.
+        self.assertIsNone(ledger.last_error)
+        self.assertEqual(ledger.shed_total, 0)
         self.assertLessEqual(self.path.stat().st_size, COST_BYTES)
+        restored = CostLedger(self.path, ttl=21600)
+        self.assertEqual(set(restored._data), set(cost_rows(COST_ACCOUNTS, COST_MODELS)),
+                         "满表重启后必须一个账号都不丢")
+
+    def test_the_worst_case_row_the_writer_allows_still_fits_at_capacity(self):
+        """The bound must cover the 128-character model id the writer itself accepts."""
+        ledger = CostLedger(self.path, ttl=21600)
+        with ledger._lock:
+            ledger._data = {f"{index:064x}": {("m" * 123) + f"-{model:04d}": {
+                "cost_per_1k": 1.2345678901234567, "samples": 1, "last_seen": NOW}
+                for model in range(COST_MODELS)}
+                for index in range(COST_ACCOUNTS)}
+        self.assertTrue(ledger._save_locked())
+        self.assertEqual(ledger.shed_total, 0)
+        self.assertEqual(len(CostLedger(self.path, ttl=21600)._data), COST_ACCOUNTS)
+
+    def test_the_safety_net_is_not_reachable_by_the_normal_write_path(self):
+        """Keep the two constants from drifting apart again.
+
+        A full table is ~480 KB against the 1 MiB bound, so only a hand-edited file or a
+        future widening of MAX_ACCOUNTS/MAX_MODELS can reach the bound. If this headroom
+        floor breaks, shedding-at-capacity is back.
+        """
+        ledger = CostLedger(self.path, ttl=21600)
+        self.fill(ledger, COST_ACCOUNTS, COST_MODELS)
+        content, shed = ledger._serialize_locked()
+        self.assertEqual(shed, 0)
+        self.assertLessEqual(len(content), COST_BYTES)
+        self.assertGreaterEqual(COST_BYTES - len(content), 256 * 1024,
+                                "余量不足；重新核对 MAX_ACCOUNTS×MAX_MODELS 与 MAX_BYTES")
+
+    # -- B. shedding: the safety net still works when the bound is exceeded ----
+
+    def test_shedding_lands_inside_the_bound_and_still_reads_back(self):
+        ledger = self.bounded(64 * 1024)
+        self.fill(ledger, COST_ACCOUNTS, COST_MODELS)
+        self.assertFalse(ledger._save_locked())
+        self.assertLessEqual(self.path.stat().st_size, 64 * 1024)
         self.assertEqual(ledger.last_error, "capacity")
         restored = CostLedger(self.path, ttl=21600)
         self.assertGreater(len(restored.detail(now=NOW)), 0)
@@ -215,7 +268,7 @@ class CostLedgerBoundTests(unittest.TestCase):
 
     def test_shedding_keeps_the_freshest_observations(self):
         """Stalest account first: it is the one the TTL would drop on its own."""
-        ledger = CostLedger(self.path, ttl=21600)
+        ledger = self.bounded(64 * 1024)
         with ledger._lock:
             ledger._data = cost_rows(COST_ACCOUNTS, COST_MODELS)
             ledger._data["f" * 64] = {"fresh-model": {"cost_per_1k": 9.0, "samples": 1,
@@ -226,7 +279,7 @@ class CostLedgerBoundTests(unittest.TestCase):
         self.assertIsNone(restored.cost_of(f"{0:064x}", "model-name-000", now=NOW))
 
     def test_an_observation_that_was_shed_is_not_reported_as_durable(self):
-        ledger = CostLedger(self.path, ttl=21600)
+        ledger = self.bounded(64 * 1024)
         self.fill(ledger, COST_ACCOUNTS, COST_MODELS)
         self.assertFalse(ledger.note("f" * 64, "new-model", 2.0, 1000, now=NOW))
         self.assertEqual(ledger.last_error, "capacity")

@@ -63,6 +63,10 @@ export function compact(value: unknown): string {
   if (abs >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
   return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(n);
 }
+/** HTTP status of a failed request, or null when the failure never reached the server. */
+export function statusOf(error: unknown): number | null {
+  return axios.isAxiosError(error) ? (error.response?.status ?? null) : null;
+}
 export function errorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
     const bodyData: unknown = error.response?.data;
@@ -220,6 +224,8 @@ export type ModelRule = {
   upstream_id?: string;
   custom?: boolean;
   available?: boolean;
+  /** Live candidate accounts the backend would route to right now (preview.candidates). */
+  available_credentials?: number;
   enabled: boolean;
   keep_original: boolean;
   region: string;
@@ -259,6 +265,10 @@ export function modelResponse(value: unknown): {
       upstream_id: typeof m.upstream_id === "string" ? m.upstream_id : m.id,
       custom: m.custom === true,
       available: typeof m.available === "boolean" ? m.available : undefined,
+      available_credentials:
+        typeof m.available_credentials === "number" && Number.isFinite(m.available_credentials)
+          ? m.available_credentials
+          : undefined,
       enabled: m.enabled,
       keep_original: m.keep_original,
       region: typeof m.region === "string" ? m.region : "",
@@ -280,7 +290,62 @@ export function modelResponse(value: unknown): {
         : undefined,
   };
 }
-export type Credential = RecordValue & { id: string; name: string | null };
+/**
+ * Model lock aggregation from /admin/diagnostic (app/diagnostic.py:93-150). Locks are
+ * grouped by (profile, model), so one model can appear several times — the model page
+ * ranks them instead of assuming a single entry.
+ */
+export type ModelLock = {
+  profile: string;
+  model: string;
+  locked_accounts: number;
+  account_ids: string[];
+  earliest_unlock_at: number | null;
+  latest_unlock_at: number | null;
+  all_unlock_in_seconds: number | null;
+  kind: "rate_limit" | "model_block";
+  reason: string;
+  /** Backend model blocks are advisory: they describe an upstream outage, not a quota. */
+  advisory?: boolean;
+};
+export type ModelLocks = {
+  generated_at: number;
+  model_locks: ModelLock[];
+};
+export function normalizeModelLocks(value: unknown): ModelLocks {
+  const data = object(value, "诊断");
+  if (!Array.isArray(data.model_locks)) throw new Error("诊断响应缺少 model_locks");
+  const locks: ModelLock[] = [];
+  for (const raw of data.model_locks) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const row = raw as RecordValue;
+    if (typeof row.model !== "string") continue;
+    const kind = row.kind === "model_block" ? "model_block" : "rate_limit";
+    const ids = Array.isArray(row.account_ids)
+      ? row.account_ids.filter((id): id is string => typeof id === "string")
+      : [];
+    const seconds = number(row.all_unlock_in_seconds);
+    locks.push({
+      profile: typeof row.profile === "string" ? row.profile : "unknown",
+      model: row.model,
+      locked_accounts: number(row.locked_accounts) ?? ids.length,
+      account_ids: ids,
+      earliest_unlock_at: number(row.earliest_unlock_at),
+      latest_unlock_at: number(row.latest_unlock_at),
+      all_unlock_in_seconds: seconds,
+      kind,
+      reason: typeof row.reason === "string" ? row.reason : "",
+      advisory: row.advisory === true ? true : undefined,
+    });
+  }
+  return { generated_at: number(data.generated_at) ?? 0, model_locks: locks };
+}
+export type Credential = RecordValue & {
+  id: string;
+  name: string | null;
+  /** Orthogonal to enabled: paused leaves the account in the pool for check-in/travel. */
+  paused?: boolean;
+};
 export function credentialResponse(value: unknown): Credential[] {
   return list(object(value).credentials, "凭证").map((c) => {
     const id = c.account_key ?? c.id;
@@ -293,6 +358,7 @@ export function credentialResponse(value: unknown): Credential[] {
       "travel_supported",
       "trial_supported",
       "daily_chat_supported",
+      "paused",
     ])
       if (c[field] !== undefined && typeof c[field] !== "boolean")
         throw new Error("自动任务状态必须为布尔值");

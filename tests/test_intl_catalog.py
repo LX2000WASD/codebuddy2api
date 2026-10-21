@@ -170,15 +170,26 @@ class RoutingTests(fixtures.GatewayFixture, unittest.TestCase):
 
 
     def test_disabled_deleted_or_misowned_sources_do_not_authorize_shared_models(self):
+        """Shared sources must be re-derived whenever the catalogs or the enabled flags move.
+
+        Production never edits the published catalogs in place: _publish_model_cache() and
+        every admin edit replace the dict, and a credential toggle bumps the control store's
+        revision, which is what invalidates the derived shared sources. This test mutates in
+        place, so it signals the change the way production does -- invalidate_model_table()
+        -- and asserts the authority rules still hold after each re-derivation.
+        """
         self.configure()
         target = self.fx.entries["intl-cli"]
         self.assertIsNotNone(caps.entry_model(gateway, target, "shared-model"))
+        gateway.invalidate_model_table()
         with patch.object(gateway.model_policy, "credential_enabled", side_effect=lambda config, entry: entry["profile"] != "intl-work"):
             self.assertIsNone(caps.entry_model(gateway, target, "shared-model"))
         source = gateway.CONFIG["account_catalogs"][self.fx.entries["intl-work"]["account_key"]]
         source["profile"] = "cn-work"
+        gateway.invalidate_model_table()
         self.assertIsNone(caps.entry_model(gateway, target, "shared-model"))
         del gateway.CONFIG["account_catalogs"][self.fx.entries["intl-work"]["account_key"]]
+        gateway.invalidate_model_table()
         self.assertIsNone(caps.entry_model(gateway, target, "shared-model"))
 
     def test_capabilities_are_rechecked_after_source_changes_during_header_acquisition(self):

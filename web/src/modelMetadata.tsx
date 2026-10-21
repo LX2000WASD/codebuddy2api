@@ -1,9 +1,13 @@
 import { Fragment, useState } from "react";
 import type { ModelRule, RecordValue } from "./api";
 import { Badge, DataValue, Empty, Panel, profileLabel } from "./components";
+import { t } from "./i18n";
 import s from "./ui.module.scss";
 
 type Facts = Pick<ModelRule, "capabilities" | "limits" | "metadata_by_profile">;
+/** Routing scope shown next to the account count in the detail drawer. */
+type RoutingFacts = Partial<Pick<ModelRule, "region" | "profile" | "credential_ids">> &
+  Pick<ModelRule, "available_credentials">;
 const record = (value: unknown): RecordValue =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as RecordValue)
@@ -364,7 +368,50 @@ function CatalogSource({ entry }: { entry: RecordValue }) {
   );
 }
 
-export function ModelMetadata({ model }: { model: Facts }) {
+/**
+ * Which accounts can actually route to this model right now. The count comes from the
+ * backend's own routing preview (available_credentials); the scope line explains where
+ * that number comes from, so "3 accounts" is never mistaken for "all accounts".
+ */
+function AvailableAccounts({ model, total }: { model: RoutingFacts; total: number | null }) {
+  const available = model.available_credentials;
+  const bindings = model.credential_ids ?? [];
+  const tone = available === undefined ? s.availMuted : available > 0 ? s.availGood : s.availBad;
+  const scope = bindings.length
+    ? t("models.detail.strictBinding", { count: bindings.length })
+    : model.region
+      ? t("models.detail.regionRoute", { region: profileLabel(model.region) })
+      : t("models.detail.autoRoute");
+  return (
+    <Panel title={t("models.detail.accounts")}>
+      <div className={s.availStack}>
+        <span className={`${s.availBadge} ${tone}`}>
+          {available === undefined
+            ? t("models.avail.unknown")
+            : total === null
+              ? t("models.avail.accountsOnly", { available })
+              : t("models.avail.accounts", { available, total })}
+        </span>
+        <small className={s.availDetail}>{scope}</small>
+        <small className={s.availDetail}>
+          {available === undefined
+            ? t("models.avail.reason.unknown")
+            : available > 0
+              ? t("models.detail.accountsHint")
+              : t("models.detail.noAccounts")}
+        </small>
+      </div>
+    </Panel>
+  );
+}
+
+export function ModelMetadata({
+  model,
+  totalAccounts = null,
+}: {
+  model: Facts;
+  totalAccounts?: number | null;
+}) {
   const [selected, setSelected] = useState("");
   const sources = variants(model.metadata_by_profile);
   const active = sources.find(([profile]) => profile === selected) ?? sources[0];
@@ -374,6 +421,7 @@ export function ModelMetadata({ model }: { model: Facts }) {
       <p className={s.note}>
         以下为上游声明，不代表模型原生模态或实测保证；目录参数不会自动覆盖客户端请求。
       </p>
+      <AvailableAccounts model={model as Facts & RoutingFacts} total={totalAccounts} />
       <Panel title="能力概要">
         <div className={s.modelMetadata}>
           <CapabilityBadges model={model} full />

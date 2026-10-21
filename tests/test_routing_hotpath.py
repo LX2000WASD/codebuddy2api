@@ -33,6 +33,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow direct execution.
 
 import converter
+from app import credits
 from app.control_store import ControlStore
 
 REAL_STAT = Path.stat
@@ -123,6 +124,161 @@ class StatBoundTests(HotPathFixture):
                           side_effect=converter._configured_profiles) as cached:
             pool.pick(None, MODEL)
         self.assertGreater(cached.call_count, 0)
+
+
+class RoutingCounter:
+    """Count pool walks and shared-source recomputations made by one selection."""
+
+    def __init__(self):
+        self.walks = 0          # CredentialPool.entries() calls (any caller).
+        self.copied = 0         # entries copied by those walks.
+        self.shared_walks = 0   # walks made from inside the shared-source path.
+        self.recomputes = 0     # _shared_catalog_sources() cache misses.
+        self._depth = 0
+        self._patches = []
+
+    def __enter__(self):
+        real_entries = converter.CredentialPool.entries
+        real_uncached = converter._shared_catalog_sources_uncached
+
+        def counting_entries(pool_self, *args, **kwargs):
+            self.walks += 1
+            self.copied += len(pool_self._entries)
+            if self._depth:
+                self.shared_walks += 1
+            return real_entries(pool_self, *args, **kwargs)
+
+        def counting_uncached(scope="models"):
+            self.recomputes += 1
+            self._depth += 1
+            try:
+                return real_uncached(scope)
+            finally:
+                self._depth -= 1
+
+        for target, name, value in (
+                (converter.CredentialPool, "entries", counting_entries),
+                (converter, "_shared_catalog_sources_uncached", counting_uncached)):
+            self._patches.append(patch.object(target, name, value))
+            self._patches[-1].start()
+        return self
+
+    def __exit__(self, *exc):
+        for active in reversed(self._patches):
+            active.stop()
+        return False
+
+
+class SharedCatalogSourcesTests(HotPathFixture):
+    """The international pool must not re-walk the pool once per account.
+
+    _catalog_for() consults _shared_catalog_sources() once per account, and that function
+    used to call pool.entries() every time, so selection was quadratic in the pool size:
+    a 60-account international pool copied every entry 7807 times per pick (measured;
+    see /tmp/t3_prod.py). Only the pool walk is bounded here -- the per-call cached lookup
+    itself stays, because its inputs can move between two calls inside one request.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(patch.dict(converter.CONFIG, {"account_catalogs": {}}))
+
+    def intl_pool(self, count):
+        """Build a routable international pool: shared catalogs plus a funded ledger.
+
+        An international account with no balance is refused by the credit floor, and
+        share_models() only inherits from accounts whose catalog is published, so both
+        pieces are needed before the scenario under test exists at all.
+        """
+        paths = [self.credential(index, domain=INTL_DOMAIN) for index in range(count)]
+        pool = self.pool(paths)
+        ledger = credits.CreditLedger(self.root / "ledger.json")
+        pool.set_ledger(ledger)
+        self.enterContext(patch.dict(converter.CONFIG, {"ledger": ledger}))
+        for entry in pool._entries:
+            ledger.update_credits(entry["id"], {
+                "credits": 5000, "intl": True,
+                "segments": [{"credits": 5000, "remaining": 5000,
+                              "expires_at": time.time() + 86400 * 30}]})
+        accounts = {entry["account_key"]: {
+            "profile": entry["profile"],
+            "models": [{"id": MODEL, "supportsToolCall": True, "credits": "x1"}],
+            "serves": [{"id": MODEL, "supportsToolCall": True, "credits": "x1"}]}
+            for entry in pool._entries}
+        self.enterContext(patch.dict(converter.CONFIG, {"account_catalogs": accounts}))
+        return pool
+
+    def domestic_pool(self, count):
+        """Same shape as intl_pool(), but with domestic accounts as the baseline."""
+        paths = [self.credential(index, domain=CN_DOMAIN) for index in range(count)]
+        pool = self.pool(paths)
+        accounts = {entry["account_key"]: {
+            "profile": entry["profile"],
+            "models": [{"id": MODEL, "supportsToolCall": True, "credits": "x1"}],
+            "serves": [{"id": MODEL, "supportsToolCall": True, "credits": "x1"}]}
+            for entry in pool._entries}
+        self.enterContext(patch.dict(converter.CONFIG, {"account_catalogs": accounts}))
+        return pool
+
+    def test_an_international_pool_is_routable_at_all(self):
+        """Guard the scenario itself: without this the bound below could pass on a no-op."""
+        pool = self.intl_pool(12)
+        self.assertIsNotNone(pool.pick(None, MODEL), "an intl pool must be routable")
+        self.assertIsNotNone(pool.headers_for(None, MODEL))
+
+    def test_an_international_pick_costs_no_more_pool_walks_than_a_domestic_one(self):
+        """Selection cost must not depend on how many accounts share their catalogs.
+
+        Before the fix an international pool walked itself once per account on top of the
+        domestic cost: 539 walks at N=14, 2107 at N=30 and 7807 at N=60, versus 75/155/305
+        for a domestic pool of the same size. Equal counts now prove the extra factor is
+        gone, and the recompute bound keeps the derived catalogs from being rebuilt per
+        account if a future change starts invalidating more often.
+        """
+        for count in (12, 50):
+            with self.subTest(accounts=count):
+                intl = self.intl_pool(count)
+                self.assertIsNotNone(intl.headers_for(None, MODEL))
+                with RoutingCounter() as counter:
+                    self.assertIsNotNone(intl.headers_for(None, MODEL))
+                intl_walks, recomputes = counter.walks, counter.recomputes
+                self.assertLessEqual(recomputes, 2,
+                                     f"{count} intl accounts recomputed {recomputes}x")
+                self.assertLessEqual(counter.shared_walks, recomputes,
+                                     "shared sources must only walk the pool when recomputing")
+
+                domestic = self.domestic_pool(count)
+                self.assertIsNotNone(domestic.headers_for(None, MODEL))
+                with RoutingCounter() as baseline:
+                    self.assertIsNotNone(domestic.headers_for(None, MODEL))
+                self.assertLessEqual(intl_walks, baseline.walks,
+                                     f"intl pick walked {intl_walks}x, domestic {baseline.walks}x")
+
+    def test_the_cached_sources_still_react_to_every_input(self):
+        """The cache must not outlive a membership, enabled-flag or catalog change."""
+        pool = self.intl_pool(4)
+        target = pool._entries[0]
+        sources = converter._shared_catalog_sources("models")
+        self.assertEqual(len(sources), 4)
+
+        # A control store toggle moves the control revision, which is part of the key.
+        control = ControlStore(self.root / "control.sqlite3")
+        self.enterContext(_closing(control))
+        with patch.dict(converter.CONFIG, {"control_store": control}):
+            self.assertEqual(len(converter._shared_catalog_sources("models")), 4)
+            control.set_credential(target["account_key"], False)
+            self.assertEqual(len(converter._shared_catalog_sources("models")), 3)
+            control.set_credential(target["account_key"], True)
+            self.assertEqual(len(converter._shared_catalog_sources("models")), 4)
+
+        # Pruning an account bumps pool.revision.
+        Path(pool._entries[-1]["id"]).unlink()
+        pool.prune()
+        self.assertEqual(len(converter._shared_catalog_sources("models")), 3)
+
+        # Republishing the catalogs object (what every admin edit does) is a new identity.
+        with patch.dict(converter.CONFIG, {"account_catalogs": {}}):
+            self.assertEqual(converter._shared_catalog_sources("models"), [])
 
 
 class ConfiguredProfilesCacheTests(HotPathFixture):

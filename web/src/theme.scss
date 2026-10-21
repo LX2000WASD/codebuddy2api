@@ -9,6 +9,10 @@
   --page: hsl(var(--hue) 25% 93%);
   --surface: hsl(var(--hue) 22% 99%);
   --surface-tint: hsl(var(--hue) 30% 91%);
+  /* Cards sit one step above the page but stay translucent so the glass layers
+     underneath still read. Ten rules referenced --card before it existed, which
+     resolved to rgba(0,0,0,0) and flattened the credential cards. */
+  --card: color-mix(in srgb, var(--surface) 55%, transparent);
   --soft: hsl(var(--hue) 24% 94%);
   --selected: hsl(var(--hue) 34% 85% / 0.72);
   --highlight: #ffffffbf;
@@ -50,6 +54,7 @@
   --page: #111c18;
   --surface: #21332b;
   --surface-tint: #17271f;
+  --card: color-mix(in srgb, var(--surface) 62%, transparent);
   --soft: #293d33;
   --selected: #345846ad;
   --highlight: #b0d5bf30;

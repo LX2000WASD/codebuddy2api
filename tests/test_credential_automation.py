@@ -225,6 +225,40 @@ class AutomationTests(unittest.TestCase):
         self.travel_mock.assert_not_called()
         self.assertEqual(self.requests, [])
 
+    def test_the_manual_sync_clears_a_stale_refusal_for_an_exempt_account(self):
+        """The card's 同步 button runs with checkin=False and must clear the old 403 too.
+
+        The exemption branch used to be gated on checkin, so only the periodic sweep could
+        rewrite the ledger: an enterprise account that had once been refused kept showing
+        "状态查询 · HTTP 403" after every manual sync, because the automatic travel branch
+        is skipped for it and nothing else wrote the record.
+        """
+        self.add_account('enterprise-tenant', 'cn-cli', enterprise='fylzonuezfnk')
+        self.configure(profiles=('cn-cli', 'enterprise-tenant'))
+        entry = self.entries['enterprise-tenant']
+        self.ledger.update_travel(entry['id'], {'ok': False, 'state': 'unknown', 'phase': 'status',
+                                                'error_kind': 'http', 'http_status': 403, 'code': 403,
+                                                'message': '状态查询失败，未执行写操作'})
+        with patch.object(credits, 'fetch_credits', return_value={'credits': 10, 'intl': False}):
+            converter._sync_credits(self.pool, self.ledger, entry, checkin=False, failed=set())
+        travel_row = self.ledger.entry(entry['id'])['travel']
+        self.assertEqual(travel_row['state'], 'unavailable',
+                         "手工同步也必须把陈旧 403 换成终端豁免")
+        self.assertIsNone(travel_row.get('http_status'))
+        self.assertIn('企业账号', travel_row['message'])
+
+    def test_the_manual_sync_leaves_a_supported_account_alone(self):
+        """The exemption must not fire for accounts that can travel."""
+        entry = self.entries['cn-cli']
+        self.ledger.update_travel(entry['id'], {'ok': False, 'state': 'unknown', 'phase': 'status',
+                                                'error_kind': 'http', 'http_status': 403, 'code': 403,
+                                                'message': '状态查询失败，未执行写操作'})
+        with patch.object(credits, 'fetch_credits', return_value={'credits': 10, 'intl': False}):
+            converter._sync_credits(self.pool, self.ledger, entry, checkin=False, failed=set())
+        travel_row = self.ledger.entry(entry['id'])['travel']
+        self.assertNotEqual(travel_row.get('state'), 'unavailable',
+                            "可旅行账号的旧状态不应被豁免逻辑覆盖")
+
     def test_a_personal_account_keeps_travelling(self):
         entry = self.entries['cn-cli']
         self.assertFalse(entry.get('enterprise') is True)

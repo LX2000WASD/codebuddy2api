@@ -69,13 +69,18 @@ class LockScopeFixture(unittest.TestCase):
         return pool
 
     def held(self):
-        """Whether the calling thread currently holds the pool lock."""
-        # RLock has no public holder accessor; ownership of the private fields is stable
-        # across the CPython versions this project supports, and the test only needs a
-        # best-effort observation, never a lock-ordering decision.
+        """Whether the calling thread currently holds the pool lock.
+
+        RLock._is_owned() is the only ownership accessor CPython exposes (there is no
+        _owner attribute); a re-entrant acquire is owned by the calling thread, which is
+        exactly the observation these tests need. Reading a missing attribute here would
+        silently turn every assertion below into a tautology.
+        """
         lock = self.pool._lock
-        owner = getattr(lock, "_owner", None)
-        return owner is not None and owner == threading.get_ident()
+        owned = getattr(lock, "_is_owned", None)
+        if owned is None:      # A non-reentrant lock has no ownership notion to observe.
+            return False
+        return bool(owned())
 
 
 class LockScopeTests(LockScopeFixture):
@@ -109,6 +114,44 @@ class LockScopeTests(LockScopeFixture):
         with patch.object(self.state, "flush", side_effect=observing_flush):
             self.pool.cooldown(cm, reason="backend HTTP 401")
         self.assertEqual(observations, [False])
+
+    def test_a_transport_failure_logs_outside_the_pool_lock(self):
+        """The audit row must not be written while the pool lock is held.
+
+        note_transport_failure() reported both the below-threshold count and the
+        out-of-pool verdict through _log(), which writes an audit row: a synchronous
+        SQLite commit (~0.85 ms measured) taken under the lock that every pick needs. A
+        transport flap therefore serialized all selection behind the failing account.
+        """
+        observations = []
+
+        def observing_log(message):
+            # _log() is what writes the audit row; observing it here measures the same
+            # scope without depending on the audit store's own wiring.
+            observations.append((self.held(), message))
+            self.logs.append(message)
+
+        cm = self.pool._entries[0]["cm"]
+        with patch.object(converter, "_log", side_effect=observing_log):
+            self.pool.note_transport_failure(cm)                       # Below threshold.
+            for _ in range(4):                                         # Reaches the threshold.
+                self.pool.note_transport_failure(cm)
+        self.assertEqual(len(observations), 5, "每次传输失败都应留一条日志")
+        self.assertEqual([held for held, _ in observations], [False] * 5,
+                         "传输失败的日志（含审计写入）必须在 pool._lock 之外")
+        self.assertTrue(any("传输层连败出池" in line for _, line in observations), observations)
+
+    def test_the_transport_verdict_still_lands_inside_the_lock(self):
+        """Moving the log out must not move the state change out with it."""
+        cm = self.pool._entries[0]["cm"]
+        entry = next(e for e in self.pool.entries() if e["cm"] is cm)
+        with patch.dict(converter.CONFIG, {"transport_fail_threshold": 2,
+                                           "transport_penalty_seconds": 600}):
+            self.assertFalse(self.pool.note_transport_failure(cm))
+            self.assertTrue(self.pool.note_transport_failure(cm))
+        self.assertGreater(self.pool._transport_penalty.get(entry["id"], 0), time.time(),
+                           "出池截止时间必须在内存态生效")
+        self.assertTrue(any("传输层连败出池" in line for line in self.logs), self.logs)
 
     def test_the_cooldown_is_visible_to_selection_before_the_commit(self):
         """Selection reads memory, so the verdict must be in force the moment the lock drops."""

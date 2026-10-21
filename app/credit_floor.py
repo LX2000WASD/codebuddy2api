@@ -36,8 +36,14 @@ from .state_store import serialize_bounded
 
 VERSION = 1
 MAX_ACCOUNTS = 256          # Bounded table, matching the credential pool's practical size.
-MAX_MODELS = 64             # Bounded per-account model rows.
-MAX_BYTES = 256 * 1024      # Bounded read *and* write.
+# Bounded per-account model rows. Capacity has to fit inside MAX_BYTES, or the writer sheds
+# rows on every save and the reader drops whatever is left: at 64 models the declared 16,384
+# rows measured 1.49 MB, so a 256 KiB bound silently lost 208 of 256 accounts per restart.
+# A row costs ~117 B with a realistic 32-character model id (measured, see
+# tests/test_ledger_bounds.py), so 256 x 16 = 4,096 rows need ~480 KB and 1 MiB leaves the
+# 128-character worst case (~874 KB) fully inside the bound.
+MAX_MODELS = 16
+MAX_BYTES = 1024 * 1024     # Bounded read *and* write.
 DEFAULT_TTL_S = 6 * 3600    # Observation lifetime: a free window must not revive cross-period.
 DEFAULT_ALPHA = 0.3         # EMA smoothing: roughly five samples to converge.
 
@@ -77,6 +83,10 @@ multiplier_value = _multiplier_value
 class CostLedger:
     """Thread-safe, optionally persisted EMA charge ledger keyed by (account, model)."""
 
+    # Bound as a class attribute so the reader and the writer always share one value, and
+    # so a test can lower it to reach the shedding path that capacity now makes unreachable.
+    MAX_BYTES = MAX_BYTES
+
     def __init__(self, path=None, *, alpha: float = DEFAULT_ALPHA, ttl: float = DEFAULT_TTL_S):
         self.path = str(path) if path else None
         self.alpha = min(1.0, max(0.01, float(alpha or DEFAULT_ALPHA)))
@@ -97,10 +107,10 @@ class CostLedger:
         """Adopt only a fully valid snapshot; anything else leaves the ledger empty."""
         try:
             with open(self.path, "rb") as stream:
-                raw = stream.read(MAX_BYTES + 1)
+                raw = stream.read(self.MAX_BYTES + 1)
         except OSError:
             return
-        if len(raw) > MAX_BYTES:
+        if len(raw) > self.MAX_BYTES:
             return
         try:
             document = json.loads(raw.decode("utf-8"))
@@ -138,7 +148,7 @@ class CostLedger:
         the next sample, so the caller must not be told its write was fully durable.
         """
         return serialize_bounded(
-            {"version": VERSION, "accounts": self._data}, MAX_BYTES, rows_field="accounts",
+            {"version": VERSION, "accounts": self._data}, self.MAX_BYTES, rows_field="accounts",
             # Stalest account first: its observations expire soonest, so it is the one the
             # ledger would forget on its own; the freshest prices survive.
             urgency=lambda key, models: max((row["last_seen"] for row in models.values()),

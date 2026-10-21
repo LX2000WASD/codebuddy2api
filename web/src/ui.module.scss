@@ -56,7 +56,7 @@ $white: var(--page);
   border: 1px solid #dce4d5;
   background: #fff;
   color: $ink;
-  border-radius: 9px;
+  border-radius: 8px;
   min-height: 36px;
   padding: 7px 13px;
   cursor: pointer;
@@ -194,7 +194,7 @@ $white: var(--page);
   top: 16px;
   bottom: 16px;
   padding: 24px 14px;
-  border-radius: 26px;
+  border-radius: 16px;
   transition: width 180ms ease;
   display: flex;
   flex-direction: column;
@@ -219,7 +219,7 @@ $white: var(--page);
 }
 .brandIcon {
   background: $green;
-  border-radius: 13px;
+  border-radius: 12px;
   display: grid;
   place-items: center;
   color: #fff;
@@ -243,7 +243,7 @@ $white: var(--page);
   display: flex;
   align-items: center;
   gap: 13px;
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 12px 15px;
   color: #697660;
   text-decoration: none;
@@ -279,7 +279,7 @@ $white: var(--page);
   height: 64px;
   margin: 16px 24px 0;
   padding: 0 24px;
-  border-radius: 22px;
+  border-radius: 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -339,6 +339,25 @@ $white: var(--page);
   align-items: center;
   flex-wrap: wrap;
 }
+/* A drawer's final action row used to sit flush under the content it acts on, which
+   read as if the buttons belonged to the last list item. Only drawers that actually
+   end in an action row become a flex column (so no other drawer's spacing moves),
+   and the row is then pushed to the bottom edge with a divider. */
+.drawerBody:has(> .actions:last-child) {
+  display: flex;
+  flex-direction: column;
+}
+.drawerBody:has(> .actions:last-child) > * {
+  flex-shrink: 0;
+}
+.drawerBody > .actions:last-child {
+  margin: auto -28px -42px;
+  padding: 16px 28px;
+  border-top: 1px solid var(--line);
+  background: var(--card);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
 .primary {
   background: linear-gradient(140deg, #568a3c, #386e35);
   border-color: #437b35;
@@ -372,7 +391,7 @@ $white: var(--page);
 }
 .stat {
   @include glass(0.48, 18px);
-  border-radius: 22px;
+  border-radius: 16px;
   padding: 20px 21px 18px;
 }
 .stat > div {
@@ -412,7 +431,7 @@ $white: var(--page);
 }
 .kpiCard {
   @include glass(0.48, 18px);
-  border-radius: 20px;
+  border-radius: 16px;
   padding: 16px 18px 12px;
   min-width: 0;
 }
@@ -500,7 +519,7 @@ $white: var(--page);
     box-shadow 0.15s ease;
 }
 .zoomReset:hover {
-  color: var(--accent);
+  color: var(--strong);
   border-color: var(--accent);
   box-shadow: 0 2px 10px var(--shadow);
 }
@@ -545,7 +564,7 @@ $white: var(--page);
   flex-direction: column;
   gap: 6px;
   padding: 14px 16px 12px;
-  border-radius: 18px;
+  border-radius: 16px;
   text-align: left;
   cursor: pointer;
   transition:
@@ -571,7 +590,7 @@ $white: var(--page);
   color: var(--muted);
 }
 .channelHead span:last-child {
-  font-size: 10.5px;
+  font-size: 10px;
   padding: 2px 8px;
   border-radius: 999px;
   background: var(--card);
@@ -586,7 +605,7 @@ $white: var(--page);
   font-variant-numeric: tabular-nums;
 }
 .channelCard small {
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--muted);
 }
 .channelBar {
@@ -677,7 +696,7 @@ $white: var(--page);
   padding: 16px 18px;
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 16px;
   min-width: 0;
 }
 .credCardHead {
@@ -781,7 +800,7 @@ $white: var(--page);
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   padding: 11px 12px;
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--surface);
   border: 1px solid var(--line);
 }
@@ -796,7 +815,7 @@ $white: var(--page);
   color: var(--muted);
 }
 .credUsageBox strong {
-  font-size: 13.5px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -826,7 +845,7 @@ $white: var(--page);
   color: var(--muted);
 }
 .tableUsage strong {
-  font-size: 11.5px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 .credPager {
@@ -837,7 +856,7 @@ $white: var(--page);
   flex-wrap: wrap;
   padding: 12px 22px 18px;
   border-top: 1px solid var(--line);
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--muted);
 }
 .credPagerRight {
@@ -865,12 +884,12 @@ $white: var(--page);
   flex-direction: column;
   gap: 3px;
   padding: 12px 14px;
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--card);
   border: 1px solid var(--line);
 }
 .detailKpis span {
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--muted);
 }
 .detailKpis strong {
@@ -878,7 +897,7 @@ $white: var(--page);
   font-variant-numeric: tabular-nums;
 }
 .detailKpis small {
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--muted);
 }
 .credCardTasks {
@@ -895,7 +914,7 @@ $white: var(--page);
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  font-size: 11.5px;
+  font-size: 11px;
 }
 .credTaskRow .check {
   margin: 0;
@@ -947,7 +966,7 @@ $white: var(--page);
   cursor: not-allowed;
 }
 .credTaskRow small {
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--muted);
   text-align: right;
 }
@@ -1076,15 +1095,17 @@ $white: var(--page);
 }
 .resultNote {
   font-size: 12px;
-  color: var(--accent);
+  /* Accent as body text only reaches 3.2:1 on the tinted surface. --strong is
+     the same hue at 6.2:1, so the note stays readable in every palette. */
+  color: var(--strong);
   margin: 0;
 }
 .codeBlock {
-  font-size: 11.5px;
+  font-size: 11px;
   line-height: 1.55;
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 12px;
   padding: 12px 14px;
   overflow-x: auto;
   white-space: pre;
@@ -1138,7 +1159,7 @@ $white: var(--page);
 }
 .panel {
   @include glass(0.54, 20px);
-  border-radius: 24px;
+  border-radius: 16px;
   overflow: hidden;
   min-width: 0;
 }
@@ -1190,7 +1211,7 @@ $white: var(--page);
   height: 7px;
   appearance: none;
   border: 0;
-  border-radius: 5px;
+  border-radius: 8px;
   overflow: hidden;
 }
 .distribution progress::-webkit-progress-bar {
@@ -1198,7 +1219,7 @@ $white: var(--page);
 }
 .distribution progress::-webkit-progress-value {
   background: $green;
-  border-radius: 5px;
+  border-radius: 8px;
 }
 .distribution progress::-moz-progress-bar {
   background: $green;
@@ -1219,9 +1240,24 @@ $white: var(--page);
   width: 100%;
   overflow: auto;
 }
+/* Long, interactive tables (model routing) get their own scroll box so the
+   header can stay pinned. .tableWrap alone is left unbounded because the
+   dashboard and log views rely on the page scrolling instead. */
+.tableScroll {
+  max-height: min(72vh, 760px);
+  overflow: auto;
+}
+.tableScroll thead th,
+.tableWrap thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface);
+  box-shadow: 0 1px 0 var(--line);
+}
 .badge {
   border: 1px solid #e5eadf;
-  border-radius: 5px;
+  border-radius: 8px;
   padding: 3px 7px;
   font-size: 10px;
   font-weight: 500;
@@ -1291,7 +1327,7 @@ $white: var(--page);
   color: #abc496;
   background: #f2f6ec;
   padding: 6px;
-  border-radius: 10px;
+  border-radius: 12px;
   margin-bottom: 13px;
 }
 .empty h3 {
@@ -1310,7 +1346,7 @@ $white: var(--page);
   align-items: flex-start;
   gap: 11px;
   padding: 14px 16px;
-  border-radius: 9px;
+  border-radius: 8px;
   margin-bottom: 18px;
   font-size: 12px;
   overflow-wrap: anywhere;
@@ -1388,7 +1424,7 @@ $white: var(--page);
   min-height: 0;
   margin: 0;
   padding: 0;
-  border-radius: 28px;
+  border-radius: 16px;
   color: $ink;
   display: flex;
   flex-direction: column;
@@ -1495,7 +1531,7 @@ $white: var(--page);
 }
 .fieldset {
   border: 1px solid #dce5d3;
-  border-radius: 9px;
+  border-radius: 8px;
   margin: 15px 0 20px;
   padding: 12px 16px;
 }
@@ -1687,7 +1723,7 @@ $white: var(--page);
   gap: 12px;
   padding: 35px 22px;
   border: 1px dashed #b7cba5;
-  border-radius: 10px;
+  border-radius: 12px;
   background: #f9fcf5;
   color: $deep;
   text-align: center;
@@ -1714,7 +1750,7 @@ $white: var(--page);
 .footer {
   border-top: 1px solid #e7ecdf;
   padding: 16px 36px;
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 1px;
   color: #a3ae98;
   display: flex;
@@ -1768,7 +1804,7 @@ $white: var(--page);
   position: absolute;
   bottom: 44px;
   color: #91a180;
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 2px;
 }
 .loginOrbit {
@@ -1797,7 +1833,7 @@ $white: var(--page);
   justify-self: center;
   padding: 36px;
   @include glass(0.6, 22px);
-  border-radius: 28px;
+  border-radius: 16px;
 }
 .loginCard > svg {
   color: $green;
@@ -1928,7 +1964,7 @@ $white: var(--page);
   background: #f5faf0;
   color: $ink;
   border: 1px solid #fff;
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 7px 12px;
   white-space: nowrap;
   pointer-events: none;
@@ -1972,7 +2008,7 @@ $white: var(--page);
   gap: 7px;
   padding: 12px 9px;
   border: 1px solid #c6d7c780;
-  border-radius: 14px;
+  border-radius: 12px;
   background: #ffffff48;
   cursor: pointer;
 }
@@ -2008,7 +2044,7 @@ $white: var(--page);
   gap: 12px;
   margin-top: 10px;
   padding: 11px 12px;
-  border-radius: 13px;
+  border-radius: 12px;
   border: 1px solid #d0dfcf;
   background: #ffffff50;
   cursor: pointer;
@@ -2223,7 +2259,7 @@ $white: var(--page);
   margin-block: 18px;
   padding: 14px 16px;
   background: #ffffff60;
-  border-radius: 14px;
+  border-radius: 12px;
 }
 .valueText {
   overflow-wrap: anywhere;
@@ -2252,7 +2288,7 @@ $white: var(--page);
   padding: 12px;
   border: 1px solid #ffffffb0;
   background: #ffffff38;
-  border-radius: 14px;
+  border-radius: 12px;
   min-width: 0;
 }
 .nestedDetails {
@@ -2279,7 +2315,7 @@ $white: var(--page);
   overflow: auto;
   max-height: 320px;
   padding: 12px;
-  border-radius: 10px;
+  border-radius: 12px;
   background: #e8efe5;
   font-size: 11px;
   line-height: 1.7;
@@ -2508,7 +2544,7 @@ $white: var(--page);
   gap: 6px;
   padding: 14px 4px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 12px;
   cursor: pointer;
   font-size: 11px;
 }
@@ -2578,7 +2614,7 @@ $white: var(--page);
   flex: 0 0 32px;
   width: 32px;
   height: 18px;
-  border-radius: 18px;
+  border-radius: 16px;
   border: 1px solid var(--muted);
   background: var(--surface-tint);
   cursor: pointer;
@@ -2631,7 +2667,7 @@ $white: var(--page);
   z-index: 1;
   width: min(210px, calc(100% - 16px));
   padding: 12px 14px;
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--line);
@@ -2711,7 +2747,7 @@ $white: var(--page);
     font-size: 26px;
   }
   .stat small {
-    font-size: 9px;
+    font-size: 10px;
   }
   .dashboardGrid {
     grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
@@ -2744,7 +2780,7 @@ $white: var(--page);
     width: calc(100% - 24px);
     margin: 12px;
     padding: 14px 16px 8px;
-    border-radius: 22px;
+    border-radius: 16px;
   }
   .sidebar .brand {
     font-size: 17px;
@@ -2848,7 +2884,7 @@ $white: var(--page);
     padding: 8px;
   }
   .drawer {
-    border-radius: 22px;
+    border-radius: 16px;
   }
   .routeModes {
     grid-template-columns: 1fr;
@@ -2956,7 +2992,7 @@ $white: var(--page);
   }
 }
 .skeleton {
-  border-radius: 14px;
+  border-radius: 12px;
   min-height: 18px;
 }
 .skeleton-line {
@@ -2966,7 +3002,7 @@ $white: var(--page);
 }
 .skeleton-card {
   @include shimmer;
-  border-radius: 24px;
+  border-radius: 16px;
   min-height: 128px;
   margin-bottom: 20px;
 }
@@ -2974,7 +3010,7 @@ $white: var(--page);
   @include shimmer;
   min-height: 220px;
   margin: 4px 15px 18px;
-  border-radius: 18px;
+  border-radius: 16px;
 }
 .skeleton-table {
   padding: 16px 22px 10px;
@@ -2988,7 +3024,7 @@ $white: var(--page);
   span {
     @include shimmer;
     height: 15px;
-    border-radius: 7px;
+    border-radius: 8px;
   }
 }
 
@@ -3046,12 +3082,12 @@ $white: var(--page);
   fill: var(--muted);
 }
 .chartMean {
-  font-size: 10.5px;
+  font-size: 10px;
   fill: var(--strong);
   font-weight: 600;
 }
 .chartPeak {
-  font-size: 10.5px;
+  font-size: 10px;
   fill: var(--error);
   font-weight: 600;
 }
@@ -3144,7 +3180,7 @@ $white: var(--page);
 .eventItem {
   border: 1px solid var(--line);
   border-left: 3px solid var(--muted);
-  border-radius: 14px;
+  border-radius: 12px;
   padding: 14px 16px;
   background: color-mix(in srgb, var(--surface) 72%, transparent);
   min-width: 0;
@@ -3234,7 +3270,7 @@ $white: var(--page);
 }
 .creditCard {
   @include glass(0.5, 18px);
-  border-radius: 22px;
+  border-radius: 16px;
   padding: 20px 22px;
   min-width: 0;
   &[data-urgent] {
@@ -3341,6 +3377,285 @@ $white: var(--page);
 }
 .langChoices label:has(:checked) {
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--strong);
   background: var(--soft);
+}
+
+/* ===== Model table bulk operations (2026-10-21) =====
+   Selection is a Set of business ids held by Models.tsx. The bar is fixed to
+   the viewport bottom rather than the panel so it survives a long scroll,
+   which is the whole point of selecting across rows. */
+.bulkBar {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-radius: 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: 0 14px 38px var(--shadow);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+  animation: bulkBarIn 160ms ease;
+}
+@keyframes bulkBarIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 10px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bulkBar {
+    animation: none;
+  }
+}
+.bulkCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--on-primary);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.bulkDivider {
+  width: 1px;
+  height: 22px;
+  background: var(--line);
+}
+.bulkActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.bulkActions button {
+  min-height: 32px;
+  padding: 5px 12px;
+  font-size: 12px;
+}
+.bulkList {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.bulkListItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.bulkListItem:last-child {
+  border-bottom: 0;
+}
+.bulkListItem code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.bulkProgress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.bulkProgressBar {
+  flex: 1;
+  height: 5px;
+  border-radius: 8px;
+  background: var(--soft);
+  overflow: hidden;
+}
+.bulkProgressBar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 140ms ease;
+}
+
+/* Row selection column: narrow, vertically centred, never wraps. */
+.selectCell {
+  width: 40px;
+  padding-right: 0 !important;
+}
+.selectCell input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.selectCell input:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+tr.selectedRow {
+  background: var(--selected);
+}
+
+/* Column visibility dropdown, anchored to the toolbar. */
+.colToggle {
+  position: relative;
+  display: inline-flex;
+}
+.colToggleMenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 180px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 14px 34px var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.colToggleMenu label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.colToggleMenu label:hover {
+  background: var(--soft);
+}
+.colToggleMenu input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* Availability badge: how many accounts can actually serve this model right
+   now. The point is to make "1 account" and "8 accounts" visually different. */
+.availBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid transparent;
+}
+.availGood {
+  background: var(--good-bg);
+  color: var(--good);
+  border-color: color-mix(in srgb, var(--good) 26%, transparent);
+}
+.availWarn {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 26%, transparent);
+}
+.availBad {
+  background: var(--error-bg);
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 26%, transparent);
+}
+.availMuted {
+  background: var(--soft);
+  color: var(--muted);
+  border-color: var(--line);
+}
+.availStack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+.availDetail {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* ===== Narrow viewport fixes (2026-10-21) ===== */
+@media (max-width: 600px) {
+  /* Tab rows overflowed by 17px at 390px because they could not wrap. */
+  .tabs {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+  .tabs button {
+    padding: 9px 13px;
+  }
+  /* Credential cards collapsed into a vertical ribbon: the title had
+     word-break:break-all and the badge column kept a fixed width. */
+  .credCardHead {
+    flex-wrap: wrap;
+  }
+  .credCardBadges {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  .credCardTitle {
+    flex: 1 1 100%;
+  }
+  .credCardTitle strong {
+    word-break: normal;
+    overflow-wrap: anywhere;
+  }
+  .bulkBar {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    transform: none;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  @keyframes bulkBarIn {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+  }
+}
+
+/* ===== Print / full-page export =====
+   The sidebar is position:fixed, so printing or exporting a full-page image
+   painted it over the content. Flow it back into the document instead. */
+@media print {
+  .sidebar {
+    position: static;
+    width: auto;
+    height: auto;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+  .workspace {
+    margin-left: 0;
+  }
+  .bulkBar {
+    display: none;
+  }
 }

@@ -85,6 +85,7 @@ from app.inference_resources import (AccountCapacity, InferenceResourcesMiddlewa
 from app.request_context import SessionIdentifierError, current_context
 from app.reasoning import resolve_reasoning_effort, thinking_mode
 from app import model_capabilities
+from app import dsml
 from app.message_normalization import merge_intl_user_images
 from app.adapters.chat_input import normalize_chat_messages
 from app.tool_pairing import sanitize_tool_pairing
@@ -648,6 +649,9 @@ class CredentialPool:
         self.revision = 0
         self._configured_cache: dict = {}
         self._configured_revision = -1
+        # 国际站共享模型源（_shared_catalog_sources）的缓存：scope -> (版本戳, 目录对象, 结果)。
+        # 条目集合或 profile 一变就由 _bump_revision 置空，与上面 _configured_cache 同构。
+        self._shared_cache: dict = {}   # "members" -> (revision, entries); scope -> (stamp, sources)
         self.reload(paths or [])
         if self._scan:
             self._rescan()             # Discover credentials at startup.
@@ -656,6 +660,7 @@ class CredentialPool:
         """Invalidate cached static routing facts after the entry set or a profile changes."""
         self.revision += 1
         self._configured_cache.clear()
+        self._shared_cache.clear()
 
     @staticmethod
     def _pause_store_path(cooldowns_path, state_store):
@@ -1563,6 +1568,10 @@ class CredentialPool:
         """
         if cm is None:
             return False
+        # The log stays outside the lock: _log() writes an audit row (a synchronous SQLite
+        # commit, ~0.85 ms), and holding the pool lock across it serialized every pick
+        # behind the failing account. cooldown() already reports the same way.
+        name = Path(cm.path).name
         with self._lock:
             entry = next((e for e in self._entries if e["cm"] is cm), None)
             if entry is None:
@@ -1572,13 +1581,15 @@ class CredentialPool:
             count = self._transport_fails.get(ident, 0) + 1
             if count < threshold:
                 self._transport_fails[ident] = count
-                _log(f"[cred] 传输层连败 {count}/{threshold} @ {Path(cm.path).name}")
-                return False
-            self._transport_fails.pop(ident, None)
-            seconds = float(CONFIG.get("transport_penalty_seconds", 600) or 600)
-            self._transport_penalty[ident] = time.time() + seconds
-            _log(f"[cred] 传输层连败出池 {seconds:g}s @ {Path(cm.path).name}")
-            return True
+            else:
+                self._transport_fails.pop(ident, None)
+                seconds = float(CONFIG.get("transport_penalty_seconds", 600) or 600)
+                self._transport_penalty[ident] = time.time() + seconds
+        if count < threshold:
+            _log(f"[cred] 传输层连败 {count}/{threshold} @ {name}")
+            return False
+        _log(f"[cred] 传输层连败出池 {seconds:g}s @ {name}")
+        return True
 
     def note_transport_ok(self, cm: CredentialManager | None) -> None:
         """成功一次即清零传输连败计数；出池状态不提前解除，到期自动恢复。"""
@@ -2069,10 +2080,14 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
                 _sync_error(pool, ledger, entry, generation, "checkin", error)
         if not model_policy.credential_enabled(CONFIG, entry):
             return None
-        if checkin and not travel.supported(entry.get("profile"), entry.get("enterprise") is True):
+        if not travel.supported(entry.get("profile"), entry.get("enterprise") is True):
             # The exemption is terminal, so keep the ledger honest instead of leaving the
             # previous upstream refusal as this account's current travel state. A stored
             # notice is only rewritten when it differs, so the sweep stays a no-op after.
+            # This runs on the manual sync path too (checkin=False): an enterprise account
+            # whose ledger still says "403 growth system is only available for personal
+            # users" would otherwise keep showing that stale refusal forever, because the
+            # automatic travel branch below is the only other writer and it is skipped here.
             notice = travel.unavailable(entry.get("profile"), entry.get("enterprise") is True)
             if not pool.apply_if_current(cm, generation, lambda: travel.clear_unsupported(ledger, cid, notice)):
                 failed.add(cid)
@@ -3257,6 +3272,12 @@ def invalidate_model_table() -> None:
     """Invalidate the public model snapshot after catalog changes."""
     global _model_table_cache
     _model_table_cache = {}
+    # The shared international sources are derived from the same catalogs, so the two
+    # caches move together; every admin edit and every catalog publish already calls this.
+    # Test doubles and older duck-typed pools simply have no cache to drop.
+    shared = getattr(CONFIG.get("cred_pool"), "_shared_cache", None)
+    if shared is not None:
+        shared.clear()
 
 
 def _catalog_for(profile: str, scope: str = "models", *, model_id=None):
@@ -3342,6 +3363,43 @@ def _configured_profiles(region: str | None) -> set[str]:
 
 
 def _shared_catalog_sources(scope="models"):
+    """Return the international catalogs one account may inherit models from.
+
+    _catalog_for() rebuilds this once per account and _effective_account_scope() again for
+    every capability check, so recomputing it on each call walked the whole pool once per
+    account -- quadratic in the pool size, paid inside the pool lock on every request (60
+    international accounts: 7807 entries() copies per pick, 333 ms). The answer only moves
+    with the pool's membership or the control store, so it is cached under the same
+    invalidation the configured-profile cache uses, plus the identity of the published
+    account_catalogs object, which every publish and every admin edit replaces wholesale:
+    a control store toggle or a republished catalog is therefore a miss, never a stale hit.
+
+    A caller that edits a published account catalog in place (rather than replacing the
+    dict) must call invalidate_model_table(), exactly as it must for the public snapshot.
+    """
+    pool = CONFIG.get("cred_pool")
+    accounts = CONFIG.get("account_catalogs")
+    if pool is None:
+        return _shared_catalog_sources_uncached(scope)
+    policy_revision = _policy_revision()
+    if policy_revision is None:
+        # Without a readable revision the answer cannot be cached safely (see
+        # _configured_profiles); fall through to the live computation.
+        return _shared_catalog_sources_uncached(scope)
+    # This is consulted thousands of times per request, so the hit path is one dict lookup
+    # on a plain tuple; the catalogs object is compared by identity (it is replaced, never
+    # edited in place) which cannot be confused by a reused id().
+    stamp = (scope, pool.revision, policy_revision)
+    cached = pool._shared_cache.get(scope)
+    if cached is not None and cached[0] == stamp and cached[1] is accounts:
+        return cached[2]
+    value = _shared_catalog_sources_uncached(scope)
+    pool._shared_cache[scope] = (stamp, accounts, value)
+    return value
+
+
+def _shared_catalog_sources_uncached(scope="models"):
+    """Derive the shared international sources from the pool and published catalogs."""
     accounts, pool = CONFIG.get("account_catalogs"), CONFIG.get("cred_pool")
     if accounts is not None or CONFIG.get("model_cache") is not None:
         return [(entry["profile"], _account_scope(account, scope))
@@ -4058,6 +4116,18 @@ def _public_sse_line(line, model_name):
     return line
 
 
+def _note_dsml_observation(rid, repairer):
+    """Report a repaired or rejected markup block, keeping "not seen" apart from "rejected"."""
+    if repairer.converted:
+        observe_attempt("dsml_repaired", calls=repairer.converted, blocks=repairer.seen, known=repairer.known)
+        _log(f"[{rid}] 🔧 从正文还原 {repairer.converted} 个原生工具调用 (known={repairer.known})")
+    elif repairer.seen:
+        observe_attempt("dsml_rejected", blocks=repairer.seen, known=repairer.known)
+        _log(f"[{rid}] ⚠ 识别到 {repairer.seen} 个原生标记块但未还原 (known={repairer.known})")
+    if repairer.saw_opensource:
+        observe_attempt("native_markup_opensource", known=repairer.known)
+
+
 @asynccontextmanager
 async def _backend_stream(url, headers, body, *, timeout=300, rid="", model_name="?", cred=None):
     started, opened = time.monotonic(), False
@@ -4253,6 +4323,20 @@ async def _fetch_checked_chat(url, headers, body, model_name, rid, cred=None, *,
             _note_content_filter(rid, model_name, final=True)
 
         calls = result["choices"][0]["message"].get("tool_calls")
+        if not detector.detected:
+            # Last-line repair: upstream renders native tool calls as DSML markup in plain
+            # content whenever the request declared no tools (a desensitized retry, or a
+            # client that lost its tool list mid-session). Restoring them here keeps such a
+            # turn a successful tool call instead of a 502 after the retry budget is spent.
+            allowed = dsml.tool_name_allowlist(body)
+            converted, seen, _rejected = dsml.repair_aggregated(result, allowed)
+            if converted:
+                observe_attempt("dsml_repaired", calls=converted, blocks=seen, known=len(allowed))
+                _log(f"[{rid}] 🔧 从正文还原 {converted} 个原生工具调用 (known={len(allowed)})")
+                calls = result["choices"][0]["message"].get("tool_calls")
+            elif seen:
+                observe_attempt("dsml_rejected", blocks=seen, known=len(allowed))
+                _log(f"[{rid}] ⚠ 识别到 {seen} 个原生标记块但未还原 (known={len(allowed)})")
         if _tool_calls_healthy(calls, body) and (detector.detected or _tool_choice_satisfied(calls, body)):
             usage = result.get("usage") or {}
             observe_usage(usage)
@@ -4352,6 +4436,11 @@ async def _chat_sse_lines(url, headers, body, model_name, t0, rid, cred=None, *,
     # Realtime output is never copied into the retired raw-text preview log.
     budget = 0 if policy.realtime else (
         CONFIG["log_body_limit"] if CONFIG.get("log_path") else 0)
+    # Streaming repair of DSML markup leaked into content: a block can be split across any
+    # number of chunks, so the rewriter holds the undetermined tail and hands it back before
+    # the terminal marker (a [DONE] arriving after stray bytes makes aggregators reject the
+    # stream). Clean streams pay only a few substring scans per line.
+    repairer = dsml.SSERepairer(dsml.tool_name_allowlist(body))
     try:
         async with _backend_stream(url, headers, body, rid=rid, model_name=model_name,
                                    cred=cred) as response:
@@ -4362,16 +4451,24 @@ async def _chat_sse_lines(url, headers, body, model_name, t0, rid, cred=None, *,
                 _note_cred_model_ok(cred, body.get("model"))
                 _note_cred_transport_ok(cred)
             async for line in response.aiter_lines():
-                tracker.feed_line(line)
-                if tracker.done or tracker.finish_reason:
-                    completed()  # Never expose a success marker before terminal validation.
-                remaining = budget - len(preview)
-                if remaining > 0:
-                    preview.extend((line[:remaining] + "\n").encode("utf-8")[:remaining])
-                yield line
-                if tracker.done:
-                    yield ""
+                broken = False
+                for out_line in repairer.feed(line):
+                    tracker.feed_line(out_line)
+                    if tracker.done or tracker.finish_reason:
+                        completed()  # Never expose a success marker before terminal validation.
+                    remaining = budget - len(preview)
+                    if remaining > 0:
+                        preview.extend((out_line[:remaining] + "\n").encode("utf-8")[:remaining])
+                    yield out_line
+                    if tracker.done:
+                        yield ""
+                        broken = True
+                if broken:
                     break
+        for out_line in repairer.flush():   # 上游未发 DONE 就断流时，残留字节同样交还
+            if not (tracker.done or tracker.finish_reason):
+                tracker.feed_line(out_line)
+            yield out_line
         merged = completed()
     finally:
         if tracker.usage:
@@ -4380,6 +4477,7 @@ async def _chat_sse_lines(url, headers, body, model_name, t0, rid, cred=None, *,
     if tracker.filter_detector.detected:
         _note_content_filter(rid, model_name, final=True)
         return
+    _note_dsml_observation(rid, repairer)
     _log(f"[{rid}] ◀ RESPONSE {model_name} | {time.time() - t0:.1f}s | stream finish={merged['finish_reason']}"
          + f" | tokens={(merged['usage'] or {}).get('total_tokens', '?')}")
     _log_text_body(f"[{rid}] RESPONSE SSE PREVIEW", preview.decode("utf-8", "replace"))

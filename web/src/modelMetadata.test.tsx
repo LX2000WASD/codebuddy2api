@@ -156,6 +156,15 @@ describe("model declarations", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "搜索模型" }), {
       target: { value: "Display" },
     });
+    // Context/output/effort columns start hidden (8 columns already scroll at 1280px);
+    // the visibility menu is the only way in, so the test drives the real control.
+    expect(screen.queryByText("192K")).toBeNull();
+    expect(screen.queryByText("32K–64K")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "列可见性" }));
+    const menu = screen.getByRole("group", { name: "列可见性" });
+    for (const label of ["上下文窗口", "最大输出"]) {
+      fireEvent.click(within(menu).getByRole("checkbox", { name: label }));
+    }
     expect(screen.getByText("192K")).toBeTruthy();
     expect(screen.getByText("32K–64K")).toBeTruthy();
     expect(screen.getByText("图片因路由而异")).toBeTruthy();

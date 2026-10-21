@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { list, metric, number, object, text, useResource, type RecordValue } from "../api";
 import {
   Badge,
@@ -71,6 +71,7 @@ function Health({ data }: { data: RecordValue }) {
 }
 function OfficialCredits({ value }: { value: unknown }) {
   const t = useT();
+  const format = useDateFormat();
   const rows = Object.entries(object(value));
   if (!rows.length) return <Empty title={t("dash.balanceSnapshotEmpty")} />;
   return (
@@ -101,7 +102,7 @@ function OfficialCredits({ value }: { value: unknown }) {
                   ) : (
                     <span>
                       {typeof row.fetched_at === "number"
-                        ? new Date(row.fetched_at * 1000).toLocaleString("zh-CN")
+                        ? format.dateTime(new Date(row.fetched_at * 1000))
                         : t("dash.syncTimeUnknown")}
                     </span>
                   )}
@@ -115,18 +116,50 @@ function OfficialCredits({ value }: { value: unknown }) {
   );
 }
 import { KpiCards, UsageTrend } from "../UsageOverview";
-import { t, useT } from "../i18n";
+import { t, useDateFormat, useT } from "../i18n";
 export { Trend } from "../Trend";
+
+/**
+ * Hourly buckets for the trend's zoom-in granularity swap. Mounted only after
+ * the user actually zooms in: the payload is ~1.35 MB, so prefetching it on
+ * every range change wasted a full dashboard request for users who never zoom.
+ * It also reuses this module's normalize(), so the swap reads the same shape.
+ */
+function HourlyBuckets({
+  path,
+  onLoad,
+}: {
+  path: string;
+  onLoad: (rows: RecordValue[], partial: boolean) => void;
+}) {
+  const hourly = useResource(path, normalize);
+  useEffect(() => {
+    if (hourly.data) onLoad(hourly.data.series, hourly.data.range.partial === true);
+  }, [hourly.data, onLoad]);
+  return null;
+}
+
 export function Dashboard() {
   const t = useT();
+  const format = useDateFormat();
   const [days, setDays] = useState("7");
   const [granularity, setGranularity] = useState("auto");
   const resource = useResource(`/dashboard?days=${days}&granularity=${granularity}`, normalize);
-  // Hourly buckets power the trend's zoom-in granularity swap.
-  const hourly = useResource(`/dashboard?days=${days}&granularity=hour`, normalize);
+  // Lazily fetched hourly series (see HourlyBuckets); null until the first zoom.
+  const [hourly, setHourly] = useState<{ rows: RecordValue[]; partial: boolean } | null>(null);
+  const [hourlyWanted, setHourlyWanted] = useState(false);
+  const [hourlyReload, setHourlyReload] = useState(0);
+  const loadHourly = useCallback(
+    (rows: RecordValue[], partial: boolean) => setHourly({ rows, partial }),
+    [],
+  );
   const d = resource.data;
   const period = d?.range ?? {};
   const actualGrain = period.granularity === "hour" ? "hour" : "day";
+  // When the server already answered with hourly buckets (auto + a one-day
+  // range, or an explicit granularity=hour) a second, identical request would
+  // download the same payload twice for the same chart.
+  const wantsHourly = hourlyWanted && actualGrain !== "hour";
   return (
     <>
       <PageTitle
@@ -156,7 +189,8 @@ export function Dashboard() {
             <button
               onClick={() => {
                 resource.reload();
-                hourly.reload();
+                // Refetch the lazy hourly series too, if it is in play.
+                setHourlyReload((v) => v + 1);
               }}
             >
               <Icon name="refresh" />
@@ -182,11 +216,19 @@ export function Dashboard() {
             )}
             <UsageTrend
               rows={d.series}
-              hourlyRows={hourly.data?.series}
-              hourlyPartial={hourly.data?.range?.partial === true}
+              hourlyRows={hourly?.rows}
+              hourlyPartial={hourly?.partial === true}
               granularity={actualGrain}
               partial={period.partial === true}
+              onNeedHourly={() => setHourlyWanted(true)}
             />
+            {wantsHourly && (
+              <HourlyBuckets
+                key={hourlyReload}
+                path={`/dashboard?days=${days}&granularity=hour`}
+                onLoad={loadHourly}
+              />
+            )}
           </Panel>
           <div className={s.dashboardGrid}>
             <Panel title={t("dash.profileUsage")} hint={t("dash.granularityByRequests")}>
@@ -263,7 +305,7 @@ export function Dashboard() {
           <p className={s.updated}>
             {t("dash.updatedAt")}{" "}
             {typeof d.generated_at === "number"
-              ? new Date(d.generated_at * 1000).toLocaleString("zh-CN")
+              ? format.dateTime(new Date(d.generated_at * 1000))
               : text(d.generated_at)}{" "}
           </p>
         </>

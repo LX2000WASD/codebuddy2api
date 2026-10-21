@@ -60,6 +60,13 @@ export function countdownText(
  * Optimistic local state overlay for a keyed record list (credentials, channels...).
  * Write the expected server value immediately, then commit on confirmation or
  * roll back on failure. Callers keep full responsibility for the real request.
+ *
+ * view() returns the *same object* it was handed when the row has no pending
+ * write. That identity is load-bearing: a derived row that is re-created on
+ * every render makes every effect depending on it re-run, which turned the
+ * credentials detail drawer into a request loop (/admin/logs at ~520 req/s).
+ * Callers that need a stable dependency must key effects on scalars, not on the
+ * derived row — but the overlay must not manufacture new objects by itself.
  */
 export function useOptimisticOverrides<Key extends string | number>() {
   const [overrides, setOverrides] = useState<Partial<Record<Key, Record<string, unknown>>>>({});
@@ -72,7 +79,9 @@ export function useOptimisticOverrides<Key extends string | number>() {
       delete next[key];
       return next;
     });
-  const view = <T extends Record<string, unknown>>(record: T & { id?: Key }): T =>
-    overrides[record.id as Key] ? { ...record, ...overrides[record.id as Key] } : record;
+  const view = <T extends Record<string, unknown>>(record: T & { id?: Key }): T => {
+    const patch = overrides[record.id as Key];
+    return patch ? { ...record, ...patch } : record;
+  };
   return { apply, clear, view };
 }
