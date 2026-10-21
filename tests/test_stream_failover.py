@@ -337,6 +337,29 @@ class StreamFailoverTests(fixtures.RegionRoutingTests):
         self.assertEqual(len(records), 1, records)
         return records[0]
 
+    def test_channel_rejection_records_the_upstream_code_and_request_id(self):
+        """A 400 carrying a bare top-level code must stay countable in the audit store.
+
+        The codebuddy.cn channel rejects a request whose system message opens with a
+        foreign client identity sentence as {"code": 11128, "msg": ..., "requestId": ...},
+        with no nested "error" object. The generic reader only looks at "error", so that
+        code used to be dropped and the row said nothing but "upstream_400" — the counted
+        incident could not be found again, nor quoted back to the provider.
+        """
+        store, client = self.audited_client("channel-rejection")
+        self.poison_with_status(400, {"code": 11128, "msg": "Illegal API invocation from an unapproved channel",
+                                      "requestId": "3f9b62f93a5eeda78dee549a35be06f2"})
+        response = client.post("/v1/chat/completions", json=self.payload(stream=False))
+        self.assertEqual(response.status_code, 400, response.text)
+        record = self.only_record(store)
+        # The request-level contract is unchanged, so existing alert rules keep matching.
+        self.assertEqual(record["error_code"], "upstream_400", record)
+        attempts = [a for a in record["attempts"] if a.get("stage") == "upstream_http_error"]
+        self.assertEqual(len(attempts), 1, record["attempts"])
+        self.assertEqual(attempts[0]["error_code"], "11128", attempts[0])
+        self.assertEqual(attempts[0]["status_code"], 400, attempts[0])
+        self.assertEqual(attempts[0]["upstream_request_id"], "3f9b62f93a5eeda78dee549a35be06f2", attempts[0])
+
     def test_replayed_request_is_audited_as_success(self):
         """Audit recovered requests as successful rather than error outcomes with HTTP 200."""
         store, client = self.audited_client()
@@ -347,7 +370,11 @@ class StreamFailoverTests(fixtures.RegionRoutingTests):
         record = self.only_record(store)
         self.assertEqual(record["outcome"], "success", record)
         self.assertFalse(record.get("error_code"), record)
-        statuses = [attempt.get("status_code") for attempt in record["attempts"]]
+        # Only dials carry a status here: a rejected dial also appends an
+        # "upstream_http_error" attempt that repeats the same status with the upstream's
+        # own business code, which is what makes a channel rejection countable.
+        statuses = [attempt.get("status_code") for attempt in record["attempts"]
+                    if attempt.get("stage") == "upstream_http"]
         self.assertEqual(statuses[:2], [429, 200], record["attempts"])
         self.assertIn("failover_recovered", json.dumps(record["attempts"], ensure_ascii=False))
         markers = [attempt for attempt in record["attempts"]

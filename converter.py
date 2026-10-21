@@ -4249,6 +4249,38 @@ def _check_upstream_status(status, raw, cred, model, *, headers=None):
         raise UpstreamHTTPError(status, raw, retry_after=retry_after)
 
 
+def _upstream_failure_identity(raw: bytes):
+    """Return the business code and request id an error body carries, when it has them.
+
+    The upstream answers some rejections with a bare object like
+    {"code": 11128, "msg": ..., "requestId": ...} rather than the OpenAI-shaped
+    {"error": {"code": ...}}. The generic reader looks for a nested "error" node first, so
+    a top-level code was previously dropped: the audit row recorded only "upstream_400"
+    and the request id was lost, which made a channel rejection impossible to count or to
+    quote back to the provider. Both values are plain identifiers, never user content.
+    """
+    fields = _error_fields(raw)
+    code = fields[0] if fields else ""
+    request_id = ""
+    try:
+        payload = json.loads(raw.decode("utf-8", "replace"))
+    except (ValueError, UnicodeError, RecursionError):
+        payload = None
+    if isinstance(payload, dict):
+        for key in ("requestId", "request_id", "RequestId"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                request_id = value.strip()[:64]
+                break
+        if not code:
+            for key in ("code", "errCode", "error_code"):
+                value = payload.get(key)
+                if value is not None and str(value).strip():
+                    code = str(value).strip()
+                    break
+    return (code[:24] if code else ""), request_id
+
+
 def _upstream_failure(error, model_name, t0, rid):
     """Normalize failure logs and payloads before endpoint-specific error wrapping."""
     if isinstance(error, UpstreamResponseError):
@@ -4261,7 +4293,19 @@ def _upstream_failure(error, model_name, t0, rid):
         _note_content_filter(rid, model_name, final=True)
         return status, raw
     else:
-        observe_failure(f"upstream_{status}" if isinstance(error, UpstreamResponseError) else type(error).__name__)
+        if isinstance(error, UpstreamResponseError):
+            # Record the upstream own code beside the HTTP status so a channel rejection
+            # (11128) stays queryable instead of collapsing into "upstream_400".
+            code, request_id = _upstream_failure_identity(raw)
+            if code:
+                # The attempt keeps the upstream's own code; the request-level error_code
+                # stays "upstream_<status>" so existing alert rules and dashboards keep
+                # their meaning.
+                observe_attempt("upstream_http_error", status_code=status, error_code=code,
+                                upstream_request_id=request_id or None)
+            observe_failure(f"upstream_{status}")
+        else:
+            observe_failure(type(error).__name__)
     elapsed = time.time() - t0 if t0 else 0
     _log(f"[{rid}] ✗ {category} | {model_name} | {elapsed:.1f}s | {sanitize_log_text(raw.decode('utf-8', 'replace'), 512)}")
     _log_text_body(f"[{rid}] ERROR BODY", raw.decode("utf-8", "replace"))

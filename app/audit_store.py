@@ -22,7 +22,11 @@ _CLEANUP_SECONDS = 0.05
 METRICS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
            "reasoning_tokens", "total_tokens", "credit")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:/@-]{1,160}$")
-_SECRET = re.compile(r"(?i)(bearer|sk-|cb-|access[_-]?token|refresh[_-]?token|api[_-]?key|eyJ|://)")
+# "://" used to be listed here, which silently discarded every User-Agent containing a
+# URL — including the DeepSeek Harness client ("... (+https://...)"), so the audit store
+# could not tell that client apart from anything else (measured: 0 rows out of 13,292
+# requests in 7 days). A URL is not a secret; the credential-shaped markers below are.
+_SECRET = re.compile(r"(?i)(bearer|sk-|cb-|access[_-]?token|refresh[_-]?token|api[_-]?key|eyJ)")
 
 # -- 融合层：延迟分位数与生成速率（tokens/s）的聚合口径 ----------------------
 # 固定延迟直方图桶边界（毫秒）：bucket i 覆盖 [edges[i-1], edges[i])，最后一个桶
