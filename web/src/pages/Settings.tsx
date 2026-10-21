@@ -441,7 +441,13 @@ function SettingsForm({
           <CopyCommand command={RESTART_COMMAND} />
         </div>
       )}
-      <div className={s.sectionNav} role="tablist" aria-label="配置分组">
+      {/* Second-level control: it used to reuse .sectionNav, the exact class the
+          task-area switcher above it uses, so /dashboard/system showed two bars of
+          identical colour, height and radius and neither read as the deeper level.
+          .tabs is the underline treatment the app already uses for in-page
+          navigation (Logs), which separates the two levels without touching the
+          DOM, the roles or the aria labels. */}
+      <div className={s.tabs} role="tablist" aria-label="配置分组">
         {buckets.map((bucket) => {
           const title = GROUPS.find((g) => g.key === bucket.group)?.title ?? bucket.group;
           const dirty = bucket.entries.filter((entry) => Object.hasOwn(values, entry.item.key));
@@ -451,7 +457,7 @@ function SettingsForm({
               type="button"
               role="tab"
               aria-selected={current?.group === bucket.group}
-              className={current?.group === bucket.group ? s.sectionActive : ""}
+              className={current?.group === bucket.group ? s.selectedTab : ""}
               onClick={() => {
                 setTab(bucket.group);
                 setQuery("");

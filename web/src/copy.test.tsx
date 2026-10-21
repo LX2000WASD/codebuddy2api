@@ -86,6 +86,17 @@ describe("concise user-facing copy", () => {
     expect(container.querySelectorAll("p")).toHaveLength(0);
   });
 
+  it("keeps the page title as a visible h1, not a screen-reader-only one", () => {
+    // Regression guard: the h1 used to carry the srOnly class, which left every page
+    // without a visible level-one heading (the largest type was a KPI number).
+    render(<PageTitle title="模型路由" description="独立映射模型名称。" />);
+    const heading = screen.getByRole("heading", { level: 1, name: "模型路由" });
+    expect(heading.className).not.toMatch(/srOnly/);
+    // The description stays a sibling paragraph, so the p-count rule above still holds
+    // for pages that pass no description.
+    expect(heading.nextElementSibling?.tagName.toLowerCase()).toBe("p");
+  });
+
   it("keeps optional task-specific guidance", () => {
     render(<Empty title="没有匹配结果">请调整筛选条件。</Empty>);
     expect(screen.getByText("请调整筛选条件。")).toBeTruthy();

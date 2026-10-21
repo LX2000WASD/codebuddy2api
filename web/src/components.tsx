@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { api, errorMessage, object, snapshotAge } from "./api";
 import { countdownText, sinceText, useNow } from "./hooks";
 import { lockPage } from "./modal";
@@ -40,6 +40,9 @@ export function Icon({ name = "grid" }: { name?: string }) {
       "M12 3c4.4 0 8 1.3 8 3s-3.6 3-8 3-8-1.3-8-3 3.6-3 8-3Zm8 3v12c0 1.7-3.6 3-8 3s-8-1.3-8-3V6m16 6c0 1.7-3.6 3-8 3s-8-1.3-8-3",
     database:
       "M12 8c4.4 0 8-1.3 8-3s-3.6-3-8-3-8 1.3-8 3 3.6 3 8 3Zm-8 2v9c0 1.7 3.6 3 8 3s8-1.3 8-3v-9M4 14.5c0 1.7 3.6 3 8 3s8-1.3 8-3",
+    // "Filtered, nothing matched": a magnifier, the universal "your query
+    // returned nothing" glyph — distinct from the leaf used for "nothing here yet".
+    search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14Zm5 12 4 4",
   };
   return (
     <svg
@@ -66,11 +69,15 @@ export function PageTitle({
   description?: string;
   actions?: ReactNode;
 }) {
-  // The header breadcrumb already names the page; keep the h1 for screen readers only.
+  // The h1 is the only visible level-one heading on the page. It used to be srOnly on
+  // the theory that the header breadcrumb named the page, but that crumb is 12px and
+  // names the *area* — the largest type on every page ended up being a KPI number, so
+  // nothing on screen said which page you were looking at. Description and actions stay
+  // on the same row (title block left, controls right).
   return (
     <div className={s.pageTitle}>
       <div>
-        <h1 className={s.srOnly}>{title}</h1>
+        <h1>{title}</h1>
         {description && <p>{description}</p>}
       </div>
       <div className={s.actions}>{actions}</div>
@@ -87,14 +94,51 @@ export function ErrorNotice({ message, retry }: { message: string | null; retry?
     </div>
   ) : null;
 }
-export function Empty({ title, children }: { title?: string; children?: ReactNode }) {
+/**
+ * The two empty states are not the same message, so they must not look the same.
+ *
+ * "initial" means there is nothing yet (a first run, a page that has never had
+ * data): the answer is a next step, so it keeps the leaf and offers a primary
+ * action. "filtered" means the data exists but the current filter excludes it:
+ * the answer is to widen the filter, so it gets a neutral search glyph and a
+ * secondary "clear filters" action. Before this split every empty table said
+ * "没有匹配的日志", including the one a failed request had just emptied.
+ */
+export type EmptyTone = "initial" | "filtered";
+export function Empty({
+  title,
+  tone = "initial",
+  action,
+  onClear,
+  children,
+}: {
+  title?: string;
+  tone?: EmptyTone;
+  /** Primary next step ("initial") or the way out of the filter ("filtered"). */
+  action?: ReactNode;
+  /**
+   * Shortcut for the "filtered" tone: renders the standard clear-filters button.
+   * The pages only pass their existing reset handler, so the button's copy and
+   * markup live in one place instead of being retyped in every toolbar.
+   */
+  onClear?: () => void;
+  children?: ReactNode;
+}) {
   const t = useT();
   const heading = title ?? t("common.empty");
+  const slot =
+    action ??
+    (onClear ? (
+      <button type="button" onClick={onClear}>
+        {t("common.clearFilters")}
+      </button>
+    ) : undefined);
   return (
-    <div className={s.empty}>
-      <Icon name="leaf" />
+    <div className={s.empty} data-tone={tone}>
+      <Icon name={tone === "filtered" ? "search" : "leaf"} />
       <h3>{heading}</h3>
       {children && <p>{children}</p>}
+      {slot && <div className={s.emptyAction}>{slot}</div>}
     </div>
   );
 }
@@ -218,19 +262,46 @@ export function Drawer({
     </dialog>
   );
 }
+/** A skeleton cell shape, matching what the column will actually paint. */
+export type SkeletonCell = "text" | "badge" | "twoLine";
+
+const SKELETON_ROWS = 6;
+/**
+ * Width classes cycle so a column of skeletons does not read as one grey block.
+ * Looked up through `s` on purpose: CSS Modules hashes the class name, so a raw
+ * "skeleton-w-40" literal would never match the emitted "_skeleton-w-40_xxxx".
+ */
+const CELL_WIDTHS: Record<SkeletonCell, string[]> = {
+  text: [s["skeleton-w-40"], s["skeleton-w-65"], s["skeleton-w-50"]],
+  badge: [s["skeleton-w-pill"]],
+  twoLine: [s["skeleton-w-50"], s["skeleton-w-40"]],
+};
+
 /**
  * Skeleton placeholders reserve the painted space so loading states never shift the
  * layout (no CLS, no spinner jump) — the shape users will see is the shape they get.
+ *
+ * The table variant takes the column shapes and the row height, because "a row of
+ * four equal bars" was 44px tall against a real 87px row: the first payload moved
+ * every row down by 43px. A skeleton that is the wrong height is a layout shift
+ * with extra steps.
  */
 export function Skeleton({
   variant = "line",
   label = "内容加载中",
   className = "",
+  cells,
+  rowHeight,
 }: {
   variant?: "line" | "card" | "chart" | "table";
   label?: string;
   className?: string;
+  /** Table only: the shape of each column, in column order. */
+  cells?: SkeletonCell[];
+  /** Table only: height of one skeleton row; must match the real row height. */
+  rowHeight?: number;
 }) {
+  const shapes = cells?.length ? cells : (["text", "badge", "twoLine", "text"] as SkeletonCell[]);
   return (
     <div
       className={`${s.skeleton} ${s[`skeleton-${variant}`] ?? ""} ${className}`}
@@ -239,10 +310,28 @@ export function Skeleton({
       aria-busy="true"
     >
       {variant === "table" &&
-        Array.from({ length: 6 }, (_, row) => (
-          <div className={s.skeletonRow} key={row} aria-hidden="true">
-            {Array.from({ length: 4 }, (_, cell) => (
-              <span key={cell} style={{ animationDelay: `${(row * 4 + cell) * 70}ms` }} />
+        Array.from({ length: SKELETON_ROWS }, (_, row) => (
+          <div
+            className={s.skeletonRow}
+            key={row}
+            aria-hidden="true"
+            // One column per real column: the old fixed four-column grid wrapped a
+            // six-column table's cells onto a second line inside the same 87px row,
+            // so the skeletons read as a jumble instead of as rows.
+            style={
+              {
+                ...(rowHeight ? { height: rowHeight } : {}),
+                "--skeleton-columns": String(shapes.length),
+              } as CSSProperties
+            }
+          >
+            {shapes.map((shape, cell) => (
+              <span
+                key={cell}
+                className={CELL_WIDTHS[shape][(row + cell) % CELL_WIDTHS[shape].length]}
+                data-shape={shape}
+                style={{ animationDelay: `${(row * shapes.length + cell) * 70}ms` }}
+              />
             ))}
           </div>
         ))}
