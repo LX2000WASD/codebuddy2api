@@ -112,6 +112,157 @@ const fmtDayLabel = (bucket: number) => {
   return `${date.getUTCMonth() + 1}-${String(date.getUTCDate()).padStart(2, "0")}`;
 };
 
+/**
+ * WCAG 1.4.1 (Use of Color) redundant encoding.
+ *
+ * Colour stays the primary channel, but every series also carries a stroke pattern
+ * and a marker shape, so the chart survives greyscale printing, every kind of colour
+ * vision deficiency, and the low-contrast dark themes. The two cycles are coprime
+ * (6 x 4 = 12 distinct pairs), so the first six series never share a (dash, marker)
+ * pair even though the palette repeats after six.
+ */
+export const SERIES_DASH = ["", "6 4", "2 4", "6 4 2 4", "10 4", "2 4 2 10"] as const;
+export const SERIES_MARKERS = ["circle", "square", "triangle", "diamond"] as const;
+export type SeriesMarkerShape = (typeof SERIES_MARKERS)[number];
+
+/**
+ * Per-point markers stay off for dense series: 24 hourly buckets x 3 series of
+ * shapes reads as noise and hides the curve. Below this many buckets the shape is
+ * the stronger cue, so it is drawn at every point as well as in the legend.
+ */
+const MARKER_MAX_POINTS = 14;
+
+export const dashFor = (index: number): string => SERIES_DASH[index % SERIES_DASH.length]!;
+export const markerFor = (index: number): SeriesMarkerShape =>
+  SERIES_MARKERS[index % SERIES_MARKERS.length]!;
+
+/** CSS preview of a dash pattern, for the HTML legend (the SVG legend is not an option). */
+export function dashSwatch(color: string, dash: string): string {
+  if (!dash) return color;
+  const [on = "0", off = "0"] = dash.split(" ");
+  return `repeating-linear-gradient(90deg, ${color} 0 ${on}px, transparent ${on}px ${Number(on) + Number(off)}px)`;
+}
+
+/**
+ * A second data channel that survives greyscale. Rendered as path/polygon/circle
+ * rather than <rect> on purpose: chart-readability.spec.ts measures the first
+ * <rect> in the plot to prove the viewBox is not stretched, so markers must never
+ * become the first rect in document order.
+ */
+function SeriesMarker({
+  shape,
+  x,
+  y,
+  size,
+  fill,
+  stroke,
+  strokeWidth = 2,
+}: {
+  shape: SeriesMarkerShape;
+  x: number;
+  y: number;
+  size: number;
+  fill: string;
+  stroke: string;
+  strokeWidth?: number;
+}) {
+  if (shape === "square")
+    return (
+      <path
+        d={`M${x - size} ${y - size} H${x + size} V${y + size} H${x - size} Z`}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={strokeWidth}
+      />
+    );
+  if (shape === "triangle")
+    return (
+      <polygon
+        points={`${x},${y - size * 1.25} ${x + size * 1.15},${y + size * 0.85} ${x - size * 1.15},${y + size * 0.85}`}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={strokeWidth}
+      />
+    );
+  if (shape === "diamond")
+    return (
+      <polygon
+        points={`${x},${y - size * 1.35} ${x + size * 1.35},${y} ${x},${y + size * 1.35} ${x - size * 1.35},${y}`}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={strokeWidth}
+      />
+    );
+  return <circle cx={x} cy={y} r={size} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />;
+}
+
+/** CSS twin of the SVG hatch pattern, so the legend matches the bar it explains. */
+function hatchSwatch(color: string): string {
+  return `repeating-linear-gradient(45deg, ${color} 0 3px, var(--surface) 3px 4.5px)`;
+}
+
+/**
+ * Legend key for the redundant encoding: colour is never the only thing in it.
+ * Lines get "shape + dash preview"; filled bars get a solid or hatched chip that
+ * mirrors the bar itself, so the legend explains the fill instead of guessing it.
+ */
+function LegendSwatch({
+  shape,
+  color,
+  dash,
+  fill,
+}: {
+  shape: SeriesMarkerShape;
+  color: string;
+  dash: string;
+  fill?: "solid" | "hatch";
+}) {
+  if (fill)
+    return (
+      <i
+        aria-hidden="true"
+        style={{
+          width: 9,
+          height: 9,
+          flexShrink: 0,
+          borderRadius: 2,
+          background: fill === "hatch" ? hatchSwatch(color) : color,
+        }}
+      />
+    );
+  return (
+    <>
+      <i
+        aria-hidden="true"
+        style={{
+          width: 6,
+          height: 6,
+          flexShrink: 0,
+          background: color,
+          borderRadius: shape === "circle" ? "50%" : shape === "diamond" ? 1 : 0,
+          transform: shape === "diamond" ? "rotate(45deg)" : undefined,
+          clipPath: shape === "triangle" ? "polygon(50% 0%, 100% 100%, 0% 100%)" : undefined,
+        }}
+      />
+      <i
+        aria-hidden="true"
+        style={{ width: 16, height: 2, flexShrink: 0, background: dashSwatch(color, dash) }}
+      />
+    </>
+  );
+}
+
+/** Hide/show one series, never hiding the last visible one. */
+function toggleSeries(hidden: Set<string>, key: string, total: number): Set<string> {
+  const next = new Set(hidden);
+  if (!hidden.has(key)) {
+    next.add(key);
+    return next.size === total ? hidden : next;
+  }
+  next.delete(key);
+  return next;
+}
+
 type Axis = { xOf: (index: number) => number; indexes: number[]; barWidth: number };
 
 function useSelection(
@@ -354,6 +505,7 @@ export function StackedBars({
   const id = useId();
   const { ref, plot } = usePlot();
   const selection = useSelection(rows, plot);
+  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
   if (!rows.length) return <Empty title={emptyTitle ?? t("fusion.charts.noRequestsInRange")} />;
   const box = inner(plot);
   const layout = timeLayout(rows, plot);
@@ -372,9 +524,44 @@ export function StackedBars({
   const yOf = (value: number) => plot.top + box.height - box.height * (value / max);
   const active = selection.active;
   const selected = active === null ? null : rows[active];
+  // Success is series 0, error series 1: same (dash, marker) pairs the line chart
+  // uses, so the legend reads the same across both chart types.
+  const successOn = !hidden.has("success");
+  const errorOn = !hidden.has("error");
 
   return (
     <>
+      <div className={s.legend} role="group" aria-label={t("fusion.charts.legendAria")}>
+        {
+          // Reuse the outcome labels the tables and the detail row already use, so
+          // the legend needs no new i18n key and reads identically everywhere.
+          (
+            [
+              ["success", t("logs.outcome.success")],
+              ["error", t("logs.outcome.error")],
+            ] as const
+          ).map(([key, label], index) => {
+            const off = hidden.has(key);
+            return (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={!off}
+                className={off ? s.legendOff : s.legendOn}
+                onClick={() => setHidden((old) => toggleSeries(old, key, 2))}
+              >
+                <LegendSwatch
+                  shape={markerFor(index)}
+                  color={index === 0 ? "var(--accent)" : "var(--error)"}
+                  dash=""
+                  fill={index === 1 ? "hatch" : "solid"}
+                />
+                {label}
+              </button>
+            );
+          })
+        }
+      </div>
       <ChartFrame
         plot={plot}
         frameRef={ref}
@@ -398,16 +585,38 @@ export function StackedBars({
             <stop offset="0" style={{ stopColor: "var(--error)", stopOpacity: 1 }} />
             <stop offset="1" style={{ stopColor: "var(--error)", stopOpacity: 0.62 }} />
           </linearGradient>
+          {/* Redundant encoding for the filled stack: the error segment is hatched, the
+              success segment is solid. In greyscale (or on a bad projector) the two
+              halves of a bar stay distinguishable without relying on colour.
+              Deliberately path-only — a <rect> here would become the first rect in the
+              plot and break chart-readability.spec.ts's scale measurement. */}
+          <pattern
+            id={`${id}-errhatch`}
+            width="6"
+            height="6"
+            patternUnits="userSpaceOnUse"
+            patternTransform="rotate(45)"
+          >
+            <path d="M0 0 V6" stroke="var(--error)" strokeWidth="6" strokeOpacity="0.82" />
+            <path d="M0 0 V6" stroke="var(--page)" strokeWidth="1.6" strokeOpacity="0.55" />
+          </pattern>
         </defs>
         <GridLines plot={plot} />
         <YTicks plot={plot} max={max} format={(value) => metric(value)} />
         {rows.map((row, index) => {
           const x = layout.xOf(index) - layout.barWidth / 2;
+          // Hiding a series shrinks the stack to what is still drawn; it must not
+          // leave a hole of the hidden series' height. The tooltip keeps the real
+          // total, because that is the data, not the rendering.
           const total = totals[index]!;
-          const successHeight = total ? box.height * (values[index]!.success / max) : 0;
-          const errorHeight = total
-            ? Math.max(values[index]!.error ? 1.5 : 0, box.height * (total / max) - successHeight)
-            : 0;
+          const drawn =
+            (successOn ? values[index]!.success : 0) + (errorOn ? values[index]!.error : 0);
+          const successHeight =
+            drawn && successOn ? box.height * (values[index]!.success / max) : 0;
+          const errorHeight =
+            drawn && errorOn
+              ? Math.max(values[index]!.error ? 1.5 : 0, box.height * (drawn / max) - successHeight)
+              : 0;
           return (
             <g key={index}>
               <title>
@@ -429,14 +638,24 @@ export function StackedBars({
                 />
               )}
               {errorHeight > 0 && (
-                <rect
-                  x={x}
-                  y={plot.top + box.height - errorHeight}
-                  width={layout.barWidth}
-                  height={errorHeight}
-                  fill={`url(#${id}-err)`}
-                  rx={1.5}
-                />
+                <>
+                  <rect
+                    x={x}
+                    y={plot.top + box.height - errorHeight}
+                    width={layout.barWidth}
+                    height={errorHeight}
+                    fill={`url(#${id}-err)`}
+                    rx={1.5}
+                  />
+                  <rect
+                    x={x}
+                    y={plot.top + box.height - errorHeight}
+                    width={layout.barWidth}
+                    height={errorHeight}
+                    fill={`url(#${id}-errhatch)`}
+                    rx={1.5}
+                  />
+                </>
               )}
             </g>
           );
@@ -580,21 +799,14 @@ export function LineChart({
               type="button"
               aria-pressed={!off}
               className={off ? s.legendOff : s.legendOn}
-              onClick={() =>
-                setHidden((old) => {
-                  if (!old.has(metricDef.key)) {
-                    const next = new Set(old);
-                    next.add(metricDef.key);
-                    // Keep at least one series visible.
-                    return next.size === metrics.length ? old : next;
-                  }
-                  const next = new Set(old);
-                  next.delete(metricDef.key);
-                  return next;
-                })
-              }
+              onClick={() => setHidden((old) => toggleSeries(old, metricDef.key, metrics.length))}
             >
-              <span style={{ background: COLORS[metricDef.color] }} />
+              {/* Colour + dash + shape: the legend is the key to the redundant encoding. */}
+              <LegendSwatch
+                shape={markerFor(metricIndex)}
+                color={COLORS[metricDef.color]}
+                dash={dashFor(metricIndex)}
+              />
               {metricDef.label}
               <small>{t("fusion.charts.knownBuckets", { count: known })}</small>
             </button>
@@ -613,18 +825,40 @@ export function LineChart({
       >
         <GridLines plot={plot} />
         <YTicks plot={plot} max={max} format={(value) => metric(value)} />
-        {metrics.map((metricDef) => {
+        {metrics.map((metricDef, metricIndex) => {
           if (hidden.has(metricDef.key)) return null;
-          const metricIndex = metrics.indexOf(metricDef);
-          return segment(metricIndex).map((points, segmentIndex) => (
-            <polyline
-              key={`${metricDef.key}-${segmentIndex}`}
-              points={points.map(([x, y]) => `${x},${y}`).join(" ")}
-              stroke={COLORS[metricDef.color]}
-              strokeWidth={2.6}
-              fill="none"
-            />
-          ));
+          const dash = dashFor(metricIndex);
+          const shape = markerFor(metricIndex);
+          return (
+            <g key={metricDef.key} data-series={metricDef.key}>
+              {segment(metricIndex).map((points, segmentIndex) => (
+                <polyline
+                  key={`${metricDef.key}-${segmentIndex}`}
+                  data-dash={dash || "solid"}
+                  points={points.map(([x, y]) => `${x},${y}`).join(" ")}
+                  stroke={COLORS[metricDef.color]}
+                  strokeWidth={2.6}
+                  strokeDasharray={dash || undefined}
+                  fill="none"
+                />
+              ))}
+              {values.length <= MARKER_MAX_POINTS &&
+                segment(metricIndex).map((points, segmentIndex) =>
+                  points.map(([x, y], pointIndex) => (
+                    <SeriesMarker
+                      key={`${segmentIndex}-${pointIndex}`}
+                      shape={shape}
+                      x={x}
+                      y={y}
+                      size={3.2}
+                      fill="var(--surface)"
+                      stroke={COLORS[metricDef.color]}
+                      strokeWidth={2}
+                    />
+                  )),
+                )}
+            </g>
+          );
         })}
         {active !== null && (
           <g aria-hidden="true">
@@ -640,11 +874,12 @@ export function LineChart({
               const value = values[active]![metricIndex];
               if (value === null || hidden.has(metricDef.key)) return null;
               return (
-                <circle
+                <SeriesMarker
                   key={metricDef.key}
-                  cx={layout.xOf(active)}
-                  cy={yOf(value)}
-                  r={4.5}
+                  shape={markerFor(metricIndex)}
+                  x={layout.xOf(active)}
+                  y={yOf(value)}
+                  size={4.5}
                   fill="var(--surface)"
                   stroke={COLORS[metricDef.color]}
                   strokeWidth={2.5}

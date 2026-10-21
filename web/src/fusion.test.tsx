@@ -278,6 +278,85 @@ describe("charts", () => {
     fireEvent.click(buttons[1]!); // hiding the last visible series is refused
     expect(chart.querySelectorAll("polyline").length).toBe(2);
   });
+
+  // WCAG 1.4.1: colour may not be the only channel. These two tests fail if a
+  // refactor drops the dash cycle or the marker shapes back to colour-only.
+  it("encodes every line series with its own dash pattern and marker shape", () => {
+    const rows: ChartBucket[] = [0, 86400, 172800].map((bucket, index) => ({
+      bucket,
+      date: `2026-10-0${index + 1}`,
+      latency_p50_ms: 100 + index * 10,
+      latency_p95_ms: 300 + index * 10,
+      latency_p99_ms: 900 + index * 10,
+      tokens_per_s: 20 + index,
+    }));
+    const metrics = [
+      { key: "latency_p50_ms", label: "P50", unit: "ms", color: "accent" as const },
+      { key: "latency_p95_ms", label: "P95", unit: "ms", color: "strong" as const },
+      { key: "latency_p99_ms", label: "P99", unit: "ms", color: "error" as const },
+    ];
+    render(<LineChart rows={rows} metrics={metrics} />);
+    const chart = screen.getByRole("img");
+    const series = [...chart.querySelectorAll("g[data-series]")];
+    expect(series.map((node) => node.getAttribute("data-series"))).toEqual([
+      "latency_p50_ms",
+      "latency_p95_ms",
+      "latency_p99_ms",
+    ]);
+    // Distinct dash per series; the first one is solid (no strokeDasharray attr).
+    const dashes = series.map(
+      (node) => node.querySelector("polyline")?.getAttribute("stroke-dasharray") ?? "solid",
+    );
+    expect(dashes).toEqual(["solid", "6 4", "2 4"]);
+    // Distinct marker shape per series: circle, square (path), triangle (polygon).
+    const shapes = series.map((node) =>
+      node.querySelector("circle, polygon, path:not(polyline)")?.tagName.toLowerCase(),
+    );
+    expect(shapes).toEqual(["circle", "path", "polygon"]);
+    // One marker per data point, so a single-point segment is still identifiable.
+    for (const node of series)
+      expect(node.querySelectorAll("circle, polygon, path").length).toBe(3);
+  });
+
+  it("draws a legend key with the dash preview, not a bare colour chip", () => {
+    const rows: ChartBucket[] = [
+      { bucket: 0, date: "2026-10-01", latency_p50_ms: 10, latency_p95_ms: 20, latency_p99_ms: 30 },
+    ];
+    render(
+      <LineChart
+        rows={rows}
+        metrics={[
+          { key: "latency_p50_ms", label: "P50", unit: "ms", color: "accent" },
+          { key: "latency_p95_ms", label: "P95", unit: "ms", color: "strong" },
+        ]}
+      />,
+    );
+    const legend = screen.getByRole("group", { name: "曲线图例" });
+    const keys = [...legend.querySelectorAll("button i")];
+    // Two chips per series: the shape and the dash preview.
+    expect(keys.length).toBe(4);
+    expect(
+      keys.some((node) => (node.getAttribute("style") ?? "").includes("repeating-linear-gradient")),
+    ).toBe(true);
+  });
+
+  it("lets the stacked bars hide one outcome and shrinks the stack instead of leaving a gap", () => {
+    render(<StackedBars rows={rows} granularity="day" />);
+    const chart = screen.getByRole("img");
+    const legend = screen.getByRole("group", { name: "曲线图例" });
+    const [success, error] = [...legend.querySelectorAll("button")];
+    expect(success!.getAttribute("aria-pressed")).toBe("true");
+    // 2 bars x (success + error + hatch) = 6 painted rects while both are on.
+    expect(chart.querySelectorAll("rect").length).toBe(6);
+    fireEvent.click(success!);
+    expect(success!.getAttribute("aria-pressed")).toBe("false");
+    // Only the error segment and its hatch remain, at the reduced height.
+    expect(chart.querySelectorAll("rect").length).toBe(4);
+    // Hiding the last visible series is refused, same rule as the line chart.
+    fireEvent.click(error!);
+    expect(error!.getAttribute("aria-pressed")).toBe("true");
+    expect(chart.querySelectorAll("rect").length).toBe(4);
+  });
 });
 
 describe("shared hooks", () => {
