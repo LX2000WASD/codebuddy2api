@@ -1,79 +1,262 @@
+/* Design tokens for the admin console.
+   Every theme is composed from two independent axes:
+     - palette  -> `data-palette` only picks a hue seed (`--palette-hue`)
+     - mode     -> `data-theme` (or the OS preference) picks L/C, neutrals,
+                   semantic colors and chart series
+   The accent itself is composed from both, so all 4 x 2 combinations are real
+   themes. The previous version pinned the palette selectors to
+   `[data-theme="light"]` and hard-coded the dark accent inside the mixin, which
+   made every dark palette render identically (P0). Do not reintroduce either. */
+
+/* The literal accent values used by the @supports fallback below. */
+@mixin accent-literals($accent, $hover, $pressed, $strong, $subtle, $border, $on) {
+  --accent: #{$accent};
+  --accent-hover: #{$hover};
+  --accent-pressed: #{$pressed};
+  --accent-text: #{$accent};
+  --accent-text-strong: #{$strong};
+  --accent-subtle: #{$subtle};
+  --accent-border: #{$border};
+  --on-accent: #{$on};
+}
+
 :root {
   color-scheme: light;
-  --hue: 108;
-  --accent: hsl(var(--hue) 38% 43%);
-  --strong: hsl(var(--hue) 32% 29%);
-  --text: hsl(var(--hue) 21% 19%);
-  --muted: hsl(var(--hue) 12% 40%);
-  --line: hsl(var(--hue) 19% 80%);
-  --page: hsl(var(--hue) 25% 93%);
-  --surface: hsl(var(--hue) 22% 99%);
-  --surface-tint: hsl(var(--hue) 30% 91%);
-  /* Cards sit one step above the page but stay translucent so the glass layers
-     underneath still read. Ten rules referenced --card before it existed, which
-     resolved to rgba(0,0,0,0) and flattened the credential cards. */
-  --card: color-mix(in srgb, var(--surface) 55%, transparent);
-  --soft: hsl(var(--hue) 24% 94%);
-  --selected: hsl(var(--hue) 34% 85% / 0.72);
+
+  /* ===== Neutral scale: fixed in every theme, C <= 0.005 ===== */
+  --n0: #fafbfe;
+  --n1: #f3f4f7;
+  --n2: #e9eaed;
+  --n3: #dddee1;
+  --n4: #cccdd0;
+  --n5: #b0b2b4;
+  --n6: #8b8c8f;
+  --n7: #68696b;
+  --n8: #47484a;
+  --n9: #2d2e30;
+  --n10: #1e1f21;
+  --n11: #141517;
+  --n12: #0b0c0d;
+
+  /* ===== Chart series: fixed, never palette-tinted ===== */
+  --series-1: #f36634;
+  --series-2: #8d5403;
+  --series-3: #5d9990;
+  --series-4: #1158d2;
+  --series-5: #907afb;
+  --series-6: #8e4088;
+  /* Legacy names: tsx files pass these straight into inline SVG colors. */
+  --series-requests: var(--series-4);
+  --series-tokens: var(--series-3);
+  --series-credit: var(--series-1);
+
+  /* ===== Type scale (6 steps, line heights live with the components) ===== */
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-15: 15px;
+  --fs-20: 20px;
+  --fs-28: 28px;
+
+  /* ===== Spacing scale (4px base) ===== */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  /* ===== Radius scale: explicit, never derived by multiplication ===== */
+  --radius-tag: 4px;
+  --radius-control: 6px;
+  --radius-block: 6px;
+  --radius-card: 8px;
+  --radius-overlay: 12px;
+  --radius-full: 999px;
+
+  /* ===== Motion ===== */
+  --duration-micro: 120ms;
+  --duration-standard: 180ms;
+  --duration-panel: 240ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+
+  /* ===== Elevation ===== */
+  --shadow-1: 0 1px 2px rgba(16, 18, 22, 0.06);
+  --shadow-2: 0 4px 12px -2px rgba(16, 18, 22, 0.1);
+  --shadow-3: 0 16px 40px -8px rgba(16, 18, 22, 0.18);
+  --overlay: rgba(11, 12, 13, 0.42);
+
+  /* ===== Stacking order ===== */
+  --z-raised: 1;
+  --z-chrome: 10;
+  --z-sticky: 20;
+  --z-floating: 30;
+  --z-overlay: 40;
+  --z-popup: 50;
+
+  /* ===== Palette seed: the only palette-dependent input ===== */
+  --palette-hue: 145;
+  --hue: var(--palette-hue); /* deprecated alias, kept so old rules keep resolving */
+
+  /* ===== Accent: seed + mode L/C composed with oklch() ===== */
+  --accent-l: 0.54;
+  --accent-c: 0.16;
+  --accent-hover-d: 0.045;
+  --accent-press-d: 0.08;
+  --accent-strong-d: 0.03;
+  --accent: oklch(var(--accent-l) var(--accent-c) var(--palette-hue));
+  --accent-hover: oklch(
+    calc(var(--accent-l) - var(--accent-hover-d)) var(--accent-c) var(--palette-hue)
+  );
+  --accent-pressed: oklch(
+    calc(var(--accent-l) - var(--accent-press-d)) var(--accent-c) var(--palette-hue)
+  );
+  --accent-text: var(--accent);
+  --accent-text-strong: oklch(
+    calc(var(--accent-l) - var(--accent-strong-d)) var(--accent-c) var(--palette-hue)
+  );
+  --on-accent: #ffffff;
+  --accent-subtle: color-mix(in oklab, var(--accent) 12%, var(--surface));
+  --accent-border: color-mix(in oklab, var(--accent) 78%, var(--surface));
+
+  /* ===== Surface / text / border roles (light) ===== */
+  --page: var(--n1);
+  --surface: var(--n0);
+  --surface-raised: #ffffff;
+  --surface-sunken: var(--n2);
+  --surface-hover: var(--n2);
+  --surface-active: var(--n3);
+  --text: var(--n10);
+  --text-muted: var(--n8);
+  --text-subtle: var(--n7);
+  --text-disabled: var(--n6);
+  --line: var(--n3);
+  --border: var(--n4);
+  --border-strong: var(--n6);
+  --focus-ring: #076fd6;
+
+  /* ===== Semantic triples: fg / bg / border ===== */
+  --success-fg: #054744;
+  --success-bg: #e2e9eb;
+  --success-border: #b0c5c6;
+  --warning-fg: #4e3a06;
+  --warning-bg: #e9e8e5;
+  --warning-border: #c6c1b4;
+  --danger-fg: #77020f;
+  --danger-bg: #ede2e6;
+  --danger-border: #d3b0b6;
+  --info-fg: #482971;
+  --info-bg: #e8e6f0;
+  --info-border: #c5bcd4;
+
+  /* ===== Sidebar: the page tinted with the palette, low enough that the
+     sidebar text stays neutral and keeps its contrast (>= 12:1 in all 8). ===== */
+  --sidebar-bg: color-mix(in oklab, var(--accent) 8%, var(--page));
+  --sidebar-active-bg: color-mix(in oklab, var(--accent) 16%, var(--page));
+  --sidebar-text: var(--text);
+  --sidebar-text-muted: var(--text-muted);
+  --sidebar-border: color-mix(in oklab, var(--accent) 14%, var(--border));
+  --sidebar-active-bar: var(--accent);
+
+  /* ===== Legacy names still referenced by ui.module.scss: values only.
+     Each one aliases a role, never a raw neutral: --n2 is a fixed light grey, so
+     aliasing it directly paints near-white chips on the dark page. ===== */
+  --strong: var(--accent-text-strong);
+  --muted: var(--text-muted);
+  --surface-tint: var(--surface-sunken);
+  --card: var(--surface);
+  --soft: var(--surface-hover);
+  --selected: var(--accent-subtle);
   --highlight: #ffffffbf;
-  --shadow: #18251a16;
-  --veil: #14281c55;
-  --primary: hsl(var(--hue) 34% 33%);
-  --primary-hover: hsl(var(--hue) 34% 28%);
-  --on-primary: #fff;
-  --error: #9b3c32;
-  --error-bg: #faeae6;
-  --warning: #79561d;
-  --warning-bg: #faf0d9;
-  --good: #315f40;
-  --good-bg: #e6f2e5;
-  --glow: hsl(var(--hue) 43% 78% / 0.72);
-  --glow-alt: hsl(calc(var(--hue) + 38) 35% 79% / 0.65);
-  --series-requests: #3f7fb8;
-  --series-tokens: #4e9e5f;
-  --series-credit: #cf8a2e;
+  --shadow: #1012161a;
+  --veil: #0b0c0d6b;
+  --primary: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --on-primary: var(--on-accent);
+  --glow: color-mix(in srgb, var(--accent) 26%, transparent);
+  --glow-alt: color-mix(in srgb, var(--accent) 18%, transparent);
+  --error: var(--danger-fg);
+  --error-bg: var(--danger-bg);
+  --warning: var(--warning-fg);
+  --good: var(--success-fg);
+  --good-bg: var(--success-bg);
 }
-:root[data-theme="light"][data-palette="blue"] {
-  --hue: 213;
+
+/* Palette seeds. Deliberately NOT scoped to [data-theme="light"]: a seed has to
+   apply in both modes, otherwise dark mode ignores the user's palette. */
+:root[data-palette="green"] {
+  --palette-hue: 145;
 }
-:root[data-theme="light"][data-palette="rose"] {
-  --hue: 339;
+:root[data-palette="blue"] {
+  --palette-hue: 255;
 }
-:root[data-theme="light"][data-palette="amber"] {
-  --hue: 32;
+:root[data-palette="rose"] {
+  --palette-hue: 350;
+}
+:root[data-palette="amber"] {
+  --palette-hue: 70;
 }
 
 @mixin dark {
   color-scheme: dark;
-  --hue: 151;
-  --accent: #79bd9f;
-  --strong: #9cd0b8;
-  --text: #e3eee8;
-  --muted: #abbcb3;
-  --line: #40534a;
-  --page: #111c18;
-  --surface: #21332b;
-  --surface-tint: #17271f;
-  --card: color-mix(in srgb, var(--surface) 62%, transparent);
-  --soft: #293d33;
-  --selected: #345846ad;
-  --highlight: #b0d5bf30;
-  --shadow: #00000042;
-  --veil: #030d099c;
-  --primary: #91c9af;
-  --primary-hover: #a8d8c0;
-  --on-primary: #152a20;
-  --error: #ffc1b7;
-  --error-bg: #462b28;
-  --warning: #f3d89a;
-  --warning-bg: #413724;
-  --good: #a6d7b1;
-  --good-bg: #263e2f;
-  --glow: #35634b55;
-  --glow-alt: #284e4955;
-  --series-requests: #7fb2e0;
-  --series-tokens: #8fd0a0;
-  --series-credit: #e3b96f;
+
+  /* Only L/C change; the hue still comes from --palette-hue. */
+  --accent-l: 0.64;
+  --accent-c: 0.14;
+  --accent-hover-d: 0.035;
+  --accent-press-d: 0.06;
+  --accent-subtle: color-mix(in oklab, var(--accent) 18%, var(--surface));
+  --accent-border: color-mix(in oklab, var(--accent) 76%, var(--surface));
+  /* The dark page is darker than the card, so accent already clears 4.5:1 on it. */
+  --accent-text-strong: var(--accent);
+  --on-accent: var(--n12);
+
+  --page: var(--n12);
+  --surface: var(--n10);
+  --surface-raised: var(--n9);
+  --surface-sunken: var(--n11);
+  --surface-hover: var(--n9);
+  --surface-active: var(--n8);
+  --text: var(--n2);
+  --text-muted: var(--n5);
+  --text-subtle: var(--n6);
+  --text-disabled: var(--n7);
+  --line: var(--n8);
+  --border: var(--n7);
+  --border-strong: var(--n6);
+  --focus-ring: #87bafd;
+
+  --series-1: #cb6442;
+  --series-2: #f7a74e;
+  --series-3: #67d0c1;
+  --series-4: #7aaaff;
+  --series-5: #8567fa;
+  --series-6: #ac6da5;
+
+  --success-fg: #a1e7e2;
+  --success-bg: #303b3c;
+  --success-border: #4b6363;
+  --warning-fg: #f6d389;
+  --warning-bg: #3c3830;
+  --warning-border: #675c44;
+  --danger-fg: #fec8c3;
+  --danger-bg: #3d3738;
+  --danger-border: #6a5858;
+  --info-fg: #decefd;
+  --info-bg: #393840;
+  --info-border: #5f5b6c;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.55);
+  --shadow-2: 0 4px 12px -2px rgba(0, 0, 0, 0.65);
+  --shadow-3: 0 16px 40px -8px rgba(0, 0, 0, 0.72);
+  --overlay: rgba(0, 0, 0, 0.62);
+
+  --highlight: #ffffff1f;
+  --shadow: #00000059;
+  --veil: #0000009e;
 }
 :root[data-theme="dark"] {
   @include dark;
@@ -81,5 +264,54 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     @include dark;
+  }
+}
+
+/* oklch() needs Chrome 111+ / Safari 15.4+ / Firefox 113+. Everything above is
+   the token layer, so an engine without it would lose the accent entirely;
+   these are the eight literal accents from the same solver, in the same order. */
+@supports not (color: oklch(0 0 0)) {
+  :root,
+  :root[data-palette="green"] {
+    @include accent-literals(#178529, #007819, #006d09, #017c1f, #e1ede4, #569f5b, #ffffff);
+  }
+  :root[data-palette="blue"] {
+    @include accent-literals(#1d6ec9, #0560ba, #0055ae, #0f64bf, #e0eaf9, #548ed7, #ffffff);
+  }
+  :root[data-palette="rose"] {
+    @include accent-literals(#af3e7c, #a0306e, #942464, #a53473, #f3e4ee, #c36a97, #ffffff);
+  }
+  :root[data-palette="amber"] {
+    @include accent-literals(#a75800, #984a00, #8d4000, #9d4f00, #f1e7e2, #bb7c4c, #ffffff);
+  }
+
+  :root[data-theme="dark"],
+  :root[data-theme="dark"][data-palette="green"] {
+    @include accent-literals(#4ea253, #439749, #3a8f42, #4ea253, #28342b, #448048, #0b0c0d);
+  }
+  :root[data-theme="dark"][data-palette="blue"] {
+    @include accent-literals(#4c8edf, #4283d3, #3a7bcb, #4c8edf, #27313f, #4272ad, #0b0c0d);
+  }
+  :root[data-theme="dark"][data-palette="rose"] {
+    @include accent-literals(#c96598, #be5a8d, #b55386, #c96598, #3a2c34, #9d5479, #0b0c0d);
+  }
+  :root[data-theme="dark"][data-palette="amber"] {
+    @include accent-literals(#c17a00, #b67000, #ae6800, #c17a00, #382f25, #96631f, #0b0c0d);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme]),
+    :root:not([data-theme])[data-palette="green"] {
+      @include accent-literals(#4ea253, #439749, #3a8f42, #4ea253, #28342b, #448048, #0b0c0d);
+    }
+    :root:not([data-theme])[data-palette="blue"] {
+      @include accent-literals(#4c8edf, #4283d3, #3a7bcb, #4c8edf, #27313f, #4272ad, #0b0c0d);
+    }
+    :root:not([data-theme])[data-palette="rose"] {
+      @include accent-literals(#c96598, #be5a8d, #b55386, #c96598, #3a2c34, #9d5479, #0b0c0d);
+    }
+    :root:not([data-theme])[data-palette="amber"] {
+      @include accent-literals(#c17a00, #b67000, #ae6800, #c17a00, #382f25, #96631f, #0b0c0d);
+    }
   }
 }
