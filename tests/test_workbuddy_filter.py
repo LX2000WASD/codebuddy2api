@@ -191,10 +191,9 @@ class EndpointFilterTests(unittest.TestCase):
                     self.assertEqual(first.url, second.url)
                     self.assertEqual({k: v for k, v in first.headers.items() if k != "content-length"},
                                      {k: v for k, v in second.headers.items() if k != "content-length"})
-                    self.assertLess(len(second.content), len(first.content))
-                    first_body, second_body = json.loads(first.content), json.loads(second.content)
-                    self.assertNotEqual(first_body["messages"][0], second_body["messages"][0])
-                    self.assertEqual(first_body["messages"][1:], second_body["messages"][1:])
+                    # Replayed unchanged: compaction is retired, so the prompt keeps its
+                    # full operating rules instead of shrinking to a one-line identity.
+                    self.assertEqual(first.content, second.content)
                     self.credentials.assert_called_once()
                     self.credential_status.assert_not_called()
                     self.failures.assert_not_called()
@@ -252,32 +251,29 @@ class EndpointFilterTests(unittest.TestCase):
             self.failures.assert_called_once_with("content_filter")
             self.credential_status.assert_not_called()
 
-    def test_disabled_or_compacted_or_unchanged_body_never_retries(self):
+    def test_filter_replay_requires_both_desensitize_and_no_compact(self):
+        """The replay no longer depends on the body changing.
+
+        The retired downgrade only replayed when compaction had produced a *different*
+        (shorter) prompt. Compaction is gone, so the body is now replayed byte for byte;
+        what still gates the replay is the operator's configuration.
+        """
         self.respond = lambda req: reply()
-        for desensitize, no_compact, identity in ((False, True, IDENTITY), (True, False, IDENTITY),
-                                                 (True, True, "You are a helpful assistant")):
+        for desensitize, no_compact, replays in ((False, True, False), (True, False, False),
+                                                 (True, True, True)):
             for route in ROUTES:
-                with self.subTest(route=route, desensitize=desensitize, no_compact=no_compact, identity=identity):
+                with self.subTest(route=route, desensitize=desensitize, no_compact=no_compact):
                     self.reset()
                     converter.CONFIG.update(desensitize=desensitize, no_compact=no_compact)
-                    self.assertEqual(self.post(route, identity=identity).status_code, 200)
-                    self.assert_one_request()
-                    self.failures.assert_called_once_with("content_filter")
-
-    def test_oversized_retry_body_preserves_original_refusal(self):
-        guard = converter._guard_request_size
-        def reject_compact(body):
-            if body["messages"][0]["content"].startswith("You are a coding assistant."):
-                raise converter.HTTPException(status_code=413, detail="synthetic retry budget")
-            return guard(body)
-        self.respond = lambda req: reply()
-        with patch.object(converter, "_guard_request_size", side_effect=reject_compact):
-            for route in ROUTES:
-                self.reset()
-                response = self.post(route)
-                self.assertEqual(response.status_code, 200, response.text)
-                self.assert_one_request()
-                self.assertIn(REFUSAL, json.dumps(response.json(), ensure_ascii=False))
+                    self.assertEqual(self.post(route).status_code, 200)
+                    if replays:
+                        # Identical prompt, one extra attempt: refusals can be intermittent.
+                        self.assertEqual(len(self.requests), 2)
+                        self.assertEqual(self.requests[0].content, self.requests[1].content)
+                        self.failures.assert_called_once_with("content_filter")
+                    else:
+                        self.assert_one_request()
+                        self.failures.assert_called_once_with("content_filter")
 
     def test_second_http_failure_is_not_hidden_by_first_refusal(self):
         for route in ROUTES:
@@ -441,7 +437,13 @@ class EndpointFilterTests(unittest.TestCase):
                 observability._current.reset(token)
 
 
-    def test_short_template_is_not_expanded_for_filter_retry(self):
+    def test_short_template_is_replayed_unchanged_for_filter_retry(self):
+        """A minimal system prompt must not grow a template between attempts.
+
+        The replay used to substitute a fixed identity sentence, which both rewrote the
+        operator's prompt and (for a short one) expanded it. The prompt is now replayed
+        byte for byte, so a client that sent one line still sends one line.
+        """
         self.respond = lambda req: reply()
         for route in ROUTES:
             self.reset()
@@ -453,7 +455,8 @@ class EndpointFilterTests(unittest.TestCase):
             else:
                 body["system"] = IDENTITY.lower()
             self.assertEqual(self.client.post(route, json=body).status_code, 200)
-            self.assert_one_request()
+            self.assertEqual(len(self.requests), 2)
+            self.assertEqual(self.requests[0].content, self.requests[1].content)
             self.failures.assert_called_once_with("content_filter")
 
     def test_filter_errors_never_write_echoed_body_to_any_log(self):

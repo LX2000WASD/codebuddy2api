@@ -6,6 +6,8 @@ import os
 import re
 from urllib.parse import urlsplit
 
+from .desensitize import IDENTITY_MODES
+
 
 def normalize_allowed_origins(value):
     """Normalize a comma/space separated origin list; bare hosts default to HTTPS."""
@@ -93,6 +95,12 @@ SCHEMA = {
     "admin_allowed_origins": _item("", "string", "管理页额外信任来源", env="CODEBUDDY2API_ADMIN_ORIGINS",
                                    allow_empty=True, max_length=2000, validator=normalize_allowed_origins),
     "desensitize": _item(False, "boolean", "提示词脱敏"),
+    # The codebuddy.cn channel rejects a system message that opens with the DeepSeek
+    # Harness identity sentence (400 / 11128). Rewriting only that prefix keeps the rest
+    # of the prompt intact, unlike the retired prompt-compaction path.
+    "identity_normalize": _item("running_on", "string", "客户端身份句改写",
+                                choices=list(IDENTITY_MODES),
+                                env="CODEBUDDY2API_IDENTITY_NORMALIZE"),
     "no_compact": _item(False, "boolean", "保留提示词全文"),
     "keep_tool_metadata": _item(False, "boolean", "保留工具描述", env="CODEBUDDY2API_KEEP_TOOL_METADATA"),
     "skip_check": _item(False, "boolean", "跳过启动预检", mode="restart"),

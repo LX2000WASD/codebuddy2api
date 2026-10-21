@@ -4304,18 +4304,13 @@ async def _fetch_checked_chat(url, headers, body, model_name, rid, cred=None, *,
 
         detector = accumulator.filter_detector
         if detector.detected:
-            retry_body = body
+            # A refusal can be intermittent, so one replay is still worth a request — but
+            # the replay sends the prompt unchanged. The retired downgrade compacted the
+            # system message first, which erased the agent's operating rules (measured:
+            # 476 B -> 173 B); a prompt that lost its tool contract cannot recover the turn.
             if (filter_retry and not filter_retried and detector.retry_safe
                     and CONFIG.get("desensitize") and CONFIG.get("no_compact")):
-                retry_body = _chat_body_desensitize(body, force_compact=True)
-                try:
-                    if _guard_request_size(retry_body) >= _guard_request_size(body):
-                        retry_body = body
-                except HTTPException:
-                    retry_body = body
-            if retry_body != body:
                 _note_content_filter(rid, model_name, final=False)
-                body = retry_body
                 filter_retried = True
                 continue
             if rejection is not None:
@@ -4979,7 +4974,17 @@ def _note_content_filter(rid, model_name, *, final):
     _log(f"[{rid}] 内容审核拦截 | {model_name} | {action}")
 
 
-def _chat_body_desensitize(body: dict, *, force_compact: bool = False) -> dict:
+def _chat_body_desensitize(body: dict) -> dict:
+    """Adapt roles, templates and the client identity sentence without cutting content.
+
+    Prompt compaction used to live here: any system message that looked like a Codex or
+    Claude Code template was replaced by a one-line identity. Measured on a DeepSeek
+    Harness prompt that is destructive — 476 B of operating rules collapsed to 173 B
+    (63.7% lost, including the tool-invocation contract) — so the agent no longer knows
+    how to call its tools. The identity rewrite below fixes the same upstream channel
+    check (400 / 11128 on codebuddy.cn) by touching only the opening sentence, which is
+    the exact prefix the channel inspects.
+    """
     if not CONFIG.get("desensitize"):
         return body
     return desensitize_body(
@@ -4987,8 +4992,9 @@ def _chat_body_desensitize(body: dict, *, force_compact: bool = False) -> dict:
         roles=("system", "developer"),
         desensitize_harness_user=True,
         desensitize_tools=True,
-        compact_harness=(force_compact or not CONFIG.get("no_compact")),
+        compact_harness=False,
         strip_tool_metadata=not CONFIG.get("keep_tool_metadata", False),
+        identity_mode=CONFIG.get("identity_normalize", "running_on"),
     )
 
 

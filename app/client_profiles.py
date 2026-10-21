@@ -30,7 +30,11 @@ def identity_headers(profile: str) -> dict:
     """Use verified package versions without reading desktop settings or device identities."""
     if profile_product(profile) == "cli":
         return {"User-Agent": CLI_USER_AGENT, "X-IDE-Type": "CLI", "X-IDE-Name": "CLI", "X-IDE-Version": CLI_VERSION}
-    name = "WorkBuddy AI" if profile_region(profile) == "intl" else "WorkBuddy"
+    # The official desktop client spells the international product "workbuddy-ai"
+    # (lower case, hyphenated) in the second User-Agent slot; the domestic build repeats
+    # "WorkBuddy". Matching the shipped string matters because the upstream fingerprints
+    # the whole header, and "WorkBuddy AI" was never emitted by any released build.
+    name = "workbuddy-ai" if profile_region(profile) == "intl" else "WorkBuddy"
     return {
         "User-Agent": f"WorkBuddy/{WORKBUDDY_VERSION} {name}/{WORKBUDDY_VERSION} CLI/{WORKBUDDY_CLI_VERSION}",
         "X-IDE-Type": "WorkBuddy", "X-IDE-Name": "WorkBuddy", "X-IDE-Version": WORKBUDDY_VERSION,
