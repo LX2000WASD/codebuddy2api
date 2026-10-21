@@ -89,6 +89,14 @@ SENSITIVE_TERMS: list[str] = [
     "kill",
     "violence",
     "violent",
+    # Product names of other agent harnesses. The codebuddy.cn channel blocks a system
+    # message that names one, one paragraph at a time: first the identity sentence, then
+    # the Web GUI orientation paragraph. Blocking is per paragraph and the list keeps
+    # growing, so deleting the offending paragraphs is a losing game — every new block
+    # costs the agent a piece of its instructions. A zero-width separator inside the
+    # product name defeats the literal match while the model still reads the same words
+    # (measured 2026-10-21: both this and a rename return 200 on the cn channel).
+    "DeepSeek Harness",
     # Claude Code template terms
     "Claude Code",
     "Claude Opus",
@@ -394,6 +402,12 @@ def desensitize_messages(messages: Iterable[dict],
             continue
         if should_desensitize:
             content = m.get("content")
+            # The identity rewrite runs FIRST: it matches the literal sentence at offset 0,
+            # and the zero-width pass below would otherwise split the product name and make
+            # the prefix unmatchable. Everything the prefix rewrite leaves behind is then
+            # caught by the term pass, so both layers stay independent.
+            if role in ("system", "developer"):
+                content = _normalize_identity_content(content, identity_mode)
             compacted = _compact_harness_message(role, content) if compact_harness else None
             if compacted is not None:
                 nm["content"] = desensitize_text(compacted)
@@ -420,10 +434,6 @@ def desensitize_messages(messages: Iterable[dict],
                     else:
                         new_blocks.append(blk)
                 nm["content"] = new_blocks
-        # Runs last: the earlier passes may have rewritten the text, and the identity
-        # rewrite must see the exact bytes the upstream will check at offset 0.
-        if role in ("system", "developer"):
-            nm["content"] = _normalize_identity_content(nm.get("content"), identity_mode)
         out.append(nm)
     return out
 

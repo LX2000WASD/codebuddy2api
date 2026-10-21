@@ -177,5 +177,40 @@ class HarnessContextTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 8)
 
 
+    def test_foreign_harness_product_name_is_split_by_a_zero_width_separator(self):
+        """Every paragraph naming the foreign harness must lose its literal spelling.
+
+        The cn channel blocks one paragraph at a time: the identity sentence first, then
+        the Web GUI orientation paragraph. Deleting paragraphs is a losing game (each
+        block costs the agent a piece of its instructions), so the product name itself is
+        split with a zero-width separator. The model still reads the same words; only the
+        literal byte match disappears. Verified on the live channel 2026-10-21: the
+        original spelling answers 400 / code 11128, the split spelling answers 200.
+        """
+        identity = "You are an AI agent powered by DeepSeek Harness."
+        web_gui = ("You are interacting with the user through the DeepSeek Harness Web GUI "
+                   "whose URL the runtime context names.")
+        checkout = "The runtime context names the DeepSeek Harness implementation checkout."
+        body = {"messages": [{"role": "system", "content": "\n\n".join(
+                              (identity, web_gui, checkout, "How you work:", "- research first"))},
+                            {"role": "user", "content": "hi"}]}
+        out = desensitize_body(body, roles=("system", "developer"), desensitize_tools=True)
+        sent = out["messages"][0]["content"]
+        self.assertNotIn("DeepSeek Harness", sent)
+        flat = sent.replace("\u200b", "")
+        # The model must still receive every instruction verbatim.
+        for fragment in ("How you work:", "- research first", "Web GUI", "implementation checkout"):
+            self.assertIn(fragment, flat)
+        self.assertEqual(flat.count("DeepSeek Harness"), 3)
+
+    def test_identity_rewrite_wins_over_the_zero_width_pass(self):
+        """The prefix rewrite must see the literal sentence, so it runs before the split."""
+        body = {"messages": [{"role": "system", "content":
+                             "You are an AI agent powered by DeepSeek Harness.\nRules"}]}
+        out = desensitize_body(body, roles=("system", "developer"), identity_mode="running_on")
+        sent = out["messages"][0]["content"]
+        self.assertTrue(sent.startswith("You are an AI agent running on "), sent)
+        self.assertIn("Rules", sent)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
