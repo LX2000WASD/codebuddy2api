@@ -1288,7 +1288,24 @@ export function Credentials() {
               </div>
             </>
           ) : (
-            <Empty title={allItems.length ? "没有匹配的凭证" : "还没有凭证"}>
+            <Empty
+              title={allItems.length ? "没有匹配的凭证" : "还没有凭证"}
+              tone={
+                allItems.length &&
+                (channel !== "all" || statusFilter !== "all" || query.trim().length > 0)
+                  ? "filtered"
+                  : "initial"
+              }
+              onClear={
+                allItems.length
+                  ? () => {
+                      setQuery("");
+                      setChannel("all");
+                      setStatusFilter("all");
+                    }
+                  : undefined
+              }
+            >
               {allItems.length ? "可切换上方区域或清除筛选条件。" : "添加账号或导入 .info 文件。"}
             </Empty>
           ))}

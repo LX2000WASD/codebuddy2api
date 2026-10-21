@@ -12,7 +12,7 @@ import {
   type SortingState,
   type Updater,
 } from "@tanstack/react-table";
-import { Skeleton } from "./components";
+import { Skeleton, type SkeletonCell } from "./components";
 import s from "./ui.module.scss";
 
 /** Re-exported so pages can type their sort state without importing the library. */
@@ -422,8 +422,23 @@ export type DataTableProps<T extends RowData> = {
   };
   loading?: boolean;
   loadingLabel?: string;
+  /**
+   * The page's own load error.
+   *
+   * An empty table and a failed request are different facts, and the table cannot
+   * tell them apart from `rows.length`: the failed fetch leaves `rows` empty too, so
+   * every 500 used to paint the "no matching rows" empty state underneath the error
+   * banner — the page said both "the audit store is down" and "your filter matched
+   * nothing" at the same time. When this is set the table renders neither the rows
+   * nor the empty slot: the page already shows the error with its retry button.
+   */
+  error?: string | null;
   /** Rendered instead of the table when the current filter leaves nothing. */
   empty?: ReactNode;
+  /** Table skeleton row height in px; defaults to 87 (measured /dashboard/requests). */
+  rowHeight?: number;
+  /** Table skeleton column shapes, in column order. */
+  skeletonCells?: SkeletonCell[];
   /** Own scroll box with a sticky header (long, interactive tables). */
   scroll?: boolean;
   /**
@@ -448,7 +463,10 @@ export function DataTable<T extends RowData>({
   selection,
   loading = false,
   loadingLabel,
+  error = null,
   empty,
+  rowHeight = 87,
+  skeletonCells,
   scroll = false,
   manualSorting = false,
   className = "",
@@ -533,7 +551,19 @@ export function DataTable<T extends RowData>({
     selection.onChange(next);
   };
 
-  if (loading && !rows.length) return <Skeleton variant="table" label={loadingLabel} />;
+  // A failed load is not an empty result: the page renders the error and its retry
+  // button, so the table must not add "no matching rows" underneath it. Checked
+  // before the skeleton too — `loading` stays false after a rejection, but a page
+  // that reloads after an error would otherwise flash the skeleton under the banner.
+  //
+  // Only the empty slot is suppressed, not the table: a reload that fails after a
+  // successful load keeps its rows (useResource holds the previous payload), and
+  // stale rows under an error banner beat a blank panel.
+  if (error && !modelRows.length) return null;
+  if (loading && !rows.length)
+    return (
+      <Skeleton variant="table" label={loadingLabel} rowHeight={rowHeight} cells={skeletonCells} />
+    );
   if (!modelRows.length) return <>{empty}</>;
 
   return (

@@ -420,6 +420,11 @@ export function Diagnostics() {
           onSortingChange={setAccountSort}
           loading={diagnostic.loading}
           loadingLabel={t("fusion.diagnostics.accountsLoading")}
+          // The page already renders diagnostic.error above; without this the failed
+          // load also painted "no accounts", which reads as "the pool is empty".
+          error={diagnostic.error}
+          rowHeight={66}
+          skeletonCells={["twoLine", "badge", "badge", "text", "text"]}
           empty={<Empty title={t("fusion.diagnostics.noAccounts")} />}
         />
       </Panel>
@@ -438,6 +443,9 @@ export function Diagnostics() {
           onSortingChange={setLockSort}
           loading={diagnostic.loading}
           loadingLabel={t("fusion.diagnostics.locksLoading")}
+          error={diagnostic.error}
+          rowHeight={70}
+          skeletonCells={["text", "badge", "text", "badge", "twoLine"]}
           empty={
             <Empty title={t("fusion.diagnostics.noLocks")}>
               {t("fusion.diagnostics.noLocksHint")}

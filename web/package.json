@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vp dev",
-    "check": "vp check",
+    "check": "vp check && node scripts/check-classes.mjs",
     "test": "vp test run",
     "build": "vp build",
     "test:browser": "playwright test"

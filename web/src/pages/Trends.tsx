@@ -231,8 +231,13 @@ export function Trends() {
               t("fusion.trends.summary.p95"),
               summary.latency_p95_ms === null
                 ? t("fusion.trends.insufficientSamples")
-                : `${metric(summary.latency_p95_ms)} ms · ${t("dash.p95Approx")}`,
+                : `${metric(summary.latency_p95_ms)} ms`,
               "pulse",
+              // The "approximate (histogram)" qualifier used to sit inside the value.
+              // That pushed 410px of content into a 219px cell, so the number rendered
+              // as "6,519.71 ms · …". It belongs on the hint line: it explains the
+              // number without competing with it for width.
+              summary.latency_p95_ms === null ? undefined : t("dash.p95Approx"),
             ],
             [
               t("fusion.trends.summary.rate"),
@@ -242,7 +247,7 @@ export function Trends() {
               "model",
             ],
             [t("fusion.trends.summary.credit"), metric(summary.credit), "leaf"],
-          ].map(([label, value, icon]) => (
+          ].map(([label, value, icon, hint]) => (
             <section className={s.stat} key={label}>
               <div>
                 {label}
@@ -250,7 +255,9 @@ export function Trends() {
                   <Icon name={icon} />
                 </span>
               </div>
-              <strong>{value}</strong>
+              {/* title keeps the full value reachable when the cell is narrow. */}
+              <strong title={value}>{value}</strong>
+              {hint ? <small>{hint}</small> : null}
             </section>
           ))}
         </div>

@@ -383,7 +383,30 @@ export function Logs() {
           sorting={sorting}
           onSortingChange={setSorting}
           loading={resource.loading}
-          empty={<Empty title={t("logs.noMatch")}>{t("logs.adjustFilters")}</Empty>}
+          // A 500 used to paint "没有匹配的日志" under the error banner: the failed
+          // fetch also leaves rows empty, so the table could not tell the two apart.
+          error={resource.error}
+          rowHeight={87}
+          // Mirrors the real columns: duration and tokens exist only on the request
+          // tab, so the runtime/admin tabs get four skeleton cells, not six.
+          skeletonCells={
+            kind === "request"
+              ? ["twoLine", "twoLine", "badge", "text", "twoLine", "badge"]
+              : ["twoLine", "twoLine", "badge", "badge"]
+          }
+          empty={
+            <Empty
+              title={t("logs.noMatch")}
+              tone="filtered"
+              onClear={() => {
+                setFilters(emptyFilters);
+                setDraft(emptyFilters);
+                setCursors([]);
+              }}
+            >
+              {t("logs.adjustFilters")}
+            </Empty>
+          }
         />
         <div className={s.pagination}>
           <span>第 {cursors.length + 1} 页</span>

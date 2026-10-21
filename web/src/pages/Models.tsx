@@ -1014,7 +1014,10 @@ export function Models() {
         }
       />
       {resource.loading && !resource.data ? (
-        <Skeleton variant="table" label={t("models.loading")} />
+        // Same geometry as the DataTable skeleton below (which also paints while
+        // loading): 71px is the measured row height of this catalog, so the two
+        // blocks agree instead of one being 87px and the other 71px.
+        <Skeleton variant="table" label={t("models.loading")} rowHeight={71} />
       ) : (
         <ResourceState {...resource} />
       )}
@@ -1162,8 +1165,24 @@ export function Models() {
           loading={resource.loading}
           loadingLabel={t("models.loading")}
           scroll
+          // A failed catalog load must not render the empty catalog under the error.
+          error={resource.error}
+          rowHeight={71}
+          skeletonCells={["text", "text", "badge", "badge", "twoLine", "badge"]}
           empty={
-            <Empty title={query ? "没有匹配的模型" : "模型目录为空"}>
+            <Empty
+              title={query ? "没有匹配的模型" : "模型目录为空"}
+              tone={filtering ? "filtered" : "initial"}
+              onClear={
+                filtering
+                  ? () => {
+                      setQuery("");
+                      setFilter(emptyFilter);
+                      setSorting([]);
+                    }
+                  : undefined
+              }
+            >
               可新增模型映射，或添加凭证以同步目录。
             </Empty>
           }

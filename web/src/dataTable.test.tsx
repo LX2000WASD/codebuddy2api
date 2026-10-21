@@ -10,6 +10,7 @@ import {
   writeUrlParams,
   type DataTableColumn,
 } from "./dataTable";
+import { Empty, Skeleton } from "./components";
 
 type Row = { id: string; name: string; rate: number | undefined; notes?: string };
 
@@ -46,6 +47,7 @@ function Harness({
   loading,
   tableColumns = columns,
   loadingLabel,
+  error,
 }: {
   data?: Row[];
   selection?: {
@@ -57,6 +59,7 @@ function Harness({
   loading?: boolean;
   tableColumns?: DataTableColumn<Row>[];
   loadingLabel?: string;
+  error?: string | null;
 }) {
   const [sorting, setSorting] = useState<SortingState>([]);
   return (
@@ -77,6 +80,7 @@ function Harness({
       }
       empty={empty}
       loading={loading}
+      error={error}
     />
   );
 }
@@ -279,6 +283,73 @@ describe("loading and empty", () => {
     rerender(<Harness data={[]} empty={<p>没有匹配的模型</p>} />);
     expect(screen.getByText("没有匹配的模型")).toBeTruthy();
     expect(screen.queryByRole("table")).toBeNull();
+  });
+
+  it("renders neither rows nor the empty slot while the load has failed", () => {
+    // A failed fetch and an empty result both leave rows === [], so the empty slot
+    // used to paint "no matching rows" underneath the error banner. The page owns
+    // the error + retry; the table must stay out of the way.
+    const { rerender } = render(
+      <Harness data={[]} error="后端审计库不可用" empty={<p>没有匹配的日志</p>} />,
+    );
+    expect(screen.queryByText("没有匹配的日志")).toBeNull();
+    expect(screen.queryByRole("table")).toBeNull();
+    // Recovery: the error clears and the real empty state takes over.
+    rerender(<Harness data={[]} error={null} empty={<p>没有匹配的日志</p>} />);
+    expect(screen.getByText("没有匹配的日志")).toBeTruthy();
+  });
+
+  it("keeps the error slot authoritative even while a reload is in flight", () => {
+    render(<Harness data={[]} loading error="后端审计库不可用" empty={<p>没有匹配的日志</p>} />);
+    expect(screen.queryByRole("status", { name: "内容加载中" })).toBeNull();
+    expect(screen.queryByText("没有匹配的日志")).toBeNull();
+  });
+
+  it("keeps stale rows on screen when a reload fails", () => {
+    // useResource holds the previous payload when a reload rejects; hiding it would
+    // trade "stale but useful" for a blank panel under the error banner.
+    render(<Harness error="后端审计库不可用" empty={<p>没有匹配的日志</p>} />);
+    expect(screen.queryByText("没有匹配的日志")).toBeNull();
+    expect(columnOrder()).toEqual(["charlie", "alpha", "bravo"]);
+  });
+
+  it("draws a skeleton row as tall as the real row so the first payload does not shift", () => {
+    // Measured real row heights: /dashboard/requests 87, /dashboard/models 71. The
+    // skeleton was a fixed 44px, so every loaded row jumped down by 43px.
+    const { container } = render(<Skeleton variant="table" label="加载中" rowHeight={87} />);
+    const rows = container.querySelectorAll("[class*=skeletonRow]");
+    expect(rows).toHaveLength(6);
+    for (const row of rows) expect((row as HTMLElement).style.height).toBe("87px");
+  });
+
+  it("shapes each skeleton cell by column type", () => {
+    const { container } = render(
+      <Skeleton variant="table" label="加载中" cells={["twoLine", "badge", "text"]} />,
+    );
+    const first = container.querySelector("[class*=skeletonRow]")!;
+    expect([...first.children].map((cell) => cell.getAttribute("data-shape"))).toEqual([
+      "twoLine",
+      "badge",
+      "text",
+    ]);
+  });
+});
+
+describe("empty state tones", () => {
+  it('separates "nothing yet" from "the filter matched nothing"', () => {
+    const { rerender } = render(<Empty title="还没有凭证" tone="initial" />);
+    expect(document.querySelector('[data-tone="initial"]')).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "清除筛选" })).toBeNull();
+    rerender(<Empty title="没有匹配的凭证" tone="filtered" onClear={() => undefined} />);
+    expect(document.querySelector('[data-tone="filtered"]')).toBeTruthy();
+    expect(screen.getByRole("button", { name: "清除筛选" })).toBeTruthy();
+  });
+
+  it("runs the page's own reset handler from the clear-filters action", () => {
+    let cleared = 0;
+    render(<Empty title="没有匹配的日志" tone="filtered" onClear={() => (cleared += 1)} />);
+    fireEvent.click(screen.getByRole("button", { name: "清除筛选" }));
+    expect(cleared).toBe(1);
   });
 });
 
