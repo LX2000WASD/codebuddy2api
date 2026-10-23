@@ -123,6 +123,8 @@ SCHEMA = {
                                  env="CODEBUDDY2API_AUTH_FAIL_THRESHOLD", minimum=1, maximum=100),
     "auth_disable_seconds": _item(3600, "integer", "达到认证失败阈值后的禁用秒数",
                                   env="CODEBUDDY2API_AUTH_DISABLE_SECONDS", minimum=60, maximum=2592000),
+    "request_illegal_cooldown_s": _item(60, "integer", "上游 request illegal（403/11140）的账号短冷却秒数",
+                                        env="CODEBUDDY2API_REQUEST_ILLEGAL_COOLDOWN_S", minimum=1, maximum=3600),
     "account_pause": _item(True, "boolean", "账号级暂停（只退出选号，签到/旅行/保号照跑）",
                            env="CODEBUDDY2API_ACCOUNT_PAUSE"),
     "maintenance_account_gap_s": _item(0.8, "number", "保号任务跨账号循环间休眠秒数（0 关闭）",

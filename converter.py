@@ -438,6 +438,22 @@ QUEUE_FULL_CODES = frozenset({"6021"})
 _QUEUE_FULL_MSG = re.compile(r"queue[\s._-]*full", re.I)
 _QUEUE_FULL_BYTES = re.compile(rb"queue[\s._-]*full", re.I)
 QUEUE_FULL_HEAD = 512          # 识别只读响应体前 512 字节（超出部分不解析、不扫描）
+# 国际站 2026-10-23 实测：同一请求体在 A 账号 403 + code 11140（"request illegal"），换 B 账号
+# 同秒 200（运维档案 28 篇）。这是上游对「请求/账号」的风控判定，不是凭证失能：若按认证失败
+# 计数，一次风控波会让整池账号在 3 连击后各禁 1 小时。故只做短冷却并继续换号。
+REQUEST_ILLEGAL_CODES = frozenset({"11140"})
+_REQUEST_ILLEGAL_MSG = re.compile(r"request\s+illegal", re.I)
+
+
+def _is_request_illegal(raw: bytes, status: int) -> bool:
+    """Whether a 403 body is the upstream "request illegal" verdict rather than a bad credential."""
+    if status != 403 or not raw:
+        return False
+    fields = _error_fields(raw)
+    if not fields:
+        return False
+    code, msg = fields
+    return code in REQUEST_ILLEGAL_CODES or bool(_REQUEST_ILLEGAL_MSG.search(msg))
 QUEUE_FULL_STATUS = frozenset({429, 503})   # 上游表达「排队满」的两种传输形态
 QUEUE_FULL_STATUS_CODE = 503   # 对客户端暴露的语义：服务端容量不足，而不是本账号限流
 QUEUE_FULL_RETRY_AFTER = 5     # 客户端退避：足够短，不放大上游压力
@@ -1611,6 +1627,13 @@ class CredentialPool:
         if cm is None:
             return
         if status in (401, 403):
+            if _is_request_illegal(raw, status):
+                # 上游判「请求非法」：同请求换号即可成功，账号本身还能认证（credits 16:22 仍成功）。
+                # 只短冷却、继续换号，不累加 auth_fails —— 否则一次风控波就禁用整池 1 小时。
+                self.cooldown(cm, reason="upstream request illegal (HTTP 403)",
+                              generation=generation,
+                              duration=CONFIG.get("request_illegal_cooldown_s", 60))
+                return
             # Fusion: 认证类错误连续 N 次才禁用（默认 3）——单次 401/403 可能只是抖动，
             # 连续失败才是账号失能的证据；refresh/chat 成功或手工清零计数。
             threshold = max(1, int(CONFIG.get("auth_fail_threshold", 3) or 3))

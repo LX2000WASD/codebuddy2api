@@ -199,6 +199,26 @@ class AuthFailThresholdTests(FusionFixture):
         pool.clear_cooldowns(cm)   # 手工操作清零
         self.assertEqual(pool.snapshot()[0]["auth_fails"], 0)
 
+    def test_request_illegal_403_parks_briefly_without_disabling(self):
+        """上游 403/11140（request illegal）是请求级判定：同请求换号可成功，不能当凭证失能。"""
+        pool, paths = self.pool(("a.info",), ("uid-a",))
+        cm = pool.first()
+        body = b'{"code":11140,"msg":"request illegal","requestId":"req-1"}'
+        for _ in range(3):
+            pool.note_status(cm, 403, raw=body)
+        self.assertEqual(pool.snapshot()[0]["auth_fails"], 0)
+        self.assertGreater(pool._entries[0]["fail_until"], time.time())
+        self.assertLess(pool._entries[0]["fail_until"], time.time() + 120)   # 短冷却，不是 1h
+
+    def test_a_plain_403_still_counts_as_an_auth_failure(self):
+        """没有 11140 证据的 403 仍走原逻辑：3 连击禁用，避免把真封号当抖动。"""
+        pool, paths = self.pool(("a.info",), ("uid-a",))
+        cm = pool.first()
+        for _ in range(3):
+            pool.note_status(cm, 403, raw=b'{"code":99999,"msg":"forbidden"}')
+        self.assertEqual(pool.snapshot()[0]["auth_fails"], 0)
+        self.assertGreater(pool._entries[0]["fail_until"], time.time() + 3500)
+
     def test_refresh_success_clears_the_counter(self):
         calls = []
         expired = synthetic_credential(self.root, "a.info", "uid-a", expires_in=-60)
