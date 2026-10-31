@@ -4293,6 +4293,17 @@ def admin_sync(request: Request, authorization: Optional[str] = Header(default=N
     return _admin_credential_action("sync")
 
 
+@app.post("/admin/credentials/{identity}/restricted-probe")
+async def admin_credential_restricted_probe(identity: str, request: Request):
+    """兼容路由：对一个受限号立即探活一次（管理面手动入口）。
+
+    必须注册在通用的 /admin/credentials/{identity}/{action} 之前，否则 "restricted-probe"
+    会被当作不支持的 action 拒绝；与 {name}/enabled 的兼容路由同一原因。
+    """
+    _check_admin_auth(request)
+    return await run_in_threadpool(admin_probe_restricted_credential, identity)
+
+
 @app.post("/admin/credentials/{identity}/{action}")
 async def admin_credential_action(identity: str, action: str, request: Request,
                                  authorization: Optional[str] = Header(default=None),

@@ -238,6 +238,14 @@ class ManagementSurfaceTests(unittest.TestCase):
         self.assertIn('@route("POST", "/admin/credentials/{id}/restricted-probe")', source)
         self.assertIn('@route("GET", "/admin/restricted-probes")', source)
 
+    def test_the_manual_probe_route_wins_over_the_generic_action_dispatcher(self):
+        # The legacy /admin/credentials/{identity}/{action} route answers 404 for unknown
+        # actions, so the probe must be registered before it (same reason as {name}/enabled).
+        paths = [getattr(route, "path", "") for route in converter.app.routes]
+        probe = paths.index("/admin/credentials/{identity}/restricted-probe")
+        generic = paths.index("/admin/credentials/{identity}/{action}")
+        self.assertLess(probe, generic)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
