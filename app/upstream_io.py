@@ -1,7 +1,8 @@
 """Bound upstream retries and prohibit replay after a response has opened."""
 
 import asyncio
-from contextlib import asynccontextmanager
+import gzip
+from contextlib import asynccontextmanager, contextmanager
 from datetime import timezone
 from email.utils import parsedate_to_datetime
 import math
@@ -11,6 +12,8 @@ import json
 import httpx
 
 from app.content_filter import ContentFilterDetector
+from app.upstream_compat import should_channel_fallback
+from app.site_routing import profile_for_headers
 
 
 class UpstreamResponseError(Exception):
@@ -37,9 +40,10 @@ class UpstreamTimeout(httpx.ReadTimeout):
 class UpstreamHTTPError(UpstreamResponseError):
     """Distinguish actual upstream HTTP errors from failures synthesized while collecting a response."""
 
-    def __init__(self, status, raw, *, retry_after=None):
+    def __init__(self, status, raw, *, retry_after=None, from_channel_fallback=False):
         super().__init__(status, raw)
         self.retry_after = retry_after
+        self.from_channel_fallback = from_channel_fallback
         self.headers = {"Retry-After": str(retry_after)} if retry_after is not None else {}
 
 
@@ -366,16 +370,84 @@ class ChatSSEAccumulator:
 ERROR_BODY_LIMIT = 4 * 1024 * 1024  # Bound error-body memory usage.
 
 
+class _BoundedBuffer:
+    """Accumulate upstream error bytes until a fixed memory budget is reached."""
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.buf = bytearray()
+
+    def extend(self, chunk: bytes) -> bool:
+        """Add one chunk and report whether the budget is exhausted."""
+        self.buf.extend(chunk[:self.limit - len(self.buf)])
+        return len(self.buf) >= self.limit
+
+    def bytes(self) -> bytes:
+        return bytes(self.buf)
+
+
 async def read_bounded_error(response, limit: int = ERROR_BODY_LIMIT) -> bytes:
     """Read and truncate upstream error bytes within a fixed budget."""
     if limit <= 0:
         return b""
-    buf = bytearray()
+    buffer = _BoundedBuffer(limit)
     async for chunk in response.aiter_bytes():
-        buf.extend(chunk[:limit - len(buf)])
-        if len(buf) >= limit:
+        if buffer.extend(chunk):
             break
-    return bytes(buf)
+    return buffer.bytes()
+
+
+def read_bounded_sync_error(response, limit: int = ERROR_BODY_LIMIT) -> bytes:
+    """Read and truncate a synchronous upstream error body within a fixed budget."""
+    if limit <= 0:
+        return b""
+    buffer = _BoundedBuffer(limit)
+    for chunk in response.iter_bytes():
+        if buffer.extend(chunk):
+            break
+    return buffer.bytes()
+
+
+def _json_request_kwargs(headers, body, url):
+    """Serialize replay-safe chat bytes using the profile's gzip contract."""
+    if httpx.URL(url).path not in ("/v2/chat/completions", "/console/chat/completions"):
+        return {"headers": dict(headers), "json": body}
+    # A client that compresses its request body still advertises the encodings it accepts;
+    # the shipped WorkBuddy clients send this exact list, never "identity".
+    request_headers = {**headers, "Accept-Encoding": "gzip, compress, deflate, br"}
+    names = {str(name).lower() for name in headers}
+    if not names.intersection({"x-domain", "x-ide-type"}):
+        return {"headers": request_headers, "json": body}
+    profile = profile_for_headers(headers)
+    raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    compressed = (profile in ("cn-cli", "intl-cli", "intl-work") or
+                  (profile == "cn-work" and len(raw) >= 1024))
+    if not compressed:
+        return {"headers": request_headers, "json": body}
+    if not any(str(name).lower() == "content-type" for name in request_headers):
+        request_headers["Content-Type"] = "application/json"
+    request_headers["Content-Encoding"] = "gzip"
+    return {"headers": request_headers, "content": gzip.compress(raw, compresslevel=6, mtime=0)}
+
+
+@contextmanager
+def open_backend_stream_sync(client, url, headers, body, *, timeout=None, fallback_url=None):
+    """Open a sync upstream stream, retrying once on the console endpoint after a channel rejection.
+
+    Yields the final response with its error bytes when they were already consumed, otherwise None.
+    The body is read only for a 400 that could still be retried, so slow non-400 failures never block
+    background work.
+    """
+    while True:
+        raw = None
+        with client.stream("POST", url, timeout=timeout, **_json_request_kwargs(headers, body, url)) as response:
+            if fallback_url and response.status_code == 400:
+                raw = read_bounded_sync_error(response)
+                if should_channel_fallback(fallback_url, response.status_code, raw):
+                    url, fallback_url = fallback_url, None
+                    continue
+            yield response, raw
+            return
 
 
 # Connection failures occur before any request body is sent.
@@ -550,7 +622,8 @@ async def open_backend_stream(url, headers, body, *, read_timeout=300, on_retry=
             async with _attempt_client(url, timeout, clients if attempt == 0 else None) as client:
                 attempt_headers = headers_for_attempt() if headers_for_attempt is not None else headers
                 started = time.monotonic()
-                async with client.stream("POST", url, headers=attempt_headers, json=body, timeout=timeout) as response:
+                async with client.stream("POST", url, timeout=timeout,
+                                         **_json_request_kwargs(attempt_headers, body, url)) as response:
                     opened = True
                     if bounded:
                         response = BoundedStream(response, ttfb_timeout=ttfb_timeout, started=started,

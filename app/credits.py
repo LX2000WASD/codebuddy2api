@@ -4,9 +4,11 @@
 import base64
 from copy import deepcopy
 import json
+import itertools
 import math
 import os
 import re
+import secrets
 import tempfile
 import threading
 import time
@@ -14,7 +16,8 @@ from pathlib import Path
 
 import httpx
 
-from .client_profiles import catalog_headers, enterprise_id_of
+from .client_profiles import catalog_headers, credential_headers, enterprise_id_of
+from .safe_logging import sanitize_log_text
 from .site_routing import PROFILE_ENDPOINTS, profile_for_auth, profile_product
 
 BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -40,6 +43,7 @@ ENTERPRISE_ACCOUNTS_PATH = "/console/accounts"
 # An enterprise allowance reported as -1 is unlimited rather than exhausted.
 UNLIMITED_ALLOWANCE = -1
 CONFIG_PATH = "/v3/config"  # Official cloud model catalog
+PERSONAL_MODELS_PATH = "/v2/enterprises/personal/models"  # Rich personal model catalog
 RESOURCE_PRODUCT_CODE = "p_tcaca"
 CREDITS_PAGE_SIZE = 100
 CREDITS_MAX_PAGES = 20  # Mark capped results partial instead of reporting complete balances.
@@ -50,6 +54,10 @@ _ALREADY_RE = re.compile(r"已签到|已领取|已经.*(?:签到|领取)|重复�
 
 class AuthExpiredError(Exception):
     """Signal an expired token from a billing HTTP 401 response."""
+
+
+class _PersonalCatalogUnavailable(RuntimeError):
+    """Signal that an older or non-SaaS product has no personal model route."""
 
 
 # ---------------------------------------------------------------------------
@@ -95,16 +103,38 @@ def _web_headers(api_host: str, access_token: str, uid: str = "", domain: str = 
     }
 
 
-def _post_json(client: httpx.Client, url: str, headers: dict, body: dict) -> tuple[int, dict]:
-    """POST JSON and return status/payload, raising AuthExpiredError on HTTP 401."""
+def _post_json_detail(client: httpx.Client, url: str, headers: dict, body: dict) -> tuple[int, object, dict]:
+    """POST JSON and retain bounded response-shape diagnostics."""
     r = client.post(url, headers=headers, json=body, timeout=REQUEST_TIMEOUT)
     if r.status_code == 401:
         raise AuthExpiredError("登录身份过期")
+    response_headers = getattr(r, "headers", {}) or {}
+    content_type = response_headers.get("content-type", "") if hasattr(response_headers, "get") else ""
+    content_type = str(content_type)[:40]
+    content = getattr(r, "content", None)
+    if isinstance(content, bytes):
+        length = len(content)
+    elif isinstance(content, str):
+        length = len(content.encode("utf-8"))
+    else:
+        length = 0
     try:
         payload = r.json()
     except Exception:
-        payload = {}
-    return r.status_code, payload
+        # 只在诊断分支解码响应体，成功路径不读取完整文本。
+        raw_text = getattr(r, "text", "")
+        preview = sanitize_log_text(str(raw_text or ""), 60)
+        preview = preview.replace("\r", " ").replace("\n", " ")
+        return r.status_code, {}, {"is_json": False, "content_type": content_type,
+                                   "length": length, "preview": preview}
+    return r.status_code, payload, {"is_json": True, "content_type": content_type,
+                                    "length": length}
+
+
+def _post_json(client: httpx.Client, url: str, headers: dict, body: dict) -> tuple[int, dict]:
+    """POST JSON and return status/payload, raising AuthExpiredError on HTTP 401."""
+    status, payload, _ = _post_json_detail(client, url, headers, body)
+    return status, payload
 
 
 def _get_json(client: httpx.Client, url: str, headers: dict) -> tuple[int, dict]:
@@ -143,6 +173,8 @@ def _checkin_request(access_token, uid, domain, path):
     headers = {"accept": "application/json", "content-type": "application/json",
                "authorization": f"Bearer {access_token}", "x-user-id": str(uid or ""),
                "x-domain": str(domain or "")}
+    if profile_for_auth({"accessToken": access_token, "domain": domain}) == "cn-work":
+        headers.update({"X-Request-ID": secrets.token_hex(16), "User-Agent": "axios/1.16.1"})
     url = host + path
     with httpx.Client() as client:
         try:
@@ -328,12 +360,56 @@ def _resource_body(page: int) -> dict:
     }
 
 
+def _response_type(value) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, dict):
+        return "dict"
+    if isinstance(value, list):
+        return "list"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, (int, float)):
+        return "number"
+    return type(value).__name__
+
+
+def _shape_keys(*layers: tuple[str, object]) -> str:
+    parts = []
+    for label, value in layers:
+        if isinstance(value, dict):
+            keys = list(value)[:6]
+            parts.append(f"{label} 键：{','.join(str(key) for key in keys) or '无'}")
+        elif value is not None:
+            # null 层只代表路径不存在，不占预算；深层键名才是诊断关键。
+            parts.append(f"{label} 为 {_response_type(value)}")
+    return ("；".join(parts))[:140]
+
+
+def _find_accounts(payload: dict) -> list | None:
+    """Locate the Accounts list first; type noise in unused sibling fields is not fatal."""
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    response = data.get("Response")
+    nested = data.get("data")
+    nested_response = nested.get("Response") if isinstance(nested, dict) else None
+    for candidate in (response.get("Data") if isinstance(response, dict) else None,
+                      nested_response.get("Data") if isinstance(nested_response, dict) else None,
+                      data):
+        if isinstance(candidate, dict) and isinstance(candidate.get("Accounts"), list):
+            return candidate["Accounts"]
+    return data["accounts"] if isinstance(data.get("accounts"), list) else None
+
+
 def _fetch_accounts_page(client, url: str, headers: dict, page: int, *, retry_empty: bool) -> list:
-    """Fetch one credit page with bounded retries, distinguishing expired authentication."""
+    """Fetch one credit page with bounded retries and response-shape diagnostics."""
     last_err: Exception | None = None
     for attempt in range(3):
         try:
-            status, payload = _post_json(client, url, headers, _resource_body(page))
+            status, payload, meta = _post_json_detail(client, url, headers, _resource_body(page))
         except AuthExpiredError:
             raise
         except httpx.HTTPError as e:
@@ -344,19 +420,34 @@ def _fetch_accounts_page(client, url: str, headers: dict, page: int, *, retry_em
             last_err = RuntimeError(f"积分接口 HTTP {status}")
             time.sleep(0.3 * (attempt + 1))
             continue
+        if not meta.get("is_json"):
+            last_err = RuntimeError(
+                f"积分接口返回非 JSON（{meta.get('content_type') or '未知类型'}，"
+                f"{meta.get('length', 0)} 字节，开头：{meta.get('preview') or '空'}）")
+            time.sleep(0.3 * (attempt + 1))
+            continue
+        if not isinstance(payload, dict):
+            last_err = RuntimeError(
+                f"积分接口返回结构无法识别（顶层为 {_response_type(payload)}）")
+            time.sleep(0.3 * (attempt + 1))
+            continue
         code = payload.get("code")
         if code not in (0, None):
             raise RuntimeError(str(payload.get("msg") or f"积分接口 code={code}"))
-        data = payload.get("data") or {}
-        resp = (data.get("Response") or {}).get("Data") or (data.get("data") or {}).get("Response", {}).get("Data") or data
-        # Missing account structure is not a confirmed zero balance.
-        accounts = None
-        if isinstance(resp, dict) and isinstance(resp.get("Accounts"), list):
-            accounts = resp["Accounts"]
-        elif isinstance(payload.get("data"), dict) and isinstance(payload["data"].get("accounts"), list):
-            accounts = payload["data"]["accounts"]
+        accounts = _find_accounts(payload)
         if accounts is None:
-            last_err = RuntimeError("积分接口返回缺少 Accounts 结构")
+            data = payload.get("data")
+            response = data.get("Response") if isinstance(data, dict) else None
+            nested = data.get("data") if isinstance(data, dict) else None
+            nested_response = nested.get("Response") if isinstance(nested, dict) else None
+            last_err = RuntimeError(
+                "积分接口返回缺少 Accounts 结构（" + _shape_keys(
+                    ("顶层", payload), ("data", data),
+                    ("data.Response", response), ("data.data", nested),
+                    ("data.Response.Data",
+                     response.get("Data") if isinstance(response, dict) else None),
+                    ("data.data.Response.Data",
+                     nested_response.get("Data") if isinstance(nested_response, dict) else None)) + "）")
             time.sleep(0.3 * (attempt + 1))
             continue
         if not accounts and retry_empty and attempt < 2:  # Retry a transient empty page once.
@@ -615,11 +706,61 @@ def select_cli_models(data: dict) -> list[dict]:
     return select_product_models(data, "cli")
 
 
+def _parse_model_scopes(payload: object, product: str, label: str) -> dict[str, list[dict]]:
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label}格式错误: response")
+    if payload.get("code") != 0:
+        raise RuntimeError(f"{label}返回非成功状态")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise ValueError(f"{label}格式错误: data")
+    return {"picker": select_product_models(data, product),
+            "account": select_product_models(data, product, scope="account")}
+
+
+def fetch_personal_model_scopes(access_token: str, user_agent: str = "", *, domain: str = "",
+                                uid: str = "", enterprise_id: str = "") -> dict[str, list[dict]]:
+    """Fetch the richer personal model table used by the desktop cloud-agent client."""
+    if enterprise_id:
+        raise ValueError("企业账号不能请求个人模型表")
+    auth = {"accessToken": access_token, "domain": domain}
+    profile = profile_for_auth(auth)
+    headers = credential_headers(auth, {"uid": uid})
+    headers.update({"Accept": "application/json, text/plain, */*",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "X-Request-ID": secrets.token_hex(16)})
+    if user_agent:
+        headers["User-Agent"] = user_agent
+    try:
+        with httpx.Client() as client:
+            response = client.get(BILLING_PROFILE_HOSTS[profile] + PERSONAL_MODELS_PATH,
+                                  headers=headers, timeout=REQUEST_TIMEOUT)
+    except httpx.HTTPError:
+        raise RuntimeError("个人模型表接口网络错误") from None
+    if response.status_code == 401:
+        raise AuthExpiredError("登录身份过期")
+    if response.status_code in (404, 405, 501):
+        raise _PersonalCatalogUnavailable(f"个人模型表接口 HTTP {response.status_code}")
+    if response.status_code != 200:
+        raise RuntimeError(f"个人模型表接口 HTTP {response.status_code}")
+    try:
+        payload = response.json()
+    except ValueError:
+        raise ValueError("个人模型表接口返回无法解析") from None
+    return _parse_model_scopes(payload, profile_product(profile), "个人模型表接口")
+
+
 def fetch_model_scopes(access_token: str, user_agent: str = "", *, domain: str = "",
-                       uid: str = "", enterprise_id: str = "") -> dict[str, list[dict]]:
+                       uid: str = "", enterprise_id: str = "", prefer_personal: bool = False) -> dict[str, list[dict]]:
     """Fetch selector and account-root catalogs without assuming every candidate is servable."""
     auth = {"accessToken": access_token, "domain": domain}
     profile = profile_for_auth(auth)
+    if prefer_personal and not enterprise_id:
+        try:
+            return fetch_personal_model_scopes(access_token, user_agent, domain=domain, uid=uid)
+        except _PersonalCatalogUnavailable:
+            # Older deployments and private endpoints retain the established /v3/config path.
+            pass
     headers = catalog_headers(auth, {"uid": uid, "enterpriseId": enterprise_id}, user_agent=user_agent)
     try:
         with httpx.Client() as client:
@@ -634,20 +775,14 @@ def fetch_model_scopes(access_token: str, user_agent: str = "", *, domain: str =
         payload = response.json()
     except ValueError:
         raise ValueError("模型配置接口返回无法解析") from None
-    if not isinstance(payload, dict):
-        raise ValueError("模型配置格式错误: response")
-    if payload.get("code") != 0:
-        raise RuntimeError("模型配置接口返回非成功状态")
-    product = profile_product(profile)
-    return {"picker": select_product_models(payload.get("data"), product),
-            "account": select_product_models(payload.get("data"), product, scope="account")}
+    return _parse_model_scopes(payload, profile_product(profile), "模型配置接口")
 
 
 def fetch_model_catalog(access_token: str, user_agent: str = "", *, domain: str = "",
-                        uid: str = "", enterprise_id: str = "") -> list[dict]:
+                        uid: str = "", enterprise_id: str = "", prefer_personal: bool = False) -> list[dict]:
     """Return selector models for this credential's product."""
     return fetch_model_scopes(access_token, user_agent, domain=domain, uid=uid,
-                              enterprise_id=enterprise_id)["picker"]
+                              enterprise_id=enterprise_id, prefer_personal=prefer_personal)["picker"]
 
 
 # ---------------------------------------------------------------------------
@@ -788,6 +923,74 @@ def fetch_request_usage(access_token: str, days: int = USAGE_MAX_DAYS,
 # Atomic JSON persistence for per-credential credit and check-in state
 # ---------------------------------------------------------------------------
 
+_LEDGER_REVISION = itertools.count(1)
+
+
+def _solvent_row(row: dict | None) -> bool:
+    """Mirror the pool's has-credit test so only eligibility flips bump the routing revision."""
+    credits = (row or {}).get("credits") or {}
+    if not credits:
+        return True
+    if credits.get("unlimited") and credits.get("enterprise"):
+        return True
+    try:
+        return float(credits.get("credits") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _segment_key(segment: dict) -> tuple:
+    expires = segment.get("expires_at")
+    return (expires is None, expires or 0, segment.get("package_code") or segment.get("source") or "积分")
+
+
+def balance_changes(previous: dict, current: dict, now: float | None = None) -> list[dict]:
+    """Explain one balance refresh as income, consumption, expiry and adjustment rows.
+
+    Packages are matched by code and expiry. Consumption across packages folds into one row,
+    and an adjustment absorbs any remainder so the rows always sum to the balance delta. An
+    incomparable pair (no earlier balance, a partial page, an enterprise quota or a site
+    change) yields nothing rather than a fabricated change.
+    """
+    if (not previous or previous.get("partial") or current.get("partial")
+            or previous.get("enterprise") or current.get("enterprise")
+            or bool(previous.get("intl")) != bool(current.get("intl"))):
+        return []
+    try:
+        before, after = float(previous["credits"]), float(current["credits"])
+    except (KeyError, TypeError, ValueError):
+        return []
+    now = time.time() if now is None else now
+    old = {_segment_key(s): s for s in previous.get("segments") or []}
+    new = {_segment_key(s): s for s in current.get("segments") or []}
+    changes, consumed = [], 0.0
+
+    def add(kind, delta, segment=None):
+        if abs(delta) >= 0.005:
+            segment = segment or {}
+            changes.append({"type": kind, "delta": round(delta, 2), "balance": round(after, 2),
+                            "source": segment.get("source"), "package_code": segment.get("package_code") or None,
+                            "expires_at": segment.get("expires_at")})
+
+    for key in sorted(old.keys() | new.keys()):
+        was, kept = old.get(key), new.get(key)
+        if kept is None:
+            # A package leaves the list once it expires or is spent down to zero.
+            if was.get("expires_at") is not None and was["expires_at"] <= now:
+                add("expire", -float(was["remaining"]), was)
+            else:
+                consumed += float(was["remaining"])
+            continue
+        total = float(kept.get("total") or kept["remaining"])
+        remaining_before = float(was["remaining"]) if was else 0.0
+        granted = max(total - (float(was.get("total") or was["remaining"]) if was else 0.0), 0.0)
+        add("income", granted, kept)
+        consumed += max(remaining_before + granted - float(kept["remaining"]), 0.0)
+    add("consume", -consumed)
+    add("adjust", after - before - sum(change["delta"] for change in changes))
+    return changes
+
+
 class CreditLedger:
     """Persist per-credential check-in and balance snapshots for expiry-aware scheduling."""
 
@@ -796,6 +999,10 @@ class CreditLedger:
         self.path = Path(store.path if store is not None else path)
         self._lock = threading.Lock()
         self._data: dict = {"version": 1, "creds": {}}
+        # Globally unique so a rebuilt ledger can never reuse the previous one's cache key.
+        self.revision = next(_LEDGER_REVISION)
+        # Bumped only when an account's solvency flips; value churn must not clear shards.
+        self.routing_revision = next(_LEDGER_REVISION)
         self._load()
 
     def _load(self):
@@ -810,6 +1017,7 @@ class CreditLedger:
             self._data = {"version": 1, "creds": {}}
 
     def _save(self):
+        self.revision = next(_LEDGER_REVISION)
         if self._store is not None:
             self._store.put("credits", self._data)
             return
@@ -862,7 +1070,8 @@ class CreditLedger:
     def remove(self, cred_id: str):
         """Clear persisted credit, check-in and error state after an identity change."""
         with self._lock:
-            self._data["creds"].pop(cred_id, None)
+            if _solvent_row(self._data["creds"].pop(cred_id, None)) is not True:
+                self.routing_revision = next(_LEDGER_REVISION)
             self._save()
 
     # Check-in state
@@ -889,8 +1098,13 @@ class CreditLedger:
 
     # Credit balances
 
-    def update_credits(self, cred_id: str, result: dict):
+    def update_credits(self, cred_id: str, result: dict) -> list[dict]:
+        """Store the new balance and return how it differs from the previous one."""
         with self._lock:
+            # Snapshot before mutating: _entry may hand back the very row read here.
+            was_solvent = _solvent_row(self._data["creds"].get(cred_id))
+            previous = deepcopy((self._data["creds"].get(cred_id) or {}).get("credits") or {})
+            had_balance_row = bool(previous)
             e = self._entry(cred_id)
             e["credits"] = {
                 "credits": result.get("credits"),
@@ -906,7 +1120,12 @@ class CreditLedger:
                 "unlimited": bool(result.get("unlimited")) and bool(result.get("enterprise")),
             }
             e["error"] = None
+            # A first balance row changes eligibility too: an absent row never matched
+            # _has_credit for intl accounts, so its appearance must move the routing revision.
+            if not had_balance_row or _solvent_row({"credits": e["credits"]}) != was_solvent:
+                self.routing_revision = next(_LEDGER_REVISION)
             self._save()
+            return balance_changes(previous, e["credits"])
 
     def note_error(self, cred_id: str, message: str):
         with self._lock:

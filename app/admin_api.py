@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections import OrderedDict
 import io
 import json
+import os
+import sqlite3
 from pathlib import Path
 import threading
 import time
@@ -13,18 +15,31 @@ import zipfile
 
 from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response
 
 from . import auth_oauth
+from . import admin_account
+from .api_keys import KeyStore
+from . import perf_metrics
+from . import media_store as media_store_module
 from .admin_auth import AdminAuth, AdminMiddleware, COOKIE_NAME, SESSION_TTL, error_response, same_origin
 from .audit_store import stats_view
 from .control_store import ConflictError, validate_model
 from .credential_io import CredentialFileError, MAX_CREDENTIAL_BYTES, _valid_name, read_import_file
 from .health_endpoints import int_param
 from .settings import SCHEMA, resolve_settings, validate_settings
+from .site_routing import PROFILE_DOMAINS
+from .backups import BackupError
+from .updates import UpdateError
 
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 CLEAR_CONFIRMATION = "清空全部日志与统计"
+
+
+class AdminError(Exception):
+    def __init__(self, status: int, message: str):
+        self.status, self.message = status, message
+        super().__init__(message)
 
 
 async def _body(request, maximum=65536, *, allow_empty=False):
@@ -63,7 +78,9 @@ def _public_credential(item):
               "auto_checkin", "auto_travel", "travel_supported", "checkin", "travel",
               "trial_supported", "trial",
               "daily_chat_supported", "auto_daily_chat", "daily_chat",
+              "growth_supported", "auto_growth", "growth_auto",
               "token_expired", "token_expires_at", "last_refresh_time", "sessions", "sticky_sessions", "last_error_code",
+              "last_error_body", "auto_disabled", "restricted", "restricted_until",
               "usage_stats",
               # Fusion pool state promised by the contract: paused (§3 accounts[].paused,
               # §10 pool.snapshot) plus the failure counters the diagnostic view already
@@ -116,6 +133,18 @@ def install_admin(app, config, gateway):
     def selected(identity):
         return next((item for item in inventory() if identity == (item.get("account_key") or item.get("id"))), None)
 
+    def updater():
+        found = config.get("updater")
+        if found is None:
+            raise UpdateError("更新服务未启用")
+        return found
+
+    def backups():
+        found = config.get("backups")
+        if found is None:
+            raise BackupError("备份服务未启用")
+        return found
+
     def known_models():
         return [item["id"] if isinstance(item, dict) else item for item in gateway.admin_model_inventory()]
 
@@ -134,6 +163,20 @@ def install_admin(app, config, gateway):
                       "mode": "startup", "type": "boolean", "label": "全部国内账号首次领猫预授权", "locked": True})
         return {"revision": control.snapshot()["revision"], "items": items, "audit": audit.storage(),
                 "session": auth.storage()}
+
+    def config_notice():
+        """List runtime settings still supplied by the environment, until the user migrates or mutes."""
+        if config.get("config_notice_muted"):
+            return None
+        items = [{"key": key, "label": spec["label"]}
+                 for key, spec in SCHEMA.items()
+                 if spec.get("env") and spec.get("env_scope") == "runtime"
+                 and not spec.get("hidden") and not spec.get("sensitive")
+                 and spec["env"] in os.environ]
+        if not items:
+            return None
+        return {"count": len(items), "items": items,
+                "command": "python3 converter.py config migrate"}
 
     def audit_settings(values):
         mapping = {"audit_max_bytes": "max_bytes", "audit_retention_days": "retention_days",
@@ -232,8 +275,13 @@ def install_admin(app, config, gateway):
                 try:
                     result = await function(request)
                     return result
+                except AdminError as exc:
+                    return error_response(exc.status, exc.message)
                 except ConflictError:
                     return error_response(409, "配置已更新，请刷新后重试")
+                except (UpdateError, BackupError) as exc:
+                    # 422, not 409: the WebUI rewrites every 409 into a generic save conflict.
+                    return error_response(422, str(exc))
                 except HTTPException as exc:
                     return error_response(exc.status_code, "管理操作不符合当前状态，请刷新后重试")
                 except ValueError:
@@ -250,19 +298,32 @@ def install_admin(app, config, gateway):
         if auth.csrf_enabled() and not same_origin(request, auth.allowed_origins()):
             return error_response(403, "登录请求 Origin 校验失败")
         data = await _body(request, 8192)
-        result, status = auth.login(request, data.get("api_key"))
+        username = data.get("username")
+        password = data.get("password")
+        if (not isinstance(username, str) or not isinstance(password, str)
+                or type(data.get("remember", False)) is not bool):
+            raise AdminError(400, "用户名、密码或记住我字段无效")
+        result, status = await run_in_threadpool(auth.login, request, username, password, data.get("remember", False))
         if not result:
-            return error_response(status, "登录尝试过多，请稍后重试" if status == 429 else "API key 无效")
+            return error_response(status, "登录尝试过多，请稍后重试" if status == 429 else
+                                  "账户正在变更，请稍后重试" if status == 503 else "用户名或密码错误")
         sid, session = result
-        response = JSONResponse({"authenticated": True, "csrf_token": session["csrf_token"]})
-        response.set_cookie(COOKIE_NAME, sid, max_age=SESSION_TTL, httponly=True, secure=request.url.scheme == "https", samesite="strict", path="/admin")
+        account = auth._account()
+        response = JSONResponse({"authenticated": True, "csrf_token": session["csrf_token"],
+                                 "bootstrap": bool(account and account.bootstrap)})
+        response.set_cookie(COOKIE_NAME, sid,
+                            max_age=(400 * 86400 if session.get("remember") else None),
+                            httponly=True, secure=request.url.scheme == "https", samesite="strict", path="/admin")
         return response
 
     @route("GET", "/admin/session")
     async def session_get(request):
         _, session = auth.session(request)
-        return JSONResponse({"authenticated": bool(session or auth.header_identity(request)),
-                             "csrf_token": session["csrf_token"] if session else None})
+        account = auth._account()
+        authenticated = bool(session)
+        return JSONResponse({"authenticated": authenticated,
+                             "csrf_token": session["csrf_token"] if session else None,
+                             **({"bootstrap": bool(account and account.bootstrap)} if authenticated and account else {})})
 
     @route("DELETE", "/admin/session")
     async def session_delete(request):
@@ -273,6 +334,204 @@ def install_admin(app, config, gateway):
         response = JSONResponse({"authenticated": False})
         response.delete_cookie(COOKIE_NAME, path="/admin", httponly=True, samesite="strict", secure=request.url.scheme == "https")
         return response
+
+    @route("DELETE", "/admin/sessions")
+    async def sessions_delete(request):
+        if not auth.revoke_all():
+            return error_response(503, "会话未能持久撤销，请检查管理目录权限后重试")
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(COOKIE_NAME, path="/admin", httponly=True,
+                              samesite="strict", secure=request.url.scheme == "https")
+        event("sessions_revoked", {})
+        return response
+
+    @route("GET", "/admin/account")
+    async def account_get(request):
+        account = admin_account.load(config["control_store"])
+        if account is None:
+            raise AdminError(503, "管理账户未初始化")
+        return JSONResponse({"username": account.username, "password_source": account.password_source,
+                             "bootstrap": account.bootstrap, "changed_at": account.changed_at})
+
+    @route("PUT", "/admin/account")
+    async def account_put(request):
+        body = await _body(request, 8192)
+        account = admin_account.load(config["control_store"])
+        if account is None or not await run_in_threadpool(auth.check_password, account.username, body.get("current_password")):
+            raise AdminError(403, "当前管理密码错误")
+        try:
+            updated = account
+            if not set(body) <= {"current_password", "username", "new_password"} or not any(
+                    field in body for field in ("username", "new_password")):
+                raise ValueError("至少需要修改用户名或密码")
+            if "username" in body:
+                updated = admin_account.with_username(updated, body["username"])
+            if "new_password" in body:
+                updated = await run_in_threadpool(admin_account.with_password, updated, body["new_password"])
+        except ValueError as error:
+            raise AdminError(400, str(error)) from None
+        _, previous_session = auth.session(request)
+        remember = bool((previous_session or {}).get("remember"))
+        with config["control_store"]._lock:
+            config["control_store"]._db.execute("BEGIN IMMEDIATE")
+            try:
+                current = admin_account.load(config["control_store"])
+                if current is None or current.session_epoch != account.session_epoch:
+                    config["control_store"]._db.execute("ROLLBACK")
+                    raise ConflictError()
+                admin_account.save(config["control_store"], updated)
+                config["control_store"]._db.execute("COMMIT")
+            except BaseException:
+                if config["control_store"]._db.in_transaction:
+                    config["control_store"]._db.execute("ROLLBACK")
+                raise
+        auth.revoke_all()
+        sid, session = auth.issue_session(request, remember=remember)
+        response = JSONResponse({"username": updated.username, "bootstrap": updated.bootstrap,
+                                 "csrf_token": session["csrf_token"]})
+        response.set_cookie(COOKIE_NAME, sid, max_age=(400 * 86400 if session.get("remember") else None),
+                            httponly=True, secure=request.url.scheme == "https", samesite="strict", path="/admin")
+        event("account_changed", {"id": updated.username})
+        return response
+
+    key_store = config.get("key_store")
+    if key_store is None and isinstance(getattr(control, "_db", None), sqlite3.Connection):
+        key_store = KeyStore(control)
+    config["key_store"] = key_store
+
+    def key_public(item, *, secret=None, usage=None):
+        result = {key: item[key] for key in ("id", "name", "type", "prefix", "enabled", "expires_at",
+                                              "rpm", "models", "created_at", "last_used_at", "version")}
+        result["ip_allow"] = item.get("ip_allow")
+        if item["type"] == "standard":
+            result["masked"] = item["secret"][:6] + "…" + item["secret"][-4:] if item.get("secret") else None
+        if secret is not None:
+            result["secret"] = secret
+        if usage is not None:
+            result["usage"] = usage
+        return result
+
+    def normalize_key_models(value):
+        if value is None:
+            return None
+        if not isinstance(value, list) or len(value) > 256 or any(not isinstance(item, str) for item in value):
+            raise AdminError(400, "模型列表格式无效")
+        inventory = gateway.admin_model_inventory()
+        known = set()
+        owners = {}
+        for item in inventory:
+            row = item if isinstance(item, dict) else {"id": item}
+            source = row.get("id")
+            if isinstance(source, str):
+                known.add(source)
+                owners[row.get("public_id", source)] = source
+        known.update(("auto", "default-model"))
+        result = []
+        for name in value:
+            source = "auto" if name == "default-model" else owners.get(name, name)
+            if source not in known:
+                raise AdminError(400, f"未知模型：{name}")
+            if source not in result:
+                result.append(source)
+        return result
+
+    @route("GET", "/admin/keys")
+    async def keys_get(request):
+        usage_result = await run_in_threadpool(audit.api_key_stats)
+        usage = usage_result.get("items", {}) if isinstance(usage_result, dict) and not usage_result.get("degraded") else {}
+        external = None
+        if config.get("api_key"):
+            source = config.get("settings_sources", {}).get("api_key")
+            external = {"type": "admin", "source": "external",
+                        "origin": {"cli": "cli", "environment": "environment", "dotenv": "dotenv"}.get(source, source),
+                        "occupied": True}
+        items = []
+        for item in key_store.list():
+            row = key_public(item, usage=usage.get(item["id"]))
+            if item["type"] == "admin" and config.get("api_key"):
+                row["overridden"] = True
+            items.append(row)
+        return JSONResponse({"external": external, "items": items})
+
+    @route("POST", "/admin/keys")
+    async def keys_create(request):
+        body = await _body(request, 16384)
+        kind = body.get("type")
+        if kind == "admin" and (config.get("api_key") or any(item["type"] == "admin" for item in key_store.list())):
+            raise AdminError(422, "管理密钥已被外部配置占用或已存在")
+        if kind == "admin" and any(field in body for field in ("expires_at", "ip_allow", "rpm", "models")):
+            raise AdminError(400, "管理密钥不接受限制字段")
+        try:
+            item, secret = key_store.create(name=body.get("name"), kind=kind,
+                                            expires_at=body.get("expires_at"), ip_allow=body.get("ip_allow"),
+                                            rpm=body.get("rpm"), models=normalize_key_models(body.get("models")))
+        except ValueError as error:
+            raise AdminError(400, str(error)) from None
+        event("key_created", {"id": item["id"]})
+        return JSONResponse(key_public(item, secret=secret))
+
+    def key_item(request):
+        item = key_store.get(request.path_params["id"])
+        if item is None:
+            raise AdminError(404, "密钥不存在")
+        if item["type"] == "admin" and config.get("api_key"):
+            raise AdminError(403, "密钥已被外部配置覆盖")
+        return item
+
+    @route("PATCH", "/admin/keys/{id}")
+    async def keys_update(request):
+        item = key_item(request)
+        body = await _body(request, 16384)
+        try:
+            updated = key_store.update(item["id"], body.get("version"),
+                                       {key: (normalize_key_models(value) if key == "models" else value)
+                                        for key, value in body.items() if key != "version"})
+        except RuntimeError as error:
+            if str(error) == "version_conflict":
+                raise ConflictError() from None
+            raise
+        except ValueError as error:
+            raise AdminError(400, str(error)) from None
+        event("key_updated", {"id": updated["id"]})
+        return JSONResponse(key_public(updated))
+
+    @route("POST", "/admin/keys/{id}/rotate")
+    async def keys_rotate(request):
+        item = key_item(request)
+        body = await _body(request, 4096, allow_empty=True)
+        try:
+            updated, secret = key_store.rotate(item["id"], body.get("version"))
+        except RuntimeError as error:
+            if str(error) == "version_conflict":
+                raise ConflictError() from None
+            raise
+        event("key_rotated", {"id": item["id"]})
+        return JSONResponse(key_public(updated, secret=secret))
+
+    @route("POST", "/admin/keys/{id}/reveal")
+    async def keys_reveal(request):
+        item = key_item(request)
+        try:
+            secret = key_store.reveal(item["id"])
+        except ValueError as error:
+            raise AdminError(400, str(error)) from None
+        event("key_revealed", {"id": item["id"]})
+        return JSONResponse({"secret": secret})
+
+    @route("DELETE", "/admin/keys/{id}")
+    async def keys_delete(request):
+        item = key_store.get(request.path_params["id"])
+        if item is None:
+            raise AdminError(404, "密钥不存在")
+        body = await _body(request, 4096, allow_empty=True)
+        try:
+            key_store.delete(item["id"], body.get("version"))
+        except RuntimeError as error:
+            if str(error) == "version_conflict":
+                raise ConflictError() from None
+            raise
+        event("key_deleted", {"id": item["id"]})
+        return JSONResponse({"ok": True})
 
     @route("GET", "/admin/settings")
     async def settings_get(request):
@@ -301,6 +560,22 @@ def install_admin(app, config, gateway):
             return JSONResponse(settings_result())
         return await run_in_threadpool(apply)
 
+    @route("POST", "/admin/config-notice/dismiss")
+    async def config_notice_dismiss(request):
+        body = await _body(request)
+
+        def apply():
+            with mutation_lock:
+                revision = body.get("revision")
+                if not isinstance(revision, int):
+                    revision = control.snapshot()["revision"]
+                control.update_settings({"config_notice_muted": True}, revision)
+                config["config_notice_muted"] = True
+                config.setdefault("settings_sources", {})["config_notice_muted"] = "management"
+            event("config.notice_dismissed")
+            return JSONResponse({"muted": True, "revision": revision + 1})
+        return await run_in_threadpool(apply)
+
     @route("GET", "/admin/models")
     async def models_get(request):
         def build_models():
@@ -321,8 +596,42 @@ def install_admin(app, config, gateway):
                     "model_guard_locked": bool(resolved.get("model_guard", {}).get("locked")),
                     "model_capability_guard": config.get("model_capability_guard", True),
                     "model_capability_guard_locked": bool(resolved.get("model_capability_guard", {}).get("locked")),
+                    "catalog": gateway.catalog_status(),
                 })
         return await run_in_threadpool(build_models)
+
+    @route("POST", "/admin/models/scan")
+    async def models_scan_start(request):
+        """Start one user-triggered full catalog scan; it is never a periodic task."""
+        result = await run_in_threadpool(gateway.start_catalog_scan)
+        event("models.scan")
+        return JSONResponse(result)
+
+    @route("GET", "/admin/models/scan")
+    async def models_scan_state(request):
+        return JSONResponse(gateway.catalog_scan_view())
+
+    @route("POST", "/admin/models/rate-probe")
+    async def models_rate_probe_start(request):
+        """Probe every nominally free model once per product; spends a little credit if charged."""
+        result = await run_in_threadpool(gateway.admin_rate_probe_all)
+        event("models.rate_probe", {"count": result.get("total", 0)})
+        return JSONResponse(result)
+
+    @route("GET", "/admin/models/rate-probe")
+    async def models_rate_probe_state(request):
+        return JSONResponse(gateway.admin_rate_probe_view())
+
+    @route("GET", "/admin/models/output-probes")
+    async def models_output_probes(request):
+        return JSONResponse(await run_in_threadpool(gateway.admin_output_probes))
+
+    @route("POST", "/admin/models/{id:path}/rate-probe")
+    async def models_rate_probe_one(request):
+        source = request.path_params["id"]
+        result = await run_in_threadpool(gateway.admin_rate_probe_model, source)
+        event("model.rate_probe", {"model": source, "count": result.get("total", 0)})
+        return JSONResponse(result)
 
     def checked_rule(source, data, *, creating=False):
         if "custom" in data:
@@ -404,8 +713,13 @@ def install_admin(app, config, gateway):
     @route("PATCH", "/admin/credentials/{id}")
     async def credentials_patch(request):
         data = await _body(request)
-        if set(data) not in ({"enabled"}, {"paused"}, {"auto_checkin"}, {"auto_travel"}, {"auto_daily_chat"}) or any(type(value) is not bool for value in data.values()):
-            raise ValueError("仅接受一个布尔字段：enabled、paused、auto_checkin、auto_travel 或 auto_daily_chat")
+        if set(data) not in ({"enabled"}, {"paused"}, {"auto_checkin"}, {"auto_travel"}, {"auto_daily_chat"},
+                             {"auto_growth"}, {"growth_auto"}) \
+                or any(type(value) is not bool for key, value in data.items() if key != "growth_auto") \
+                or ("growth_auto" in data and (not isinstance(data["growth_auto"], dict)
+                                               or any(type(value) is not bool for value in data["growth_auto"].values()))):
+            raise ValueError("仅接受一个布尔字段：enabled、paused、auto_checkin、auto_travel、auto_daily_chat 或 auto_growth，"
+                             "或 growth_auto 任务开关映射")
         field, value = next(iter(data.items()))
         identity = request.path_params["id"]
         # Fusion-A: paused 与 enabled 是两个正交开关——暂停只退出选号（签到/旅行/保号
@@ -428,6 +742,10 @@ def install_admin(app, config, gateway):
                     gateway.admin_set_auto_checkin(identity, value)
                 elif field == "auto_daily_chat":
                     gateway.admin_set_auto_daily_chat(identity, value)
+                elif field == "auto_growth":
+                    gateway.admin_set_auto_growth(identity, value)
+                elif field == "growth_auto":
+                    gateway.admin_set_growth_auto(identity, value)
                 else:
                     gateway.admin_set_auto_travel(identity, value)
             event("credential." + field, {"credential": identity, field: value})
@@ -436,6 +754,58 @@ def install_admin(app, config, gateway):
                 return JSONResponse({"id": identity, "field": "paused", "paused": value,
                                      "enabled": enabled, "revision": control.snapshot()["revision"]})
             return JSONResponse({"id": identity, field: value, "revision": control.snapshot()["revision"]})
+        return await run_in_threadpool(apply)
+
+    @route("GET", "/admin/credentials/{id}/growth-tasks")
+    async def growth_tasks_get(request):
+        identity = request.path_params["id"]
+        return JSONResponse(await run_in_threadpool(gateway.admin_growth_tasks, identity))
+
+    @route("POST", "/admin/credentials/{id}/growth-tasks/auto")
+    async def growth_task_auto(request):
+        identity = request.path_params["id"]
+        data = await _body(request)
+        task_code = data.get("task_code")
+        if not isinstance(task_code, str) or not task_code:
+            raise ValueError("task_code 必须为非空字符串")
+        job = await run_in_threadpool(gateway.admin_growth_auto, identity, task_code)
+        event("credential.growth_auto", {"credential": identity, "task_code": task_code})
+        return JSONResponse(job)
+
+    @route("POST", "/admin/credentials/{id}/growth-tasks/auto-all")
+    async def growth_task_auto_all(request):
+        identity = request.path_params["id"]
+        job = await run_in_threadpool(gateway.admin_growth_auto_all, identity)
+        event("credential.growth_auto_all", {"credential": identity, "count": job.get("total", 0)})
+        return JSONResponse(job)
+
+    @route("GET", "/admin/growth-jobs")
+    async def growth_jobs(request):
+        return JSONResponse({"jobs": gateway.admin_growth_jobs()})
+
+    @route("POST", "/admin/credentials/growth-batch")
+    async def growth_batch(request):
+        data = await _body(request)
+        ids, codes = data.get("ids"), data.get("task_codes")
+        enabled = data.get("enabled")
+        if (not isinstance(ids, list) or not ids or not all(isinstance(item, str) for item in ids)
+                or not isinstance(codes, list) or not all(isinstance(code, str) for code in codes)
+                or type(enabled) is not bool):
+            raise ValueError("ids 与 task_codes 必须为字符串数组，enabled 必须为布尔值")
+        def apply():
+            for identity in ids:
+                if selected(identity) is None:
+                    return error_response(404, f"凭证不存在：{identity[:64]}")
+            with mutation_lock:
+                for identity in ids:
+                    if codes:
+                        current = (control.snapshot()["credentials"].get(identity, {}) or {}).get("growth_auto") or {}
+                        merged = {**current, **{code: enabled for code in codes}}
+                        gateway.admin_set_growth_auto(identity, merged)
+                    else:
+                        gateway.admin_set_auto_growth(identity, enabled)
+            event("credential.growth_batch", {"count": len(ids), "task_codes": codes, "enabled": enabled})
+            return JSONResponse({"updated": len(ids), "revision": control.snapshot()["revision"]})
         return await run_in_threadpool(apply)
 
     def upload(body):
@@ -487,6 +857,68 @@ def install_admin(app, config, gateway):
         body = await _body(request, MAX_UPLOAD_BYTES * 6 + 65536)
         return JSONResponse({"results": await run_in_threadpool(upload, body)})
 
+    refresh_lock = threading.Lock()
+
+    def refresh_import(body):
+        profile = body.get("profile")
+        if profile not in PROFILE_DOMAINS:
+            raise ValueError("端点必须为 cn-cli、cn-work、intl-cli 或 intl-work")
+        tokens = body.get("refresh_tokens")
+        if not isinstance(tokens, list) or not 1 <= len(tokens) <= 50:
+            raise ValueError("refresh_tokens 必须包含 1 至 50 项")
+        lines = []
+        for item in tokens:
+            if not isinstance(item, str):
+                raise ValueError("每项必须是一个刷新令牌字符串")
+            token = item.strip()
+            if not token:
+                continue
+            if len(token) > 8192:
+                raise ValueError("刷新令牌长度超出限制")
+            if token not in lines:
+                lines.append(token)
+        if not lines:
+            raise ValueError("至少需要一个刷新令牌")
+        results = []
+        directory = gateway.managed_auth_dir().resolve()
+        # Serialize the whole batch: parallel refreshes would trip upstream risk control.
+        with refresh_lock:
+            for token in lines:
+                uid = auth_oauth.token_uid(token)
+                try:
+                    if not uid:
+                        raise ValueError("刷新令牌缺少账号身份（sub）")
+                    payload = auth_oauth.refresh_tokens(token, profile, uid=uid)
+                    account = auth_oauth.fetch_account(payload["accessToken"], PROFILE_DOMAINS[profile])
+                    if account["uid"] != uid:
+                        raise ValueError("账号信息与刷新令牌不一致")
+                    cred = auth_oauth.build_auth_file(payload, account)
+                    invalid = auth_oauth.validate_cred_data(cred)[1]
+                    if invalid:
+                        raise ValueError(invalid)
+                    content = json.dumps(auth_oauth.normalize_cred_data(cred), ensure_ascii=False).encode("utf-8")
+                    # Keep a product-specific name when the same account already exists for another endpoint.
+                    name = f"{uid}.info"
+                    if (directory / name).exists():
+                        name = f"{uid}-{profile}.info"
+                    target = gateway._store_credential(directory, name, content, uid, replace_existing=False)
+                    results.append({"ok": True, "name": Path(target).name, "uid": uid, "profile": profile})
+                except (ValueError, RuntimeError) as error:
+                    results.append({"ok": False, "name": uid or "未知账号", "uid": uid or None,
+                                    "profile": profile, "error": str(error)})
+                except Exception:
+                    results.append({"ok": False, "name": uid or "未知账号", "uid": uid or None,
+                                    "profile": profile, "error": "刷新或保存失败，请检查网络与存储状态"})
+        event("credentials.refresh_imported",
+              {"profile": profile, "count": len(results), "succeeded": sum(item["ok"] for item in results)})
+        return results
+
+    @route("POST", "/admin/credentials/refresh-import")
+    async def credentials_refresh_import(request):
+        # 50 tokens of at most 8 KiB each, with JSON escaping, stay under 1 MiB.
+        body = await _body(request, 1024 * 1024)
+        return JSONResponse({"results": await run_in_threadpool(refresh_import, body)})
+
     def export(body):
         ids = body.get("ids")
         if body.get("confirm") is not True or not isinstance(ids, list) or not 1 <= len(ids) <= 100 or any(not isinstance(i, str) for i in ids):
@@ -526,7 +958,7 @@ def install_admin(app, config, gateway):
     async def logs_get(request):
         params = request.query_params
         kind = params.get("kind", "request")
-        if kind not in ("request", "runtime", "admin"):
+        if kind not in ("request", "runtime", "admin", "credit"):
             raise ValueError("日志 kind 无效")
         try:
             limit = int(params.get("limit", "50"))
@@ -534,7 +966,8 @@ def install_admin(app, config, gateway):
             raise ValueError("limit 必须为整数") from None
         if not 1 <= limit <= 200:
             raise ValueError("limit 必须为 1 至 200")
-        filters = {key: params[key] for key in ("model", "credential", "profile", "status", "search", "client_ip") if key in params}
+        filters = {key: params[key] for key in ("model", "credential", "profile", "status", "search", "client_ip", "type")
+                   if key in params}
         if any(len(value) > 256 for value in filters.values()) or len(params.get("cursor", "")) > 2048:
             raise ValueError("日志筛选参数过长")
         result = await run_in_threadpool(audit.list_records, kind, limit, params.get("cursor"), **filters)
@@ -555,12 +988,172 @@ def install_admin(app, config, gateway):
         scope = body.get("scope")
         if scope not in ("details", "all"):
             raise ValueError("清理范围必须为 details 或 all")
-        if scope == "all" and (body.get("confirmation") != CLEAR_CONFIRMATION or not auth.check_key(body.get("api_key"))):
-            return error_response(403, "全部清理需要确认文本及当前 API key")
+        if scope == "all":
+            account = auth._account()
+            confirmed = (auth.check_password(account.username, body.get("password"))
+                         if account is not None else auth.check_key(body.get("api_key")))
+            if body.get("confirmation") != CLEAR_CONFIRMATION or not confirmed:
+                return error_response(403, "全部清理需要确认文本及当前管理密码")
         result = await run_in_threadpool(audit.clear, scope)
         if isinstance(result, dict) and result.get("ok") is False:
             return error_response(503, "日志清理未完成，请检查审计存储状态")
         return JSONResponse(result)
+
+    def media_store():
+        store = config.get("media_store")
+        if store is None:
+            raise _MediaUnavailable()
+        return store
+
+    class _MediaUnavailable(Exception):
+        pass
+
+    def media_route(method, path):
+        """Register one media handler; a missing store answers 503, never 400 or 500."""
+        def decorate(function):
+            async def guarded(request: Request):
+                try:
+                    return await function(request)
+                except _MediaUnavailable:
+                    return error_response(503, "媒体存储不可用，请检查数据目录权限或重启网关")
+                except HTTPException as exc:
+                    detail = exc.detail.get("error", {}).get("message") if isinstance(exc.detail, dict) else None
+                    return error_response(exc.status_code, detail or "媒体操作不符合当前状态，请刷新后重试")
+                except ValueError:
+                    return error_response(400, "媒体请求参数无效，请检查 kind/status/limit/cursor")
+                except Exception:
+                    return error_response(500, "管理操作失败，请检查存储状态后重试")
+            guarded.__name__ = function.__name__
+            app.add_api_route(path, guarded, methods=[method])
+            return function
+        return decorate
+
+    def media_page_params(request, *, status=False):
+        params = request.query_params
+        try:
+            limit = int(params.get("limit", "50"))
+        except ValueError:
+            raise ValueError("limit 必须为整数") from None
+        if not 1 <= limit <= 200:
+            raise ValueError("limit 必须为 1 至 200")
+        cursor = params.get("cursor", "")
+        if len(cursor) > 2048:
+            raise ValueError("cursor 过长")
+        filter_value = params.get("status" if status else "kind", "")
+        if status and filter_value not in ("", "active", "completed", "failed"):
+            raise ValueError("status 必须是 active、completed 或 failed")
+        if not status and filter_value not in ("", "image", "video"):
+            raise ValueError("kind 必须是 image 或 video")
+        return filter_value or None, cursor or None, limit
+
+    @route("GET", "/admin/media")
+    async def media_summary(request):
+        def build():
+            store = config.get("media_store")
+            resolved = {item["key"]: item for item in resolve_settings(config)}
+            base = str(config.get("media_public_base_url") or "")
+            return JSONResponse({
+                "configured": bool(base), "base_url": base,
+                "locked": bool(resolved.get("media_public_base_url", {}).get("locked")),
+                "usage": store.usage(ttl_hours=gateway._media_ttl_hours()) if store else {
+                    "total_bytes": 0, "images": {"count": 0, "bytes": 0},
+                    "videos": {"count": 0, "bytes": 0}},
+                "limit_bytes": gateway._media_max_bytes(),
+                "ttl_hours": gateway._media_ttl_hours(),
+                "tasks": store.task_counts() if store else {"active": 0, "failed": 0},
+                "available": store is not None,
+            })
+        return await run_in_threadpool(build)
+
+    def media_asset_row(item, base):
+        entry = dict(item)
+        entry["created_at"] = item["created"]
+        entry["expires_at"] = item["created"] + gateway._media_ttl_hours() * 3600
+        if base:
+            entry["public_url"] = f"{base}/v1/media/{'videos' if item['kind'] == 'video' else 'images'}/{item['id']}"
+        return entry
+
+    def live_asset(asset_id):
+        """Return an asset still inside the current TTL; expired ones vanish before the sweep."""
+        meta = media_store().get_asset(asset_id)
+        if meta is not None and media_store_module.is_expired(meta, gateway._media_ttl_hours()):
+            return None
+        return meta
+
+    @media_route("GET", "/admin/media/assets")
+    async def media_assets(request):
+        kind, cursor, limit = media_page_params(request)
+
+        def build():
+            page = media_store().list_assets(kind, cursor, limit, ttl_hours=gateway._media_ttl_hours())
+            base = str(config.get("media_public_base_url") or "")
+            items = [media_asset_row(item, base) for item in page["items"]]
+            return JSONResponse({**page, "items": items})
+        return await run_in_threadpool(build)
+
+    @media_route("GET", "/admin/media/assets/{asset_id}")
+    async def media_asset_meta(request):
+        def build():
+            meta = live_asset(request.path_params["asset_id"])
+            if meta is None:
+                return error_response(404, "媒体资源不存在或已清理")
+            return JSONResponse(media_asset_row(meta, str(config.get("media_public_base_url") or "")))
+        return await run_in_threadpool(build)
+
+    @media_route("GET", "/admin/media/assets/{asset_id}/content")
+    async def media_asset_content(request):
+        def build():
+            meta = live_asset(request.path_params["asset_id"])
+            file = media_store().asset_file(meta) if meta else None
+            if file is None:
+                return error_response(404, "媒体资源不存在或已清理")
+            headers = media_store_module.security_headers(meta)
+            if request.query_params.get("download") == "1":
+                headers["Content-Disposition"] = f'attachment; filename="{file.name}"'
+            return FileResponse(file, media_type=meta["mime"], headers=headers)
+        return await run_in_threadpool(build)
+
+    @media_route("DELETE", "/admin/media/assets/{asset_id}")
+    async def media_asset_delete(request):
+        def remove():
+            asset_id = request.path_params["asset_id"]
+            if not media_store().delete_asset(asset_id):
+                return error_response(404, "媒体资源不存在或已清理")
+            event("media.asset_deleted", {"asset": asset_id})
+            return JSONResponse({"deleted": asset_id})
+        return await run_in_threadpool(remove)
+
+    @media_route("GET", "/admin/media/tasks")
+    async def media_tasks(request):
+        status, cursor, limit = media_page_params(request, status=True)
+        key_id = request.query_params.get("api_key") or None
+
+        def build():
+            page = media_store().list_tasks(status, cursor, limit, api_key=key_id)
+            names = {item["id"]: item["name"] for item in key_store.list()}
+            def owner_label(value):
+                if value is None:
+                    return "—（升级前）"
+                if value == "admin-external":
+                    return "外部管理密钥"
+                if value == "anonymous":
+                    return "匿名"
+                return names.get(value, f"{value}（已删除）")
+            items = [{**item, "created_at": item["created"], "updated_at": item["updated"],
+                      "api_key_name": owner_label(item.get("api_key"))}
+                     for item in page["items"]]
+            return JSONResponse({**page, "items": items})
+        return await run_in_threadpool(build)
+
+    @media_route("POST", "/admin/media/tasks/{task_id}/refresh")
+    async def media_task_refresh(request):
+        task_id = request.path_params["task_id"]
+        task = await gateway._media_video_refresh(task_id, gateway._request_id())
+        event("media.task_refreshed", {"task": task_id})
+        meta = None
+        if task["status"] == "completed" and task["media_id"]:
+            meta = await run_in_threadpool(media_store().get_asset, task["media_id"])
+        return JSONResponse(gateway._media_video_response(task, meta))
 
     @route("GET", "/admin/storage")
     async def storage_get(request):
@@ -575,7 +1168,10 @@ def install_admin(app, config, gateway):
                 archives = sorted((entry.name for entry in directory.glob("audit-*.jsonl")), reverse=True)[:20]
             except OSError as exc:
                 audit._fault(exc)
-        return JSONResponse({**result, "archives": archives})
+        store = config.get("backups")
+        listed = await run_in_threadpool(store.list) if store else []
+        schedule = await run_in_threadpool(store.schedule) if store else None
+        return JSONResponse({**result, "archives": archives, "backups": listed, "backup_schedule": schedule})
 
     @route("POST", "/admin/storage/archive")
     async def storage_archive(request):
@@ -590,6 +1186,80 @@ def install_admin(app, config, gateway):
                                   "requests": result.get("archived_requests"),
                                   "events": result.get("archived_events")})
         return JSONResponse(result)
+
+    @route("POST", "/admin/storage/backups")
+    async def storage_backup_create(request):
+        name = await run_in_threadpool(backups().create, "manual")
+        event("storage.backup_created", {"file": name})
+        return JSONResponse({"created": name})
+
+    @route("GET", "/admin/storage/backups/{name}")
+    async def storage_backup_download(request):
+        try:
+            path = backups().path(request.path_params["name"])
+        except BackupError as exc:
+            return error_response(404, str(exc))
+        return FileResponse(path, media_type="application/gzip", filename=path.name)
+
+    @route("DELETE", "/admin/storage/backups/{name}")
+    async def storage_backup_delete(request):
+        name = request.path_params["name"]
+        try:
+            await run_in_threadpool(backups().delete, name)
+        except BackupError as exc:
+            return error_response(404, str(exc))
+        event("storage.backup_deleted", {"file": name})
+        return JSONResponse({"deleted": name})
+
+    @route("GET", "/admin/update")
+    async def update_get(request):
+        return JSONResponse(updater().view())
+
+    @route("POST", "/admin/update/check")
+    async def update_check(request):
+        return JSONResponse(await run_in_threadpool(updater().check, True))
+
+    @route("POST", "/admin/update/mirror")
+    async def update_mirror(request):
+        body = await _body(request, 4096)
+        # "custom" also refills the WebUI's remembered custom slot.
+        requested = {"update_mirror": body.get("mirror"),
+                     **({"update_mirror_custom": body["custom"]} if "custom" in body else {})}
+        try:
+            values = validate_settings(requested)
+        except ValueError as exc:
+            raise UpdateError(str(exc)) from None
+
+        def apply():
+            with mutation_lock:
+                if any(item["key"] == "update_mirror" and item["locked"] for item in resolve_settings(config)):
+                    raise UpdateError("下载镜像由 CLI 或环境变量锁定，请修改启动配置")
+                control.update_settings(values, control.snapshot()["revision"])
+                config.update(values)
+                config.setdefault("settings_sources", {})["update_mirror"] = "management"
+            event("settings.updated", {"code": "update_mirror"})
+            return JSONResponse(updater().view())
+        return await run_in_threadpool(apply)
+
+    @route("POST", "/admin/update/mirrors/test")
+    async def update_mirrors_test(request):
+        body = await _body(request, 4096, allow_empty=True)
+        only = None
+        if "mirror" in body:
+            try:
+                only = validate_settings({"update_mirror": body["mirror"]})["update_mirror"]
+            except ValueError as exc:
+                raise UpdateError(str(exc)) from None
+        return JSONResponse({"results": await run_in_threadpool(updater().test_mirrors, only)})
+
+    @route("POST", "/admin/update/install")
+    async def update_install(request):
+        tag = (await _body(request, 4096)).get("tag")
+        if not isinstance(tag, str):
+            raise ValueError("tag 必须为字符串")
+        result = await run_in_threadpool(updater().install, tag)
+        event("update.started", {"to": tag})
+        return JSONResponse(result, status_code=202)
 
     @route("GET", "/admin/dashboard")
     async def dashboard_get(request):
@@ -614,6 +1284,9 @@ def install_admin(app, config, gateway):
             result["official_credits"] = {row["id"]: {"credits": row.get("credits"), "name": row.get("name"),
                                                         "fetched_at": (row.get("credits") or {}).get("fetched_at")}
                                           for row in rows}
+            notice = config_notice()
+            if notice:
+                result["config_notice"] = notice
             return result
         result = await run_in_threadpool(build_dashboard)
         return result if isinstance(result, Response) else JSONResponse(result)
@@ -814,5 +1487,14 @@ def install_admin(app, config, gateway):
                                              "daily_burn_known": burn_known},
                                  "items": items})
         return await run_in_threadpool(build)
+    @route("GET", "/admin/performance")
+    async def performance_get(request):
+        """Read-only process counters; no routing state is exposed or mutated."""
+        payload = perf_metrics.snapshot()
+        pool = config.get("cred_pool")
+        scheduler = getattr(pool, "_scheduler", None)
+        payload["scheduler"] = {"mode": config.get("routing_scheduler", "indexed"),
+                                **(scheduler.report() if scheduler is not None else {"shards": [], "mismatches": []})}
+        return JSONResponse(payload)
 
     return auth

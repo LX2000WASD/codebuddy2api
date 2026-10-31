@@ -6,19 +6,36 @@ $muted: var(--text-muted);
 $line: var(--line);
 $white: var(--page);
 
-@mixin glass($alpha: 0.52, $blur: 22px) {
-  background: linear-gradient(
+@function glass-fill($alpha) {
+  @return linear-gradient(
     135deg,
     color-mix(in srgb, var(--surface) #{math.min(1, $alpha + 0.18) * 100%}, transparent),
     color-mix(in srgb, var(--surface-tint) #{$alpha * 100%}, transparent)
   );
+}
+// The glass look without its own backdrop blur, for repeated cards inside an
+// already blurred panel: blurring each one again costs paint time on long lists
+// and adds little to the backdrop the panel has already blurred.
+@mixin glass-surface($alpha: 0.52) {
+  background: glass-fill($alpha);
   border: 1px solid var(--highlight);
-  -webkit-backdrop-filter: blur($blur) saturate(155%);
-  backdrop-filter: blur($blur) saturate(155%);
   box-shadow:
     inset 0 1px 0 var(--highlight),
     inset 1px 0 0 var(--highlight),
     0 12px 36px var(--shadow);
+}
+@mixin glass($alpha: 0.52, $blur: 22px) {
+  @include glass-surface($alpha);
+  -webkit-backdrop-filter: blur($blur) saturate(155%);
+  backdrop-filter: blur($blur) saturate(155%);
+}
+// A recessed block inside a glass card.
+@mixin glass-well {
+  background: var(--card);
+  border: 1px solid var(--highlight);
+  box-shadow:
+    inset 0 1px 0 var(--highlight),
+    0 2px 8px var(--shadow);
 }
 
 :global(html) {
@@ -82,7 +99,7 @@ $white: var(--page);
   cursor: not-allowed;
   opacity: 0.45;
 }
-:global(input:not([type="checkbox"]):not([type="radio"]):not([type="file"])),
+:global(input:where(:not([type="checkbox"], [type="radio"], [type="file"]))),
 :global(select),
 :global(textarea) {
   border: 1px solid var(--border-strong);
@@ -91,6 +108,7 @@ $white: var(--page);
   color: $ink;
   padding: var(--space-2) var(--space-3);
   min-width: 0;
+  max-width: 100%;
   min-height: 38px;
 }
 :global(input::placeholder) {
@@ -662,12 +680,23 @@ $white: var(--page);
   border-radius: var(--radius-overlay);
   box-shadow: 0 10px 26px var(--shadow);
 }
-.moreMenuList button {
+.moreMenuList button,
+.moreMenuList button:hover:not(:disabled),
+.moreMenuList button:active:not(:disabled) {
   width: 100%;
+  justify-content: flex-start;
   text-align: left;
   white-space: nowrap;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
 }
-.channelGrid {
+.moreMenuList button:hover:not(:disabled) {
+  background: var(--selected);
+}
+.channelTrack {
+  @include glass(0.42, 18px);
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-3);
@@ -692,15 +721,7 @@ $white: var(--page);
     box-shadow 0.15s ease,
     transform 0.15s ease;
 }
-.channelCard:hover {
-  border-color: var(--accent);
-  transform: translateY(-1px);
-}
-.channelActive {
-  border-color: var(--accent);
-  box-shadow: 0 6px 20px var(--shadow);
-}
-.channelHead {
+.channelTrack button {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -720,7 +741,6 @@ $white: var(--page);
 .channelCard strong {
   font-size: var(--fs-20);
   font-weight: 600;
-  letter-spacing: -0.3px;
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
@@ -810,6 +830,7 @@ $white: var(--page);
   }
 }
 .credCard {
+  @include glass-surface(0.4);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -818,6 +839,13 @@ $white: var(--page);
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   min-width: 0;
+  transition: border-color 0.15s ease;
+}
+.credCard:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.credCard:has(.credCardTitle input:checked) {
+  border-color: var(--accent);
 }
 .credCardHead {
   display: flex;
@@ -900,8 +928,9 @@ $white: var(--page);
   margin-top: 2px;
 }
 .iconBtn {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
+  min-height: 0;
   padding: 0;
   display: inline-grid;
   place-items: center;
@@ -947,6 +976,178 @@ $white: var(--page);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+// 只让日期本身不折行：在连字符处会断成"10-"/"19"，整行不换行又会挤窄表格其他列。
+.credExpiry > span {
+  white-space: nowrap;
+}
+// 套餐类别配色只走主题序列色，亮/暗主题与配色方案自动跟随。
+.creditPlan {
+  --cat: var(--series-requests);
+}
+.creditActivity {
+  --cat: var(--series-credit);
+}
+.creditWelcome {
+  --cat: var(--series-tokens);
+}
+.creditEnterprise {
+  --cat: var(--accent);
+}
+.creditOther {
+  --cat: var(--muted);
+}
+.credUsageBox .creditWarnValue {
+  color: var(--warning);
+}
+.creditMix {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.creditMixBar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.creditMixBar > i {
+  display: block;
+  min-width: 4px;
+  background: var(--cat);
+}
+.creditLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+.creditLegend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.creditLegend strong {
+  font-variant-numeric: tabular-nums;
+}
+.creditLegend small {
+  color: var(--muted);
+}
+.creditDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cat);
+  flex-shrink: 0;
+}
+.creditPackages {
+  gap: 10px;
+}
+.creditPackage {
+  @include glass-well;
+  border-radius: 14px;
+}
+.creditPackage > summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+.creditPackage > summary::-webkit-details-marker {
+  display: none;
+}
+.creditPackageHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.creditPackageHead > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.creditCategory {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.creditAmount {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.creditAmount small {
+  font-weight: 400;
+  color: var(--muted);
+}
+.creditTrack {
+  display: block;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.creditTrack > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--cat);
+}
+.creditMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.creditToggle {
+  margin-left: auto;
+  color: var(--accent);
+}
+.creditToggle::after {
+  content: " ▸";
+}
+.creditPackage[open] .creditToggle::after {
+  content: " ▾";
+}
+.creditPackage .tableWrap {
+  border-top: 1px solid var(--line);
+}
+.creditPackage th,
+.creditPackage td {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+.creditExpiredRow td {
+  color: var(--muted);
+}
+@media (max-width: 600px) {
+  .creditTiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  // 窄屏让套餐名独占首行，避免类别标签和金额把名称截成"CodeBudd…"。
+  .creditPackageHead {
+    flex-wrap: wrap;
+  }
+  .creditPackageHead > strong {
+    flex: 1 1 calc(100% - 20px);
+    white-space: normal;
+  }
 }
 .tableUsage {
   display: grid;
@@ -1012,6 +1213,28 @@ $white: var(--page);
 .credTaskRow .check {
   margin: 0;
   flex-shrink: 0;
+}
+/* 成长任务：标题 | 居中的进度/奖励 | 按钮，三列各自留白。 */
+.growthTaskRow {
+  display: grid;
+  /* 固定列宽：各行彼此独立成网格，固定宽度才能让进度与按钮上下对齐。 */
+  grid-template-columns: minmax(0, 1fr) 9.5rem 5.5rem;
+  align-items: center;
+  column-gap: 14px;
+  font-size: 11.5px;
+}
+.growthTaskRow .check {
+  margin: 0;
+}
+.growthTaskRow .badge {
+  justify-self: center;
+  font-variant-numeric: tabular-nums;
+}
+.growthAction {
+  display: flex;
+}
+.growthAction button {
+  width: 100%;
 }
 .enableSwitch {
   display: inline-flex;
@@ -1206,6 +1429,385 @@ $white: var(--page);
   white-space: pre;
   margin: 0;
 }
+.stack {
+  display: grid;
+  gap: 22px;
+}
+.confirmActions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.panelActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+.panelHeading:has(.panelActions) {
+  flex-wrap: wrap;
+}
+.backupInfo {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.backupInfo .badge {
+  font-family: inherit;
+}
+.autoBackupForm {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+}
+.autoBackupForm .field {
+  align-self: stretch;
+  margin: 0;
+}
+.backupActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  font-family: inherit;
+}
+.backupActions button {
+  padding: 4px 10px;
+  font-size: 11px;
+}
+.navDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #cf8a2e;
+  box-shadow: 0 0 0 2px #fff;
+  flex-shrink: 0;
+}
+.collapsed .navDot {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+}
+.kpiCard strong.kpiText {
+  font-size: 15px;
+  letter-spacing: 0;
+}
+// Capsule and round variants of the shared glass button, for buttons and links alike.
+.pill {
+  min-height: 30px;
+  padding: 4px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+.pill svg {
+  width: 15px;
+  height: 15px;
+}
+.kpiCard .pill {
+  min-height: 28px;
+  padding: 3px 11px;
+  font-size: 11px;
+}
+// Narrow KPI cards keep only the icon, like the icon tiles of the other cards.
+@media (max-width: 600px) {
+  .kpiCard .pill {
+    width: 28px;
+    padding: 0;
+  }
+  .kpiCard .pillLabel {
+    display: none;
+  }
+}
+.roundButton {
+  width: 34px;
+  height: 34px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.roundButton svg {
+  width: 17px;
+  height: 17px;
+}
+// A KPI card that opens a drawer: the card look with the button layout undone. A flex
+// column also stops the browser from centring button content vertically in a tall card.
+.kpiAction {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0;
+  width: 100%;
+  min-height: 0;
+  text-align: left;
+  white-space: normal;
+}
+.releaseLayout {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  gap: 20px;
+  padding: 2px 22px 22px;
+}
+@media (max-width: 860px) {
+  .releaseLayout {
+    grid-template-columns: 1fr;
+  }
+}
+.releaseList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 560px;
+  overflow-y: auto;
+}
+.releaseItem {
+  @include glass(0.32, 14px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 12px;
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
+}
+.releaseItem:hover {
+  transform: translateY(-1px);
+}
+.updateProgress {
+  @include glass(0.46, 20px);
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+  border-radius: 18px;
+}
+.progressHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+.progressHead span {
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-weight: 600;
+}
+.progressTrack {
+  position: relative;
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface) 45%, transparent);
+  border: 1px solid var(--highlight);
+  box-shadow:
+    inset 0 1px 3px var(--shadow),
+    inset 0 -1px 0 var(--highlight);
+}
+.progressFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, #ffffff66, transparent 55%),
+    repeating-linear-gradient(-45deg, #ffffff38 0 8px, transparent 8px 16px),
+    linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #9ad7c4));
+  background-size:
+    100% 100%,
+    22.6px 100%,
+    100% 100%;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 45%, transparent);
+  transition: width 0.45s ease;
+  animation: progressFlow 0.9s linear infinite;
+}
+.progressIndeterminate {
+  width: 38%;
+  animation:
+    progressFlow 0.9s linear infinite,
+    progressSweep 1.4s ease-in-out infinite;
+}
+.progressDone {
+  animation: none;
+}
+@keyframes progressFlow {
+  to {
+    background-position:
+      0 0,
+      22.6px 0,
+      0 0;
+  }
+}
+@keyframes progressSweep {
+  from {
+    left: -38%;
+  }
+  to {
+    left: 100%;
+  }
+}
+.stepList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.stepList li {
+  @include glass(0.28, 12px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.stepList li > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+}
+.stepList li.stepDone {
+  color: var(--good);
+}
+.stepList li.stepDone > span {
+  background: currentColor;
+}
+.stepList li.stepCurrent {
+  color: var(--accent);
+  font-weight: 600;
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.stepList li.stepCurrent > span {
+  background: currentColor;
+  animation: stepPulse 1.2s ease-in-out infinite;
+}
+@keyframes stepPulse {
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+}
+.mirrorList {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.mirrorList li {
+  @include glass(0.34, 14px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 9px 12px;
+  border-radius: 14px;
+  font-size: 12px;
+}
+.mirrorList li.mirrorCurrent {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+.mirrorList button {
+  min-height: 30px;
+  padding: 4px 12px;
+  font-size: 11px;
+}
+// The custom slot gives its input a line of its own; stats and buttons wrap below it.
+.mirrorCustom .mirrorName {
+  flex-basis: 100%;
+}
+.mirrorName input {
+  flex: 1;
+  min-height: 32px;
+  padding: 5px 10px;
+}
+.mirrorActions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.mirrorName {
+  flex: 1 1 160px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mirrorStats {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.releaseItem span:not([class]) {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 11px;
+}
+.releaseNotes {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.releaseHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.releaseHead h2 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+.releaseHead small {
+  color: var(--muted);
+}
+.markdown {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.markdown h3,
+.markdown h4 {
+  margin: 18px 0 6px;
+  font-size: 14px;
+}
+.markdown h3:first-child,
+.markdown h4:first-child {
+  margin-top: 0;
+}
+.markdown p,
+.markdown ul {
+  margin: 0 0 10px;
+}
+.markdown ul {
+  padding-left: 20px;
+}
+.markdown li + li {
+  margin-top: 4px;
+}
+.markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+}
 .chartHead {
   display: flex;
   align-items: center;
@@ -1346,6 +1948,8 @@ $white: var(--page);
   padding: 0 var(--space-5) var(--space-3);
   font-size: var(--fs-11);
   color: $muted;
+  /* The expanded data table is wider than a narrow panel; scroll it instead of clipping. */
+  overflow-x: auto;
 }
 .chartData summary {
   cursor: pointer;
@@ -1467,12 +2071,12 @@ $white: var(--page);
   align-items: center;
   gap: var(--space-2);
 }
-.filterBar select {
+.filterBar .select {
   width: auto;
   min-height: 36px;
   padding: var(--space-2);
 }
-.toolbar > input {
+.toolbar > .search {
   width: min(360px, 70%);
 }
 .rowActions {
@@ -1789,6 +2393,32 @@ $white: var(--page);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+// Aggregated gateway web tool calls above a request's attempts: compact kpiCards that sit
+// in the panel's glass as wells, wrapping to two rows when the drawer is narrow.
+.toolSummary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  padding: 0 22px 16px;
+}
+.toolSummary .kpiCard {
+  @include glass-well;
+  border-radius: 14px;
+  padding: 10px 14px 9px;
+}
+.toolSummary .kpiCard small {
+  min-height: 0;
+}
+.toolSummary .kpiCard strong {
+  font-size: 17px;
+  margin: 3px 0 0;
+}
+.toolSummary .toolFailed strong {
+  color: var(--error);
+}
+.toolBadge {
+  margin-inline-start: 6px;
+}
 .healthList {
   padding: 0 var(--space-5) var(--space-4);
 }
@@ -1857,8 +2487,12 @@ $white: var(--page);
   flex: 1;
   width: 130px;
 }
-.filters select {
+.filters .select {
   max-width: 160px;
+}
+.filters .search {
+  flex: 1;
+  min-width: 160px;
 }
 .pagination {
   padding: var(--space-4) var(--space-5);
@@ -1961,10 +2595,44 @@ $white: var(--page);
   gap: var(--space-4);
 }
 .login {
+  position: relative;
   min-height: 100dvh;
   display: grid;
   grid-template-columns: 1.1fr 1fr;
-  background: radial-gradient(ellipse at 20% 80%, #e0edcd, transparent 70%), $white;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 20% 80%, var(--glow), transparent 70%), var(--page);
+}
+.loginBackdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.loginBackdrop span {
+  position: absolute;
+  width: 360px;
+  height: 360px;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.7;
+  background: var(--glow);
+  animation: loginDrift 28s ease-in-out infinite alternate;
+}
+.loginBackdrop span:nth-child(1) {
+  top: -120px;
+  left: -80px;
+}
+.loginBackdrop span:nth-child(2) {
+  right: 5%;
+  bottom: -140px;
+  background: var(--glow-alt);
+  animation-delay: -8s;
+}
+.loginBackdrop span:nth-child(3) {
+  top: 30%;
+  left: 45%;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  animation-delay: -16s;
 }
 .loginIntro {
   padding: var(--space-12) max(50px, 9vw);
@@ -2003,26 +2671,45 @@ $white: var(--page);
   letter-spacing: 2px;
 }
 .loginOrbit {
+  position: relative;
   width: 240px;
   height: 240px;
-  border: 1px solid #ffffffb3;
-  background: linear-gradient(135deg, #ffffff80, #cce2b336);
+  border: 1px solid var(--highlight);
+  background: linear-gradient(135deg, var(--highlight), var(--selected));
   border-radius: 50%;
   margin-top: var(--space-8);
   box-shadow:
-    inset 0 0 40px #ffffffa3,
-    0 30px 80px #729d3520;
+    inset 0 0 40px var(--highlight),
+    0 30px 80px var(--shadow);
   display: grid;
   place-items: center;
-  transform: rotate(-15deg);
+  animation: loginFloat 6s ease-in-out infinite alternate;
+}
+.loginOrbit::before,
+.loginOrbit::after {
+  content: "";
+  position: absolute;
+  inset: -20px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: spin 80s linear infinite;
+}
+.loginOrbit::after {
+  inset: -38px;
+  border-style: dashed;
+  animation-duration: 120s;
+  animation-direction: reverse;
 }
 .loginOrbit svg {
-  color: #78ad48b0;
+  color: var(--accent);
   width: 110px;
   height: 110px;
   stroke-width: 0.7;
 }
 .loginCard {
+  position: relative;
+  z-index: 1;
   width: min(410px, calc(100% - 60px));
   align-self: center;
   justify-self: center;
@@ -2031,7 +2718,7 @@ $white: var(--page);
   border-radius: var(--radius-card);
 }
 .loginCard > svg {
-  color: $green;
+  color: var(--accent);
   width: 28px;
   height: 28px;
   margin-bottom: var(--space-6);
@@ -2290,6 +2977,31 @@ $white: var(--page);
   color: $ink;
   overflow-wrap: anywhere;
 }
+.routeSummary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 5px;
+}
+.routeSummaryLabel {
+  color: $muted;
+  font-size: 11px;
+}
+.routePill {
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 1px solid #9fbc9a;
+  border-radius: 999px;
+  color: $ink;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.routeDisabled {
+  border-color: #d2b4a7;
+  color: $muted;
+  text-decoration: line-through;
+}
 .modelMetadata {
   padding: 0 var(--space-5) var(--space-4);
   min-width: 0;
@@ -2355,6 +3067,62 @@ $white: var(--page);
   color: var(--success-fg);
   background: var(--success-bg);
   border-color: var(--success-border);
+}
+/* 后台任务进度横幅：关闭抽屉或刷新页面后仍由轮询恢复。 */
+.jobBanner {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 14px;
+  padding: 11px 15px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  color: var(--text);
+  font-size: 12px;
+}
+.jobBannerHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.jobBanner progress {
+  width: 100%;
+  height: 6px;
+  accent-color: var(--accent);
+}
+.jobBanner small {
+  color: var(--muted);
+  font-size: 11px;
+}
+/* 目录声明 0x 却被实测扣费：用警示色，避免与真正的限时免费混淆。 */
+.rateMeasured {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+/* 最大输出列下方的实测标注：钳制 / 与声称一致 / 下界或未测出。 */
+.probeNote {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.probeNote small {
+  font-size: 10px;
+  color: $muted;
+}
+.probeClamped {
+  color: var(--error);
+}
+.probeOk {
+  color: var(--good);
+}
+.probeMuted {
+  color: $muted;
+  font-weight: 500;
 }
 .rateProfile {
   font-size: var(--fs-11);
@@ -2530,6 +3298,9 @@ $white: var(--page);
 .linkButton:hover {
   background: var(--surface-hover);
   border-color: var(--accent);
+  box-shadow:
+    inset 0 1px 3px var(--shadow),
+    0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 :global(input::placeholder) {
   color: var(--text-subtle);
@@ -2634,6 +3405,13 @@ $white: var(--page);
   color: var(--on-accent);
   border-color: var(--accent);
 }
+// A sheen across the top keeps the call to action glassy without losing its contrast.
+.primary {
+  background: linear-gradient(180deg, color-mix(in srgb, #fff 18%, var(--primary)), var(--primary));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #fff 45%, transparent),
+    0 6px 16px color-mix(in srgb, var(--primary) 32%, transparent);
+}
 .primary:hover:not(:disabled) {
   background: var(--accent-hover);
   color: var(--on-accent);
@@ -2658,6 +3436,9 @@ $white: var(--page);
 .error button,
 .importResult p {
   color: var(--danger-fg);
+}
+.textWarning {
+  color: var(--warning);
 }
 .warn,
 .warning {
@@ -2711,6 +3492,12 @@ $white: var(--page);
   height: 36px;
   padding: var(--space-2);
 }
+.langGlyph {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.2px;
+}
 .appearanceDrawer {
   width: min(380px, 100%);
   height: auto;
@@ -2724,8 +3511,7 @@ $white: var(--page);
   padding: 0 var(--space-6) var(--space-5);
 }
 .appearanceChoices,
-.paletteChoices,
-.langChoices {
+.paletteChoices {
   border: 0;
   padding: 0;
   margin: var(--space-4) 0 var(--space-6);
@@ -2742,6 +3528,7 @@ $white: var(--page);
 }
 .appearanceChoices label,
 .paletteChoices label {
+  @include glass-surface(0.4);
   position: relative;
   display: flex;
   flex-direction: column;
@@ -2754,8 +3541,7 @@ $white: var(--page);
   font-size: var(--fs-11);
 }
 .appearanceChoices input,
-.paletteChoices input,
-.langChoices input {
+.paletteChoices input {
   position: absolute;
   opacity: 0;
   inset: 0;
@@ -2777,11 +3563,19 @@ $white: var(--page);
 .paletteChoices {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
+// Glossy beads: a light rim on top and a soft shade underneath.
 .paletteChoices label > span:first-of-type {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  box-shadow: inset 0 1px 2px #ffffff70;
+  box-shadow:
+    inset 0 2px 3px #ffffff90,
+    inset 0 -2px 4px #00000026,
+    0 2px 6px var(--shadow);
+}
+.appearanceDrawer .note {
+  @include glass-well;
+  border-radius: 14px;
 }
 .paletteChoices:disabled {
   opacity: 0.5;
@@ -3036,6 +3830,9 @@ $white: var(--page);
   }
 }
 @media (max-width: 440px) {
+  .loginCard {
+    padding: 22px;
+  }
   .modalOverlay {
     padding: var(--space-2);
   }
@@ -3074,7 +3871,7 @@ $white: var(--page);
     flex-wrap: wrap;
     padding-inline: var(--space-4);
   }
-  .toolbar > input {
+  .toolbar > .search {
     width: 100%;
   }
   .panelHeading {
@@ -3121,6 +3918,11 @@ $white: var(--page);
     background: var(--surface);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
+  }
+  .loginBackdrop span,
+  .loginOrbit::before,
+  .loginOrbit::after {
+    display: none;
   }
   .modalOverlay::backdrop {
     backdrop-filter: none;
@@ -4282,3 +5084,601 @@ tr.selectedRow {
   right: 8px;
   margin: 0;
 }
+
+/* ===== Components introduced by the v1.5.0 merge ============================
+   The upstream release added whole widgets (Select / SearchInput, toasts, the
+   media library, the API-key table, the last-error tooltip). Their rules are kept
+   here, expressed with the local token layer instead of the release's own radii,
+   glass values and pixel type sizes, so the new widgets read as part of the same
+   visual language as the rest of the console. */
+.spinner {
+  display: inline-flex;
+}
+.spinning {
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Segmented bars: the local .tabs treatment is an underline, so the gliding thumb
+   is only painted on the bars that really are segmented (channel / status / view
+   switches). Display-only: the thumb is aria-hidden decoration. */
+.segmentThumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  opacity: 0;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-card);
+  background: var(--selected);
+  box-shadow: var(--shadow-1);
+  pointer-events: none;
+}
+.statusPills .segmentThumb,
+.viewSwitch .segmentThumb {
+  border-radius: var(--radius-full);
+}
+.tabs .segmentThumb {
+  display: none;
+}
+.segmentReady {
+  $glide: var(--duration-panel) var(--ease-standard);
+  transition:
+    transform $glide,
+    width $glide,
+    height $glide,
+    opacity var(--duration-standard);
+}
+
+/* Banner for a state the operator must act on (e.g. the default admin password). */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-card);
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+  font-size: var(--fs-12);
+}
+.notice a {
+  color: inherit;
+  font-weight: 600;
+}
+.notice button {
+  margin-left: auto;
+  min-height: 28px;
+  padding: var(--space-1);
+  border-color: transparent;
+  color: inherit;
+  background: transparent;
+}
+.notice button svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Drawer forms: the shared field margins would otherwise stack on top of the gap. */
+.drawerForm {
+  display: grid;
+  gap: var(--space-4);
+}
+.drawerForm > :is(.field, .check, .fieldset, .note, .error, .warning) {
+  margin: 0;
+}
+.drawerForm > .actions {
+  justify-content: flex-end;
+}
+.drawerForm .fieldset .check {
+  margin: 10px 0;
+}
+.accountForm {
+  max-width: 520px;
+}
+
+/* Login field with a leading icon and a trailing action. */
+.inputGroup {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.inputGroup > svg {
+  position: absolute;
+  left: var(--space-3);
+  z-index: var(--z-raised);
+  width: 16px;
+  height: 16px;
+  color: var(--text-subtle);
+  pointer-events: none;
+}
+.inputGroup input {
+  flex: 1;
+  min-width: 0;
+  padding-left: 40px;
+  padding-right: 44px;
+}
+.inputGroup input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+.inputGroup input[aria-invalid="true"] {
+  border-color: var(--danger-border);
+}
+.inputAction {
+  position: absolute;
+  right: var(--space-2);
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--radius-card);
+  color: var(--text-subtle);
+  background: transparent;
+}
+.inputAction:hover {
+  background: var(--surface-hover);
+}
+.capsHint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--warning-fg);
+  font-size: var(--fs-11);
+}
+.capsHint svg {
+  width: 14px;
+  height: 14px;
+}
+.loginShake {
+  animation: loginShake 300ms ease-in-out;
+}
+@keyframes loginShake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-6px);
+  }
+  55% {
+    transform: translateX(6px);
+  }
+  80% {
+    transform: translateX(-3px);
+  }
+}
+
+/* Eleven columns plus row actions: tighter cells keep the actions in view. */
+.keysTable :is(th, td) {
+  padding-inline: var(--space-3);
+}
+.keysTable td {
+  white-space: nowrap;
+}
+.keysTable .wrapCell {
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+.secretValue {
+  display: block;
+  margin-bottom: var(--space-5);
+  overflow-wrap: anywhere;
+  padding: var(--space-3);
+  border-radius: var(--radius-card);
+  background: var(--surface-tint);
+  font-family: var(--mono);
+}
+
+/* Recorded upstream error body, pinned beside its trigger so no table clips it. */
+.errorJsonTrigger {
+  border: none;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.errorJsonTip {
+  position: fixed;
+  z-index: var(--z-popup);
+  max-width: min(560px, calc(100vw - 16px));
+  max-height: min(420px, calc(100vh - 16px));
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-overlay);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-3);
+  color: var(--text);
+  font-size: var(--fs-12);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: var(--mono);
+  cursor: text;
+}
+.channelTrack button.channelActive {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Toasts: transient confirmations from notify(). They float over the page, and
+   inside a drawer they sit under its title bar instead of behind it. */
+.toasts {
+  position: fixed;
+  top: var(--space-5);
+  left: 50%;
+  z-index: var(--z-popup);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: min(460px, calc(100vw - var(--space-8)));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.drawer > .toasts {
+  position: absolute;
+  top: 96px;
+  width: min(460px, calc(100% - var(--space-8)));
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  max-height: min(60vh, 420px);
+  padding: 11px 11px 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-2);
+  overflow: auto;
+  color: var(--text);
+  font-size: var(--fs-12);
+  line-height: 1.55;
+  cursor: pointer;
+  pointer-events: auto;
+  animation: toastIn var(--duration-panel) var(--ease-standard) both;
+}
+.toastLeaving {
+  animation: toastOut var(--duration-standard) var(--ease-exit) both;
+}
+.toastGood {
+  --tone: var(--success-fg);
+}
+.toastWarn {
+  --tone: var(--warning-fg);
+}
+.toastBad {
+  --tone: var(--danger-fg);
+}
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes toastOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+.toastIcon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-full);
+  color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 32%, transparent);
+}
+.toastIcon svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.toastText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding-top: 3px;
+  overflow-wrap: anywhere;
+}
+.toastText > strong {
+  color: var(--text);
+  font-size: var(--fs-13);
+  font-weight: 600;
+}
+.toastText > span {
+  color: var(--text-muted);
+}
+.toastRows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.toastRows li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  padding: 7px 10px;
+  border-radius: var(--radius-card);
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+}
+.toastRows small {
+  flex-basis: 100%;
+  color: var(--text-muted);
+}
+.toastClose {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+  padding: 0;
+  border-radius: var(--radius-full);
+}
+.toastClose svg {
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+/* Select (fields.tsx): a control-shaped button with a portaled option list. */
+.select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+}
+.selectValue {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.selectChevron {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--text-subtle);
+  transition: transform var(--duration-standard) var(--ease-standard);
+}
+.select[aria-expanded="true"] .selectChevron {
+  transform: rotate(180deg);
+}
+.selectList {
+  position: fixed;
+  z-index: var(--z-popup);
+  max-height: min(320px, 60vh);
+  margin: 0;
+  padding: var(--space-1);
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-overlay);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-3);
+  animation: popIn var(--duration-micro) var(--ease-standard);
+}
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.selectList li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px var(--space-3);
+  border-radius: var(--radius-card);
+  font-size: var(--fs-12);
+  white-space: nowrap;
+  color: var(--text);
+  cursor: pointer;
+}
+.selectList li.selectActive {
+  background: var(--surface-hover);
+}
+.selectList li[aria-selected="true"] {
+  color: var(--text);
+  font-weight: 600;
+}
+.selectList li[aria-selected="true"]::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+.selectList li[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* SearchInput (fields.tsx). */
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+.searchIcon {
+  position: absolute;
+  left: var(--space-3);
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  color: var(--text-subtle);
+  pointer-events: none;
+}
+.searchClear {
+  position: absolute;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  min-height: 0;
+  padding: 0;
+  border-radius: var(--radius-full);
+}
+.searchClear svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+/* Media library (pages/Media.tsx). */
+.mediaGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 14px;
+}
+.mediaCard {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  overflow: hidden;
+  text-align: start;
+  cursor: pointer;
+  transition:
+    border-color var(--duration-standard) var(--ease-standard),
+    box-shadow var(--duration-standard) var(--ease-standard);
+}
+.mediaCard:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-1);
+}
+.mediaCard:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.mediaThumb {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  background: var(--surface-sunken);
+  color: var(--text-subtle);
+}
+.mediaThumb.isVideo {
+  aspect-ratio: 16 / 9;
+}
+.mediaThumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.mediaMeta {
+  padding: var(--space-3);
+  display: grid;
+  gap: 3px;
+}
+.mediaMeta small {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.mediaMeta strong {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usageMeter {
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--surface-sunken);
+  overflow: hidden;
+}
+.usageMeter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--duration-panel) var(--ease-standard);
+}
+.usageMeter.warn > span {
+  background: var(--warning-fg);
+}
+.usageMeter.full > span {
+  background: var(--danger-fg);
+}
+.mediaPreviewWrap {
+  display: grid;
+  place-items: center;
+  margin-bottom: 14px;
+}
+.mediaPreview {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  margin-inline: auto;
+  object-fit: contain;
+  border-radius: var(--radius-card);
+  background: var(--surface-sunken);
+}
+.errorText {
+  color: var(--danger-fg);
+  font-size: var(--fs-13);
+  margin: -6px 0 10px;
+}
+.warnText {
+  color: var(--warning-fg);
+}
+

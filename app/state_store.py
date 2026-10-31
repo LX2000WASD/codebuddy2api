@@ -22,6 +22,7 @@ LEGACY_FILES = {
     "credits": "credits-ledger.json",
     "trial": "trial-ledger.json",
     "catalog": "model-catalog.json",
+    "catalog_probe": "model-catalog-probe.json",
     "usage": "usage-snapshots.json",
 }
 
@@ -116,6 +117,7 @@ def _check_document(name, value):
         "sessions": ("sessions", (1,)), "cooldowns": ("accounts", (1,)),
         "model_blocks": ("blocks", (1,)), "credits": ("creds", (1,)),
         "trial": ("accounts", (1,)), "catalog": ("groups", (1, 2)),
+        "catalog_probe": ("profiles", (1,)),
         "usage": ("accounts", (1,)),
     }[name]
     if type(value.get("version")) is not int or value["version"] not in versions or not isinstance(value.get(field), dict):
@@ -130,10 +132,11 @@ def _check_document(name, value):
             raise ValueError("Invalid session snapshot")
         for sid, row in value[field].items():
             if (not isinstance(sid, str) or not _TOKEN.fullmatch(sid) or not isinstance(row, dict)
-                    or set(row) != {"csrf_token", "expires"}
+                    or set(row) not in ({"csrf_token", "expires"}, {"csrf_token", "expires", "remember"})
                     or not isinstance(row.get("csrf_token"), str) or not _TOKEN.fullmatch(row["csrf_token"])
                     or type(row.get("expires")) not in (int, float)
-                    or not math.isfinite(row["expires"]) or not 0 < row["expires"] < 1e11):
+                    or not math.isfinite(row["expires"]) or not 0 < row["expires"] < 1e11
+                    or "remember" in row and type(row["remember"]) is not bool):
                 raise ValueError("Invalid persisted session")
     elif name == "trial":
         from .trial_rewards import _key, _timestamp, _safe_result, _result, _RECORD_FIELDS, _RESULT_FIELDS, _MAX_ACCOUNTS
@@ -187,6 +190,10 @@ def _check_document(name, value):
                 if (not isinstance(row, dict) or type(row.get("until")) not in (int, float)
                         or not math.isfinite(row["until"]) or type(row.get("hits", 1)) is not int):
                     raise ValueError("Invalid model backoff")
+    elif name == "catalog_probe":
+        from .catalog_probe import valid_row
+        if len(value[field]) > 8 or not all(valid_row(row) for row in value[field].values()):
+            raise ValueError("Invalid catalog probe state")
     elif name == "catalog":
         for row in value[field].values():
             if (not isinstance(row, dict) or not isinstance(row.get("models"), list)
@@ -325,7 +332,7 @@ class StateStore:
 
     def put_cache(self, name, value):
         """Cache failures stay visible without replacing the upstream inference outcome."""
-        if name not in ("catalog", "model_blocks"):
+        if name not in ("catalog", "catalog_probe", "model_blocks"):
             raise ValueError("Not a rebuildable cache")
         try:
             self.put(name, value)

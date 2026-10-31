@@ -4,6 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow direct execution.
 
+import base64
 import io
 import json
 import os
@@ -88,6 +89,61 @@ class IdentitySyncTests(unittest.TestCase):
     def picked_uid(self, name, region="cn"):
         picked = self.pool.headers_for(None, name, region=region)
         return picked[1]["X-User-Id"] if picked else None
+
+    def test_official_versions_and_private_data_are_profile_scoped(self):
+        expected = {
+            "cn-cli": ("CLI/2.165.0 CodeBuddy/2.165.0", "2.165.0", "false", "2.165.0"),
+            "intl-cli": ("CLI/2.161.0 CodeBuddy/2.161.0", "2.161.0", "false", "2.161.0"),
+            "cn-work": ("WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0", "5.9.3", "false", "5.9.3:2.165.0"),
+            "intl-work": ("WorkBuddy/5.8.4 WorkBuddy AI/5.8.4 CLI/2.161.0", "5.8.4", "true", "5.8.4:2.161.0"),
+        }
+        for profile, (user_agent, ide_version, private_data, revision) in expected.items():
+            with self.subTest(profile=profile):
+                headers = client_profiles.credential_headers(
+                    {"domain": DOMAINS[profile], "accessToken": "synthetic"}, {"uid": "A"})
+                self.assertEqual(headers["User-Agent"], user_agent)
+                self.assertEqual(headers["X-IDE-Version"], ide_version)
+                self.assertEqual(headers["X-Private-Data"], private_data)
+                self.assertEqual(client_profiles.catalog_cache_key(profile), f"{profile}:{revision}")
+
+    def test_private_data_and_identity_headers_follow_the_real_account(self):
+        for profile, domain in DOMAINS.items():
+            with self.subTest(profile=profile):
+                headers = client_profiles.credential_headers(
+                    {"domain": domain, "accessToken": "synthetic"},
+                    {"uid": "A", "enterpriseId": "tenant"})
+                expected = "true" if profile in ("cn-cli", "cn-work", "intl-work") else "false"
+                self.assertEqual(headers["X-Private-Data"], expected)
+                self.assertEqual(headers["X-Enterprise-Id"], "tenant")
+                self.assertNotIn("X-Id-Source", headers)
+
+        payload = base64.urlsafe_b64encode(json.dumps({
+            "id_source": "sso_login", "token_source": "qq"}).encode()).rstrip(b"=").decode()
+        token = f"header.{payload}.signature"
+        headers = client_profiles.credential_headers(
+            {"domain": "www.workbuddy.cn", "accessToken": token, "method": "oauth"},
+            {"uid": "A", "enterpriseId": "tenant"})
+        self.assertEqual(headers["X-Id-Source"], "sso_login")
+        self.assertEqual(headers["X-Auth-Method"], "qq")
+        userinfo = json.loads(base64.b64decode(headers["X-Userinfo"]))
+        self.assertEqual(userinfo, {
+            "uin": "A", "owner_uin": "tenant", "id_source": "sso_login", "token_source": "qq"})
+        self.assertNotIn(token, headers["X-Userinfo"])
+
+        plain = client_profiles.credential_headers(
+            {"domain": "www.codebuddy.cn", "accessToken": "not-a-jwt"}, {"uid": "A"})
+        self.assertNotIn("X-Userinfo", plain)
+        self.assertNotIn("X-Auth-Method", plain)
+
+        auth = {"domain": "www.workbuddy.cn", "accessToken": "synthetic"}
+        for headers in (client_profiles.catalog_headers(auth, {"uid": "A"}),
+                        client_profiles.refresh_headers("www.workbuddy.cn", "A"),
+                        client_profiles.credential_refresh_headers(auth, {"uid": "A"})):
+            self.assertRegex(headers["X-Request-ID"], r"^[0-9a-f]{32}$")
+            self.assertEqual(headers["Accept"], "application/json, text/plain, */*")
+            self.assertNotIn("X-CodeBuddy-Request", headers)
+        self.assertNotIn("X-Request-ID", client_profiles.catalog_headers(
+            {"domain": "www.codebuddy.cn", "accessToken": "synthetic"}, {"uid": "A"}))
 
     def test_account_fingerprint_is_stable_and_unambiguous(self):
         key = client_profiles.account_key
@@ -425,10 +481,12 @@ class IdentitySyncTests(unittest.TestCase):
             thread.start.side_effect = barrier
             with patch("sys.argv", ["converter.py", "--auth-file", str(path), "--skip-check"]), \
                     patch.object(c.threading, "Thread", return_value=thread), \
-                    patch.object(c.uvicorn, "run", side_effect=barrier), \
+                    patch.object(c, "run_server", side_effect=barrier), \
                     patch("sys.stderr", new=io.StringIO()):
                 c.main()
-            self.assertEqual(len(observed), 3)
+            # refresher, reconcile, housekeeping, key housekeeping, lease heartbeat, update check,
+            # scheduled backups and the server itself.
+            self.assertEqual(len(observed), 8)
 
 
 if __name__ == "__main__":

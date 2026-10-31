@@ -1,20 +1,24 @@
 import axios from "axios";
+import { installPublicDemoAdapter } from "./publicDemo";
 import { create } from "zustand";
 import { useCallback, useEffect, useState } from "react";
 
 export type RecordValue = Record<string, unknown>;
-export type Session = { authenticated: true; csrf_token: string };
+export type Session = { authenticated: boolean; csrf_token: string | null; bootstrap?: boolean };
 type AuthState = {
   status: "checking" | "authenticated" | "anonymous" | "error";
   csrf: string | null;
+  bootstrap: boolean;
   error: string | null;
 };
 export const useSession = create<AuthState>(() => ({
   status: "checking",
   csrf: null,
+  bootstrap: false,
   error: null,
 }));
 export const api = axios.create({ baseURL: "/admin", withCredentials: true, timeout: 20000 });
+installPublicDemoAdapter(api);
 api.interceptors.request.use((config) => {
   const csrf = useSession.getState().csrf;
   if (csrf) config.headers.set("X-CSRF-Token", csrf);
@@ -24,7 +28,7 @@ api.interceptors.response.use(
   (response) => response,
   (error: unknown) => {
     if (axios.isAxiosError(error) && error.response?.status === 401) {
-      useSession.setState({ status: "anonymous", csrf: null, error: null });
+      useSession.setState({ status: "anonymous", csrf: null, bootstrap: false, error: null });
     }
     return Promise.reject(error);
   },
@@ -98,7 +102,7 @@ export function errorMessage(error: unknown): string {
     }
     if (error.response?.status === 401) return "会话已失效，请重新登录。";
     if (error.response?.status === 403)
-      return serverMessage ?? "操作被拒绝：请检查当前 key、管理锁定或重新登录刷新 CSRF。";
+      return serverMessage ?? "操作被拒绝：请检查管理锁定或重新登录刷新 CSRF。";
     if (serverMessage) return serverMessage;
     const data: unknown = error.response?.data;
     if (data && typeof data === "object" && "detail" in data) {
@@ -128,28 +132,42 @@ export function errorMessage(error: unknown): string {
   }
   return error instanceof Error ? error.message : "操作失败，请重试。";
 }
-export async function establishSession(apiKey?: string) {
+export async function establishSession(credentials?: {
+  username: string;
+  password: string;
+  remember: boolean;
+}) {
   try {
     const response =
-      apiKey === undefined
+      credentials === undefined
         ? await api.get<unknown>("/session")
-        : await api.post<unknown>("/session", { api_key: apiKey });
+        : await api.post<unknown>("/session", credentials);
     const data = object(response.data, "会话");
     if (data.authenticated === false) {
-      useSession.setState({ status: "anonymous", csrf: null, error: null });
+      useSession.setState({ status: "anonymous", csrf: null, bootstrap: false, error: null });
       return;
     }
     if (data.authenticated !== true || typeof data.csrf_token !== "string" || !data.csrf_token)
       throw new Error("会话响应缺少认证状态或 CSRF token");
-    useSession.setState({ status: "authenticated", csrf: data.csrf_token, error: null });
+    useSession.setState({
+      status: "authenticated",
+      csrf: data.csrf_token,
+      bootstrap: data.bootstrap === true,
+      error: null,
+    });
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 401) {
-      useSession.setState({ status: "anonymous", csrf: null, error: null });
-      if (apiKey !== undefined) throw new Error("API key 无效或管理界面未启用。");
+      useSession.setState({ status: "anonymous", csrf: null, bootstrap: false, error: null });
+      if (credentials !== undefined) throw new Error("用户名或密码错误");
       return;
     }
-    useSession.setState({ status: "error", csrf: null, error: errorMessage(error) });
-    if (apiKey !== undefined) throw error;
+    useSession.setState({
+      status: "error",
+      csrf: null,
+      bootstrap: false,
+      error: errorMessage(error),
+    });
+    if (credentials !== undefined) throw error;
   }
 }
 /**
@@ -335,11 +353,13 @@ export function useResource<T>(
     path: string;
     data: T | null;
     loading: boolean;
+    refreshing: boolean;
     error: string | null;
   }>({
     path,
     data: seed === undefined ? null : normalize(seed),
     loading: seed === undefined,
+    refreshing: true,
     error: null,
   });
   const [revision, setRevision] = useState(0);
@@ -357,7 +377,7 @@ export function useResource<T>(
           : cachedForPath === undefined
             ? null
             : normalize(cachedForPath);
-      return { path, data, loading: data === null, error: null };
+      return { path, data, loading: data === null, refreshing: true, error: null };
     });
     // An explicit reload (revision > 0) is a forced fetch: the user pressed refresh,
     // so the TTL must never answer with the very snapshot they are replacing.
@@ -379,7 +399,7 @@ export function useResource<T>(
     void request
       .then((data) => {
         if (controller.signal.aborted) return;
-        setState({ path, data: normalize(data), loading: false, error: null });
+        setState({ path, data: normalize(data), loading: false, refreshing: false, error: null });
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -387,6 +407,7 @@ export function useResource<T>(
           path,
           data: prev.path === path ? prev.data : null,
           loading: false,
+          refreshing: false,
           error: errorMessage(error),
         }));
       });
@@ -402,14 +423,23 @@ export function useResource<T>(
   return {
     data: currentData,
     loading: state.path === path ? state.loading : !options?.cache,
+    // True during every fetch, including reloads that keep the previous data on screen.
+    refreshing: state.path === path ? state.refreshing : true,
     error: state.path === path ? state.error : null,
     reload,
   };
 }
+export type ModelRoute = {
+  upstream_id: string;
+  weight: number | null;
+  enabled: boolean;
+  source: "builtin" | "cloud" | "manual";
+};
 export type ModelRule = {
   id: string;
   public_id: string;
   upstream_id?: string;
+  routes?: ModelRoute[];
   custom?: boolean;
   available?: boolean;
   /** Live candidate accounts the backend would route to right now (preview.candidates). */
@@ -421,10 +451,24 @@ export type ModelRule = {
   credential_ids: string[];
   credits?: unknown;
   credits_by_profile?: unknown;
+  credits_override?: Record<string, number>;
+  rate_details?: unknown;
   capabilities?: unknown;
   limits?: unknown;
   metadata_by_profile?: unknown;
+  media_kinds?: string[];
+  media_sources?: string[];
+  media_defaults?: string[];
+  embedding?: boolean;
+  rerank?: boolean;
 };
+function rateOverride(value: unknown): Record<string, number> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value as RecordValue).filter(
+    (entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]),
+  );
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
 export function modelResponse(value: unknown): {
   revision: number;
   models: ModelRule[];
@@ -462,6 +506,18 @@ export function modelResponse(value: unknown): {
       region: typeof m.region === "string" ? m.region : "",
       profile: typeof m.profile === "string" ? m.profile : "",
       credential_ids: m.credential_ids as string[],
+      routes: Array.isArray(m.routes)
+        ? (m.routes.filter(
+            (route): route is RecordValue =>
+              !!route &&
+              typeof route === "object" &&
+              !Array.isArray(route) &&
+              typeof route.upstream_id === "string" &&
+              typeof route.enabled === "boolean" &&
+              (route.weight === null || typeof route.weight === "number"),
+          ) as ModelRoute[])
+        : undefined,
+      credits_override: rateOverride(m.credits_override),
     };
   });
   return {
@@ -534,6 +590,64 @@ export type Credential = RecordValue & {
   /** Orthogonal to enabled: paused leaves the account in the pool for check-in/travel. */
   paused?: boolean;
 };
+export type CatalogProfileVersions = {
+  accounts: number;
+  distinct: number;
+  versions: { models: number; accounts: number }[];
+};
+export type CatalogScan = {
+  status: "idle" | "running" | "completed" | "failed";
+  total: number;
+  completed: number;
+  success: number;
+  failed: number;
+  differences: number;
+  started_at: number | null;
+  finished_at: number | null;
+  error: string | null;
+  profiles: Record<string, CatalogProfileVersions>;
+  accounts: RecordValue[];
+};
+export function catalogScanResponse(value: unknown): CatalogScan {
+  const data = object(value, "目录扫描");
+  const count = (field: string) => {
+    const parsed = number(data[field]);
+    if (parsed === null || parsed < 0) throw new Error(`目录扫描缺少 ${field}`);
+    return parsed;
+  };
+  const status = data.status;
+  if (status !== "idle" && status !== "running" && status !== "completed" && status !== "failed")
+    throw new Error("目录扫描状态无效");
+  return {
+    status,
+    total: count("total"),
+    completed: count("completed"),
+    success: count("success"),
+    failed: count("failed"),
+    differences: count("differences"),
+    started_at: number(data.started_at),
+    finished_at: number(data.finished_at),
+    error: typeof data.error === "string" && data.error ? data.error : null,
+    profiles: parseCatalogProfiles(data.profiles),
+    accounts: Array.isArray(data.accounts) ? list(data.accounts, "目录扫描账号") : [],
+  };
+}
+function parseCatalogProfiles(value: unknown): Record<string, CatalogProfileVersions> {
+  if (!value || typeof value !== "object") return {};
+  const profiles: Record<string, CatalogProfileVersions> = {};
+  for (const [name, row] of Object.entries(value as Record<string, unknown>)) {
+    const item = object(row, "目录版本");
+    profiles[name] = {
+      accounts: number(item.accounts) ?? 0,
+      distinct: number(item.distinct) ?? 0,
+      versions: list(item.versions, "目录版本列表").map((entry) => {
+        const version = object(entry, "目录版本条目");
+        return { models: number(version.models) ?? 0, accounts: number(version.accounts) ?? 0 };
+      }),
+    };
+  }
+  return profiles;
+}
 export function credentialResponse(value: unknown): Credential[] {
   return list(object(value).credentials, "凭证").map((c) => {
     const id = c.account_key ?? c.id;
@@ -543,15 +657,21 @@ export function credentialResponse(value: unknown): Credential[] {
       "auto_checkin",
       "auto_travel",
       "auto_daily_chat",
+      "auto_growth",
       "travel_supported",
       "trial_supported",
       "daily_chat_supported",
       "paused",
+      "growth_supported",
     ])
       if (c[field] !== undefined && typeof c[field] !== "boolean")
         throw new Error("自动任务状态必须为布尔值");
+    if (c.restricted !== undefined && typeof c.restricted !== "boolean")
+      throw new Error("官方限制状态必须为布尔值");
     for (const field of ["checkin", "travel", "trial", "daily_chat"])
       if (c[field] !== undefined && c[field] !== null) object(c[field], "自动任务结果");
+    if (c.growth_auto !== undefined && c.growth_auto !== null)
+      object(c.growth_auto, "成长任务开关");
     return { ...c, id, name: typeof name === "string" && !/[\\/]/.test(name) ? name : null };
   });
 }

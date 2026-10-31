@@ -8,6 +8,7 @@ import {
   ErrorNotice,
   Fields,
   Icon,
+  RefreshIcon,
   PageTitle,
   Panel,
   ResourceState,
@@ -28,6 +29,8 @@ import {
   type GroupKey,
 } from "../settingsSchema";
 import s from "../ui.module.scss";
+import { AccountPanel } from "./Account";
+import { t } from "../i18n";
 type Setting = {
   key: string;
   value: unknown;
@@ -369,9 +372,15 @@ function SettingsForm({
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [query, setQuery] = useState("");
-  const [tab, setTab] = useState<GroupKey | null>(null);
+  // The account tab is addressable, because the bootstrap banner links straight to it.
+  const [tab, setTab] = useState<GroupKey | "account" | null>(() =>
+    new URLSearchParams(window.location.search).get("tab") === "account" ? "account" : null,
+  );
   const buckets = useMemo(() => bucket(data.items), [data.items]);
-  const current = buckets.find((b) => b.group === tab) ?? buckets[0];
+  // The admin account is a sibling of the settings domains, not a domain of its own:
+  // it has no schema row to save, so it replaces the whole settings Panel below.
+  const account = tab === "account";
+  const current = account ? undefined : (buckets.find((b) => b.group === tab) ?? buckets[0]);
   const count = Object.keys(values).length;
   const update = (item: Setting, value: unknown) => {
     setSaved(false);
@@ -468,8 +477,21 @@ function SettingsForm({
             </button>
           );
         })}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={account}
+          className={account ? s.selectedTab : ""}
+          onClick={() => {
+            setTab("account");
+            setQuery("");
+          }}
+        >
+          {t("account.title")}
+        </button>
       </div>
-      {current && (
+      {account && <AccountPanel />}
+      {!account && current && (
         <Panel
           title={GROUPS.find((g) => g.key === current.group)?.title ?? current.group}
           hint={GROUPS.find((g) => g.key === current.group)?.description}
@@ -537,18 +559,20 @@ function SettingsForm({
               ))}
         </Panel>
       )}
-      <div className={s.saveBar}>
-        <span>
-          {count
-            ? `${count} 项待保存${risky.length ? `（其中 ${risky.length} 项高风险，保存前需确认）` : ""}`
-            : saved
-              ? "设置已保存"
-              : "没有待保存的更改"}
-        </span>
-        <button className={s.primary} disabled={!count || busy}>
-          {busy ? "正在保存…" : "保存更改"}
-        </button>
-      </div>
+      {!account && (
+        <div className={s.saveBar}>
+          <span>
+            {count
+              ? `${count} 项待保存${risky.length ? `（其中 ${risky.length} 项高风险，保存前需确认）` : ""}`
+              : saved
+                ? "设置已保存"
+                : "没有待保存的更改"}
+          </span>
+          <button className={s.primary} disabled={!count || busy}>
+            {busy ? "正在保存…" : "保存更改"}
+          </button>
+        </div>
+      )}
       <ErrorNotice message={error} />
       {confirming && (
         <ConfirmDanger
@@ -587,7 +611,7 @@ export function Settings() {
         description="按领域分组的网关配置。高风险项保存前会要求确认。"
         actions={
           <button onClick={resource.reload}>
-            <Icon name="refresh" />
+            <RefreshIcon spinning={resource.refreshing} />
             重新读取
           </button>
         }

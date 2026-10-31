@@ -22,7 +22,7 @@ import unittest
 import httpx
 
 from app import dsml
-import test_region_routing as fixtures
+from tests import test_region_routing as fixtures
 
 ARGS = '{"cmd":"ls -la"}'
 
@@ -294,7 +294,7 @@ class GatewayTests(fixtures.RegionRoutingTests):
 
     def handle_upstream(self, request):
         if self.upstream_parts:
-            body = json.loads(request.content)
+            body = fixtures.request_json(request)
             self.assertNotIn("tools", body, "泄漏场景的前提就是本请求未声明 tools")
             lines = sse_lines_for_block(self.upstream_parts)
             payload = ("".join(line + "\n\n" for line in lines)).encode()
@@ -325,3 +325,6 @@ class GatewayTests(fixtures.RegionRoutingTests):
         self.assertIn('"finish_reason": "tool_calls"', response.text)
         self.assertIn("[DONE]", response.text)
 
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

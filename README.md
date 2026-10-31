@@ -5,10 +5,11 @@ Use your **WorkBuddy / CodeBuddy (Tencent)** subscription as local **OpenAI- and
 [中文文档](README.zh-CN.md)
 
 - Chat Completions, Responses and Anthropic Messages, with tool calling and streaming.
+- Compatible tool-schema and channel handling across all three inference protocols.
 - Built-in **WebUI** for browser login, models, credentials, logs and settings — no desktop client required.
 - Automatic multi-account routing across domestic and international sites, with credential refresh.
-- Per-account automation: domestic personal accounts check in and dispatch Buddy travel by default, with independent switches; international check-in and daily activity are opt-in. The growth center is personal-only, so enterprise accounts are excluded.
-- **Local port layer** on top of upstream v1.3.6: per-account×model soft cooldown, credit floor, expiry-aware routing, transport-failure demotion, diagnostics, alerting and trend analytics — see [Local port layer](#local-port-layer).
+- Per-account automation: domestic personal accounts check in and dispatch Buddy travel by default, with independent switches; international check-in and daily activity are opt-in. The growth center is personal-only: finished tasks are claimed automatically, with per-task switches for behavior chains; enterprise accounts are excluded.
+- **Local port layer** on top of upstream v1.5.0: per-account×model soft cooldown, credit floor, expiry-aware routing, transport-failure demotion, diagnostics, alerting and trend analytics — see [Local port layer](#local-port-layer).
 
 ## Where this repository comes from
 
@@ -16,7 +17,7 @@ This checkout is a **personal fork** that tracks two upstream projects and adds 
 
 | Role | Repository | Notes |
 |------|------------|-------|
-| Upstream gateway (base) | [maiphucgiang/codebuddy2api](https://github.com/maiphucgiang/codebuddy2api) | Python gateway + WebUI. This fork tracks upstream **v1.3.6** (merged 2026-10-15, previously based on v1.3.2). |
+| Upstream gateway (base) | [maiphucgiang/codebuddy2api](https://github.com/maiphucgiang/codebuddy2api) | Python gateway + WebUI. This fork tracks upstream **v1.5.0** (merged 2026-10-31, previously based on v1.3.6). |
 | Second upstream (ideas) | [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) | Go gateway with a Web panel (MIT), an enhanced fork of the now-deleted `Sliverkiss/workbuddy2api`. Its account-pool operations and observability ideas were ported into the local layer below; no Go code is used. |
 | This fork | `LX2000WASD/codebuddy2api` (branch `local/main`) | Upstream base + the local port layer. Published as its own images; changes are **not** sent back upstream. |
 
@@ -24,7 +25,7 @@ Upstreaming policy: the fork deliberately stays **semi-detached** — it does no
 
 ## Local port layer
 
-Added on top of upstream v1.3.6 (`local/main`), all of it optional and switchable through the WebUI or `.env`:
+Added on top of upstream v1.5.0 (`local/main`), all of it optional and switchable through the WebUI or `.env`:
 
 **Routing and account operations**
 
@@ -56,7 +57,7 @@ cd codebuddy2api
 cp .env.example .env
 ```
 
-Edit `.env`: set `CODEBUDDY2API_KEY` to your own random key and pick the image. Preserve an existing `.env` on upgrades:
+Edit `.env`: set `CODEBUDDY2API_KEY` to your own random key and pick the image. It is the external admin inference key and the initial WebUI password until you change it. Compose loads the whole file into the container, so every key applies and unknown keys are harmless; unset keys keep the gateway defaults or the values saved in the WebUI. Preserve an existing `.env` on upgrades:
 
 ```dotenv
 # This fork (local port layer, pinned to a commit)
@@ -70,13 +71,14 @@ docker compose pull
 docker compose up -d --no-build
 ```
 
-`:local` follows the newest `local/main` build; each build also publishes an immutable `:local-<sha>` tag (the full 40-character commit sha) — pin that for reproducible deployments. Upstream `latest` tracks upstream stable releases and does **not** contain the local port layer.
+`:local` follows the newest `local/main` build; each build also publishes an immutable `:local-<sha>` tag (the full 40-character commit sha) — pin that for reproducible deployments. Without `CODEBUDDY2API_IMAGE` Compose pulls upstream `latest`, which tracks upstream stable releases and does **not** contain the local port layer; upstream also publishes release version tags (for example `1.5.0`) and `edge` for `main`.
 
 First use:
 
-1. Open **http://127.0.0.1:8787/dashboard** and sign in with your API key.
-2. In **Credentials**, add a domestic or international account through browser login, or import an `.info` file.
-3. In **Models**, find an available model and use its public ID in your client.
+1. Open **http://127.0.0.1:8787/dashboard** and sign in as `admin` with your `CODEBUDDY2API_KEY` password.
+2. In **Credentials**, add a domestic or international account through browser login, import an `.info` file, or paste refresh tokens for a chosen endpoint.
+3. In **Keys**, create an inference key for each client and assign its model, IP, expiry and rate limits.
+4. In **Models**, find an available model and use its public ID in your client.
 
 The template binds to localhost only. Configure HTTPS and restrict network access before allowing remote connections; keep and securely back up the `auth/` data directory. To run current source or log in from a terminal instead, see the [deployment guide](docs/deployment.md).
 
@@ -86,10 +88,17 @@ The template binds to localhost only. Configure HTTPS and restrict network acces
 |----------|----------|
 | OpenAI Chat / Responses | `http://127.0.0.1:8787/v1` |
 | Anthropic Messages | `http://127.0.0.1:8787` |
+| MCP (web_search + web_fetch) | `http://127.0.0.1:8787/v1/mcp` |
+| REST web search / fetch | `POST http://127.0.0.1:8787/v1/search` / `POST http://127.0.0.1:8787/v1/fetch` |
+| Image & video generation | `POST http://127.0.0.1:8787/v1/images/generations` / `POST /v1/images/edits` / `POST /v1/videos` |
 
-- **API key:** the same key used to sign in to the WebUI.
+- Media generation is billed per upstream credit and only routes to verified account products; see [Media generation](docs/clients.md#media-generation).
+
+- **API key:** use a key created in **Keys**, or the externally configured admin key. The WebUI management Cookie cannot call `/v1/*`.
 - **Model:** a public ID from the WebUI or `GET /v1/models`.
 - All accounts share these URLs; no region parameter is needed. Anthropic SDKs append `/v1/messages` themselves, so leave it out of the Base URL.
+- The search and fetch endpoints never call a model. Declaring Anthropic `web_search_*` / `web_fetch_*` or OpenAI `web_search` server tools makes the gateway execute them itself. See [Web search and fetch](docs/clients.md#web-search-and-fetch).
+- Tool parameters: across all three inference protocols, an empty parameter root becomes an object schema. Legacy field maps with boolean `required` flags are wrapped in `properties`, with required names collected at the root. A schema keyword such as `pattern` still counts as a field name when it holds a field. Standard schemas, roots with `$`/`x-` extensions, and nested schemas are left untouched.
 
 [Codex CLI, Claude Code / CC Switch and other client examples →](docs/clients.md)
 
@@ -117,6 +126,7 @@ Building needs network access (Node image, vite-plus release, pnpm registry) and
 ├── web/                 # WebUI frontend (React/TypeScript; build output served by the gateway)
 │   └── src/fusion/      # Local layer: fusion client, types and development mock
 ├── tests/               # Offline regression suites
+├── preview/             # Development preview: real gateway, simulated upstream, synthetic accounts
 ├── docs/                # User guides (English/Chinese pairs) + the Chinese fusion API contract
 ├── examples/            # Client configuration examples
 ├── scripts/             # Version and dependency-lock tooling
@@ -136,11 +146,12 @@ Building needs network access (Node image, vite-plus release, pnpm registry) and
 | [Client configuration](docs/clients.md) | Codex CLI, Claude Code, CC Switch and generic clients |
 | [Advanced reference](docs/advanced.md) | Options, APIs, model scheduling, request limits and troubleshooting |
 | [Fusion management API](docs/fusion-api.md) | Local-layer endpoint contract: health, status, diagnostics, stats, alerts (Chinese) |
+| [Development preview](docs/development.md) | Run the WebUI and APIs against a simulated upstream, without real accounts |
 
 ## FAQ
 
 - **WebUI sign-in fails behind an HTTPS domain/reverse proxy?** Trust your public origin via `admin_allowed_origins` — see [Management Origin checks](docs/advanced.md#management-origin--csrf-switch).
-- **No Docker?** After installing dependencies and the WebUI, run `uv run converter.py` or `python3 converter.py` without `.env`. First local startup saves a default key and displays it once — see [Local Python setup](docs/deployment.md#local-python-setup).
+- **No Docker?** After installing dependencies and the WebUI, run `uv run --locked --no-build converter.py` or `python3 converter.py` without `.env`. First startup prints the initial admin username and random password; no inference key is created until you add one in **Keys** — see [Local Python setup](docs/deployment.md#local-python-setup).
 - **Where is my data?** Everything lives in `auth/` (or `/data/auth` in Docker): credentials, settings and log databases — see [Data and backups](docs/webui.md#data-and-backups).
 - **Which image tag should I use?** `local` follows this fork, `local-<sha>` pins one build of it, upstream `latest`/`edge` follow upstream releases. Tags are listed at [GHCR: LX2000WASD/codebuddy2api](https://github.com/LX2000WASD/codebuddy2api/pkgs/container/codebuddy2api); the [deployment guide](docs/deployment.md#use-published-images) covers both upstream and fork images.
 - **Which local-layer switches are on by default?** Resilience options are on (write-timeout replay, write 20 s, TTFB 30 s, transport demotion 5 failures / 600 s); the conservative ones are off (`CODEBUDDY2API_CREDIT_FLOOR=0`, `CODEBUDDY2API_ALERT_ENABLED=false`, and `stats_tokens_rate_ttfb_ms` is a reserved key that is not in effect yet).

@@ -14,7 +14,13 @@ vi.mock("./api", async (original) => ({
 }));
 beforeEach(() => vi.restoreAllMocks());
 function resource(data: unknown) {
-  vi.mocked(useResource).mockReturnValue({ data, error: null, loading: false, reload: vi.fn() });
+  vi.mocked(useResource).mockReturnValue({
+    data,
+    error: null,
+    loading: false,
+    refreshing: false,
+    reload: vi.fn(),
+  });
 }
 const settings = {
   revision: 7,
@@ -68,9 +74,21 @@ describe("concise user-facing copy", () => {
       "h2",
       "form",
     ]);
-    expect(screen.getByLabelText("API key", { exact: true })).toBeTruthy();
+    expect(screen.getByLabelText("用户名", { exact: true })).toHaveProperty("name", "username");
+    expect(screen.getByLabelText("用户名", { exact: true })).toHaveProperty(
+      "autocomplete",
+      "username",
+    );
+    expect(screen.getByLabelText("密码", { exact: true })).toHaveProperty("name", "password");
+    expect(screen.getByLabelText("密码", { exact: true })).toHaveProperty(
+      "autocomplete",
+      "current-password",
+    );
+    expect(screen.getByLabelText("记住我", { exact: true })).toHaveProperty("name", "remember");
     expect(screen.getByRole("button", { name: "进入工作台" })).toBeTruthy();
     expect(container.querySelectorAll("p")).toHaveLength(0);
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
   });
 
   it("renders titles and empty states without developer explanations", () => {

@@ -1,15 +1,19 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   api,
+  catalogScanResponse,
   credentialResponse,
   errorMessage,
   list,
   modelResponse,
   normalizeModelLocks,
+  number,
   object,
   statusOf,
+  text,
   useResource,
+  type CatalogScan,
   type Credential,
   type ModelLock,
   type ModelRule,
@@ -23,6 +27,7 @@ import {
   Empty,
   ErrorNotice,
   Icon,
+  RefreshIcon,
   PageTitle,
   Panel,
   ResourceState,
@@ -60,16 +65,60 @@ import {
   type ModelHealth,
   type SparklineEntry,
 } from "../insights";
-import { t } from "../i18n";
+import { t, useT, type MessageKey } from "../i18n";
+import {
+  OutputProbeNote,
+  type OutputProbe,
+  RateOverrideFields,
+  describeProbe,
+  formatEstimate,
+  measuredNote,
+  rateDetails,
+  rateSource,
+  useOutputProbes,
+  useRateProbeJob,
+  type RateProbeControl,
+  type RateSource,
+} from "../modelRates";
+import { JobBanner, ProgressBanner, type Job } from "../jobs";
 import s from "../ui.module.scss";
+import { SearchInput, Select } from "../fields";
+import { clearToasts, notify } from "../toast";
 export const profiles = ["cn-cli", "cn-work", "intl-cli", "intl-work"];
+const mediaKindKeys: Record<string, MessageKey> = {
+  image: "models.mediaKind.image",
+  edit: "models.mediaKind.edit",
+  video: "models.mediaKind.video",
+};
 const validId = (id: string) => /^[A-Za-z0-9_.:/@-]{1,160}$/.test(id) && ![".", ".."].includes(id);
-export function validateRule(rule: ModelRule, models: ModelRule[]): string | null {
+export function validateRule(
+  rule: ModelRule,
+  models: ModelRule[],
+  translate: (key: string) => string = (key) => key,
+): string | null {
   if (!rule.public_id.trim()) return "对外 ID 不能为空";
   if (rule.public_id !== rule.public_id.trim() || /\s/.test(rule.public_id))
     return "对外 ID 不能包含空白字符";
   if (!validId(rule.public_id)) return "对外 ID 只允许 1–160 位字母、数字及 _ . : / @ -";
   if (!validId(rule.upstream_id ?? rule.id)) return "上游 ID 不能为空，且须为有效模型标识";
+  if (rule.routes) {
+    if (!rule.routes.length) return translate("models.routes.invalidEmpty");
+    const routeIds = new Set<string>();
+    let hasWeight = false;
+    let hasPositive = false;
+    for (const route of rule.routes) {
+      if (!validId(route.upstream_id) || routeIds.has(route.upstream_id))
+        return translate("models.routes.invalidId");
+      routeIds.add(route.upstream_id);
+      if (route.weight !== null) {
+        hasWeight = true;
+        if (!Number.isFinite(route.weight) || route.weight < 0 || route.weight > 1000)
+          return translate("models.routes.invalidWeight");
+        if (route.weight > 0) hasPositive = true;
+      }
+    }
+    if (hasWeight && !hasPositive) return translate("models.routes.invalidPositive");
+  }
   if (
     models.some(
       (m) => m.id !== rule.id && (m.id === rule.public_id || m.public_id === rule.public_id),
@@ -126,31 +175,83 @@ function RoutePreview({ preview }: { preview: Preview }) {
 
 function RateCell({ model }: { model: ModelRule }) {
   const rate = rateOf(model.credits);
-  if (rate === null)
-    return (
-      <>
-        <DataValue value={model.credits} />
-        <small className={s.specNote}>产品倍率未知</small>
-      </>
-    );
+  const details = rateDetails(model);
   const perProfile =
     model.credits_by_profile &&
     typeof model.credits_by_profile === "object" &&
     !Array.isArray(model.credits_by_profile)
       ? Object.entries(model.credits_by_profile)
       : [];
-  const rows = perProfile.filter(([, price]) => perProfile.length > 1 || rateOf(price) !== rate);
+  // The headline rate comes from the cheapest product; its provenance decides the label.
+  const headline = perProfile.find(([, price]) => rateOf(price) === rate)?.[0];
+  const source = headline ? rateSource(details[headline]) : "declared";
+  const unpriced = Object.entries(details).find(
+    ([, detail]) => rateSource(detail) === "measured" && detail.measured?.rate == null,
+  );
+  if (rate === null) {
+    if (unpriced)
+      return (
+        <div className={s.rateStack} title={measuredNote(unpriced[1])}>
+          <span className={`${s.rateChip} ${s.rateMeasured}`}>实测计费 · 倍率待估</span>
+        </div>
+      );
+    return (
+      <>
+        <DataValue value={model.credits} />
+        <small className={s.specNote}>产品倍率未知</small>
+      </>
+    );
+  }
+  const rows = perProfile.filter(
+    ([profile, price]) =>
+      perProfile.length > 1 || rateOf(price) !== rate || rateSource(details[profile]) !== source,
+  );
+  const label = (value: number, kind: RateSource) =>
+    kind === "measured"
+      ? `≈${formatEstimate(value)} · 实测计费`
+      : kind === "manual"
+        ? `${formatEstimate(value)} · 手填`
+        : value === 0
+          ? "限时免费 0x"
+          : formatRate(value);
   return (
     <div className={s.rateStack}>
-      <span className={rate === 0 ? `${s.rateChip} ${s.rateFree}` : s.rateChip}>
-        {rate === 0 ? "限时免费 0x" : formatRate(rate)}
+      <span
+        className={
+          source === "measured"
+            ? `${s.rateChip} ${s.rateMeasured}`
+            : rate === 0
+              ? `${s.rateChip} ${s.rateFree}`
+              : s.rateChip
+        }
+        title={
+          source === "measured" && headline
+            ? measuredNote(details[headline])
+            : source === "manual"
+              ? "管理员手填倍率，路由与 /v1/models 以此为准"
+              : undefined
+        }
+      >
+        {label(rate, source)}
       </span>
-      {rows.map(([profile, price]) => (
-        <small className={s.rateProfile} key={profile}>
-          {profileLabel(profile)}{" "}
-          {rateOf(price) === null ? "未知" : formatRate(rateOf(price) as number)}
+      {rows.map(([profile, price]) => {
+        const value = rateOf(price);
+        const kind = rateSource(details[profile]);
+        return (
+          <small
+            className={s.rateProfile}
+            key={profile}
+            title={kind === "measured" ? measuredNote(details[profile]) : undefined}
+          >
+            {profileLabel(profile)} {value === null ? "未知" : label(value, kind)}
+          </small>
+        );
+      })}
+      {unpriced && headline !== unpriced[0] && (
+        <small className={s.rateProfile} title={measuredNote(unpriced[1])}>
+          {profileLabel(unpriced[0])} 实测计费 · 倍率待估
         </small>
-      ))}
+      )}
     </div>
   );
 }
@@ -252,6 +353,7 @@ export function ModelEditor({
   revision,
   onClose,
   onSaved,
+  rateProbe,
   creating = false,
 }: {
   model: ModelRule;
@@ -260,11 +362,14 @@ export function ModelEditor({
   revision: number;
   onClose: () => void;
   onSaved: () => void;
+  rateProbe?: RateProbeControl;
   creating?: boolean;
 }) {
+  const t = useT();
   const [rule, setRule] = useState({
     ...model,
     upstream_id: model.upstream_id ?? model.id,
+    routes: model.routes?.map((route) => ({ ...route })),
     region:
       model.region ||
       (!model.credential_ids.length && profiles.includes(model.profile)
@@ -272,6 +377,9 @@ export function ModelEditor({
         : ""),
   });
   const [mode, setMode] = useState<Mode>(() => bindingMode(model));
+  const [routesTouched, setRoutesTouched] = useState(
+    () => model.routes?.some((route) => route.source === "manual") ?? false,
+  );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -280,6 +388,7 @@ export function ModelEditor({
   useEffect(() => () => request.current?.abort(), []);
   const update = <K extends keyof ModelRule>(key: K, value: ModelRule[K]) => {
     setRule((old) => ({ ...old, [key]: value }));
+    if (key === "routes") setRoutesTouched(true);
     setPreview(null);
   };
   const chooseMode = (next: Mode) => {
@@ -296,7 +405,7 @@ export function ModelEditor({
   };
   const run = (save: boolean) => {
     const invalid =
-      validateRule(rule, models) ??
+      validateRule(rule, models, t) ??
       (mode === "accounts" && !rule.credential_ids.length ? "请选择至少一个账号" : null);
     if (invalid) {
       setError(invalid);
@@ -310,11 +419,13 @@ export function ModelEditor({
       revision,
       public_id: rule.public_id,
       upstream_id: rule.upstream_id,
+      ...(routesTouched && rule.routes?.length ? { routes: rule.routes } : {}),
       enabled: rule.enabled,
       keep_original: rule.keep_original,
       region: rule.region || null,
       profile: rule.profile || null,
       credential_ids: rule.credential_ids,
+      credits_override: rule.credits_override ?? {},
     };
     const path = creating ? "/models" : `/models/${encodeURIComponent(model.id)}`;
     const config = { signal: controller.signal };
@@ -392,6 +503,106 @@ export function ModelEditor({
               ))}
             </datalist>
           </div>
+          <fieldset className={s.fieldset}>
+            <legend>{t("models.routes.title")}</legend>
+            <p>{t("models.routes.help")}</p>
+            {(rule.routes?.length ?? 0) > 0 && (
+              <div className={s.routePreview}>
+                {rule.routes?.map((route, index) => (
+                  <div className={s.routeCandidate} key={`${route.upstream_id}-${index}`}>
+                    <input
+                      value={route.upstream_id}
+                      list={suggestions}
+                      placeholder="上游模型 ID"
+                      onChange={(e) =>
+                        update(
+                          "routes",
+                          (rule.routes ?? []).map((item, i) =>
+                            i === index ? { ...item, upstream_id: e.target.value } : item,
+                          ),
+                        )
+                      }
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      max="1000"
+                      step="any"
+                      value={route.weight ?? ""}
+                      placeholder={t("models.routes.weight")}
+                      onChange={(e) =>
+                        update(
+                          "routes",
+                          (rule.routes ?? []).map((item, i) =>
+                            i === index
+                              ? {
+                                  ...item,
+                                  weight: e.target.value === "" ? null : Number(e.target.value),
+                                }
+                              : item,
+                          ),
+                        )
+                      }
+                    />
+                    <label className={s.check}>
+                      <input
+                        type="checkbox"
+                        checked={route.enabled}
+                        onChange={(e) =>
+                          update(
+                            "routes",
+                            (rule.routes ?? []).map((item, i) =>
+                              i === index ? { ...item, enabled: e.target.checked } : item,
+                            ),
+                          )
+                        }
+                      />
+                      {t("models.routes.enabled")}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        update(
+                          "routes",
+                          (rule.routes ?? []).filter((_, i) => i !== index),
+                        )
+                      }
+                    >
+                      {t("models.routes.remove")}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() =>
+                update(
+                  "routes",
+                  (rule.routes?.length ?? 0)
+                    ? [
+                        ...(rule.routes ?? []),
+                        {
+                          upstream_id: rule.upstream_id,
+                          weight: null,
+                          enabled: true,
+                          source: "manual",
+                        },
+                      ]
+                    : [
+                        {
+                          upstream_id: rule.upstream_id,
+                          weight: null,
+                          enabled: true,
+                          source: "manual",
+                        },
+                      ],
+                )
+              }
+            >
+              {t("models.routes.add")}
+            </button>
+          </fieldset>
           <div className={s.actions}>
             <label className={s.check}>
               <input
@@ -451,10 +662,10 @@ export function ModelEditor({
             <div className={s.formGrid}>
               <label className={s.field}>
                 区域
-                <select
+                <Select
                   value={rule.region || (rule.profile.startsWith("intl-") ? "intl" : "cn")}
-                  onChange={(e) => {
-                    const region = e.target.value;
+                  onChange={(value) => {
+                    const region = value;
                     setRule((old) => ({
                       ...old,
                       region,
@@ -465,11 +676,11 @@ export function ModelEditor({
                 >
                   <option value="cn">中国大陆 · CN</option>
                   <option value="intl">国际 · INTL</option>
-                </select>
+                </Select>
               </label>
               <label className={s.field}>
                 产品
-                <select value={rule.profile} onChange={(e) => update("profile", e.target.value)}>
+                <Select value={rule.profile} onChange={(value) => update("profile", value)}>
                   <option value="">不限产品</option>
                   {profiles
                     .filter((p) => !rule.region || p.startsWith(`${rule.region}-`))
@@ -478,7 +689,7 @@ export function ModelEditor({
                         {profileLabel(p)}
                       </option>
                     ))}
-                </select>
+                </Select>
               </label>
             </div>
           )}
@@ -533,6 +744,15 @@ export function ModelEditor({
                 ))}
             </fieldset>
           )}
+          {!creating && !model.custom && (
+            <RateOverrideFields
+              model={model}
+              value={rule.credits_override ?? {}}
+              onChange={(next) => update("credits_override", next)}
+              probe={rateProbe}
+              disabled={busy}
+            />
+          )}
         </fieldset>
         <ErrorNotice message={error} />
         <div className={s.actions}>
@@ -584,7 +804,11 @@ function matchesCatalog(model: ModelRule, query: string, filter: CatalogFilter):
       if (bindingMode(model) !== "auto") return false;
     } else if (model.region !== filter.region) return false;
   }
-  if (filter.capability) {
+  if (filter.capability === "media_image") {
+    if (!model.media_kinds?.some((kind) => kind === "image" || kind === "edit")) return false;
+  } else if (filter.capability === "media_video") {
+    if (!model.media_kinds?.includes("video")) return false;
+  } else if (filter.capability) {
     const declared =
       model.capabilities && typeof model.capabilities === "object"
         ? (model.capabilities as RecordValue)
@@ -657,11 +881,13 @@ function modelColumns({
   onEdit,
   onDelete,
   actionsDisabled,
+  outputProbes,
 }: {
   totalAccounts: number | null;
   locks: ModelLock[];
   health: Map<string, ModelHealth>;
   sparks: Map<string, SparklineEntry>;
+  outputProbes: Record<string, OutputProbe>;
   onDetails: (model: ModelRule) => void;
   onEdit: (model: ModelRule) => void;
   onDelete: (model: ModelRule) => void;
@@ -677,9 +903,34 @@ function modelColumns({
             <strong className={s.modelName}>{m.public_id}</strong>
             {!m.enabled && <Badge tone="neutral">{t("models.avail.disabled")}</Badge>}
             {m.custom && <Badge>自建</Badge>}
+            {m.media_kinds?.map((kind) => (
+              <Badge key={kind} tone="neutral">
+                {mediaKindKeys[kind] ? t(mediaKindKeys[kind]!) : kind}
+              </Badge>
+            ))}
+            {m.embedding && <Badge tone="neutral">{t("models.embedding")}</Badge>}
+            {m.rerank && <Badge tone="neutral">{t("models.rerank")}</Badge>}
+            {m.available === false && m.enabled && (
+              <Badge tone="warn">{t("models.avail.none")}</Badge>
+            )}
           </div>
           <small className={s.mono}>{m.upstream_id ?? m.id}</small>
           {modelDisplayName(m) && <small>{modelDisplayName(m)}</small>}
+          {(m.routes?.length ?? 0) > 1 && (
+            <div className={s.routeSummary} aria-label={t("models.routes.label")}>
+              <span className={s.routeSummaryLabel}>{t("models.routes.label")}</span>
+              {m.routes!.map((route) => (
+                <span
+                  className={`${s.routePill} ${route.enabled ? "" : s.routeDisabled}`}
+                  key={`${route.source}-${route.upstream_id}`}
+                  title={`${route.source} · ${route.enabled ? t("models.routes.enabled") : t("models.routes.remove")}`}
+                >
+                  {route.upstream_id}
+                  {route.weight !== null ? ` · ${route.weight}` : ""}
+                </span>
+              ))}
+            </div>
+          )}
           {m.keep_original && <small>同时保留 {m.id}</small>}
         </div>
       ),
@@ -751,7 +1002,14 @@ function modelColumns({
     {
       id: "output",
       header: t("models.col.output"),
-      cell: (m) => <SpecValue model={m} kind="output" />,
+      cell: (m) => (
+        <>
+          <SpecValue model={m} kind="output" />
+          <OutputProbeNote
+            probe={outputProbes[m.public_id] ?? outputProbes[m.upstream_id ?? m.id]}
+          />
+        </>
+      ),
       className: s.specCell,
       sortValue: (m) => widestWindow(m, "output"),
       sortDescFirst: true,
@@ -806,6 +1064,45 @@ function modelColumns({
   ];
 }
 
+function rateProbeTitle(job: Job) {
+  return job.meta.scope === "all" ? "一键检测倍率" : `倍率探测 · ${text(job.meta.scope)}`;
+}
+function notifyRateProbe(job: Job) {
+  notify({
+    key: "rate-probe",
+    tone: (number(job.meta.failed) ?? 0) > 0 ? "warn" : "good",
+    title: `${rateProbeTitle(job)}已完成`,
+    body: (
+      <span>
+        {job.total
+          ? `实测计费 ${text(job.meta.billed)} · 确认免费 ${text(job.meta.free)} · 失败 ${text(job.meta.failed)}`
+          : "没有目录声明 0x 的模型"}
+      </span>
+    ),
+  });
+}
+const scanSummary = (scan: CatalogScan) =>
+  `成功 ${scan.success} · 失败 ${scan.failed} · 目录差异 ${scan.differences}`;
+function notifyScan(scan: CatalogScan) {
+  const versions = Object.entries(scan.profiles)
+    .filter(([, row]) => row.distinct > 1)
+    .map(([name, row]) => `${name}：${row.distinct} 组目录版本`)
+    .join("；");
+  const failed = scan.status === "failed";
+  notify({
+    key: "scan",
+    tone: failed ? "bad" : scan.failed > 0 ? "warn" : "good",
+    title: failed ? "全量扫描失败" : "全量扫描已完成",
+    body: (
+      <>
+        <span>{scanSummary(scan)}</span>
+        {failed && scan.error && <span>{scan.error}</span>}
+        {versions && <span>{versions}</span>}
+        {(failed || scan.failed > 0) && <span>失败账号保留上次成功的目录。</span>}
+      </>
+    ),
+  });
+}
 export function Models() {
   const resource = useResource("/models", modelResponse, { cache: true });
   const credentials = useResource("/credentials", credentialResponse, { cache: true });
@@ -827,23 +1124,75 @@ export function Models() {
   const [deleting, setDeleting] = useState<ModelRule | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [guardNotice, setGuardNotice] = useState<string | null>(null);
+  const [scan, setScan] = useState<CatalogScan | null>(null);
+  const [scanBusy, setScanBusy] = useState(false);
+  const outputProbes = useOutputProbes();
+  const rateJob = useRateProbeJob((job) => {
+    resource.reload();
+    notifyRateProbe(job);
+  });
+  // Only a scan this page watched finish raises a toast; a reload does not repeat an old one.
+  const scanRunning = useRef(false);
+  const loadScan = useCallback(() => {
+    void api
+      .get("/models/scan")
+      .then((response) => {
+        const next = catalogScanResponse(response.data);
+        setScan(next);
+        // A scan that just finished may have refreshed the catalog list.
+        if (next.status === "completed" || next.status === "failed") resource.reload();
+        if (next.status !== "running" && scanRunning.current) notifyScan(next);
+        scanRunning.current = next.status === "running";
+      })
+      .catch(() => {
+        // 被动状态轮询失败不升级为页面错误；提交扫描的失败才提示。
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    loadScan(); // An in-progress scan survives page reloads.
+  }, [loadScan]);
+  useEffect(() => {
+    if (scan?.status !== "running") return;
+    const timer = setInterval(loadScan, 2000);
+    return () => clearInterval(timer);
+  }, [scan?.status, loadScan]);
+  const startScan = () => {
+    if (scanBusy) return;
+    setScanBusy(true);
+    setError(null);
+    void api
+      .post("/models/scan")
+      .then((response) => {
+        const next = catalogScanResponse(response.data);
+        scanRunning.current = next.status === "running";
+        setScan(next);
+        resource.reload();
+      })
+      .catch((err: unknown) => setError(errorMessage(err)))
+      .finally(() => setScanBusy(false));
+  };
   const toggleGuard = (key: "model_guard" | "model_capability_guard", next: boolean) => {
     if (!resource.data || busy) return;
     setBusy(true);
     setError(null);
-    setGuardNotice(null);
     void api
       .patch("/settings", {
         revision: resource.data.revision,
         values: { [key]: next },
       })
       .then(() => {
-        setGuardNotice(
-          key === "model_capability_guard" && !next
-            ? "仅关闭新增能力预检；元数据展示、国际图片归并及其他安全限制不变，新请求生效。"
-            : `${key === "model_guard" ? "表外模型拦截" : "模型能力预检"}已${next ? "开启" : "关闭"}。`,
-        );
+        notify({
+          key: "guard",
+          tone: "good",
+          title: `${key === "model_guard" ? "表外模型拦截" : "模型能力预检"}已${next ? "开启" : "关闭"}`,
+          body:
+            key === "model_capability_guard" && !next ? (
+              <span>
+                仅关闭新增能力预检；元数据展示、国际图片归并及其他安全限制不变，新请求生效。
+              </span>
+            ) : undefined,
+        });
         resource.reload();
       })
       .catch((err: unknown) => setError(errorMessage(err)))
@@ -884,6 +1233,7 @@ export function Models() {
         locks,
         health: modelHealth.byModel,
         sparks,
+        outputProbes,
         onDetails: (model) => setDetailsId(model.id),
         onEdit: (model) => {
           setEditorRevision(resource.data?.revision ?? null);
@@ -902,7 +1252,15 @@ export function Models() {
     // evaluated during render, so the value must already be initialised above.
     // `health` and `sparks` are maps rebuilt only when their payload changes, so the
     // column identities stay stable and TanStack does not rebuild every row.
-    [totalAccounts, locks, resource.data?.revision, bulkBusy, modelHealth.byModel, sparks],
+    [
+      totalAccounts,
+      locks,
+      resource.data?.revision,
+      bulkBusy,
+      modelHealth.byModel,
+      sparks,
+      outputProbes,
+    ],
   );
   const { hidden, toggle: toggleColumn } = useColumnVisibility({
     storageKey: COLUMNS_KEY,
@@ -992,12 +1350,33 @@ export function Models() {
           <>
             <button
               onClick={() => {
+                clearToasts();
                 resource.reload();
                 credentials.reload();
               }}
             >
-              <Icon name="refresh" />
+              <RefreshIcon spinning={resource.refreshing || credentials.refreshing} />
               刷新目录
+            </button>
+            <button
+              disabled={rateJob.job?.status === "running"}
+              onClick={() => rateJob.start()}
+              title="后台任务：对目录声明 0x 的模型逐产品发起一次 ≈8K token 对话；有扣费即为实测计费，未扣费才是真 0 倍率"
+            >
+              <RefreshIcon spinning={rateJob.job?.status === "running"} />
+              {rateJob.job?.status === "running"
+                ? `检测中 ${rateJob.job.completed}/${rateJob.job.total}`
+                : "一键检测倍率"}
+            </button>
+            <button
+              disabled={scanBusy || scan?.status === "running"}
+              onClick={startScan}
+              title="逐个账号刷新目录，仅由你手动触发；单账号失败时保留其旧目录"
+            >
+              <RefreshIcon spinning={scanBusy || scan?.status === "running"} />
+              {scan?.status === "running"
+                ? `扫描中 ${scan.completed}/${scan.total}`
+                : "扫描全部账号模型"}
             </button>
             <button
               className={s.primary}
@@ -1022,11 +1401,22 @@ export function Models() {
         <ResourceState {...resource} />
       )}
       <ErrorNotice message={error} />
+      <ErrorNotice message={rateJob.error} />
+      {rateJob.job?.status === "running" && (
+        <JobBanner title={rateProbeTitle(rateJob.job)} job={rateJob.job} describe={describeProbe} />
+      )}
       <ErrorNotice message={credentials.error} retry={credentials.reload} />
-      {(guardNotice || bulkNotice) && (
+      {/* Bulk runs report through a banner (they can end half-done); the guard
+          switches report through the toast they already raise. */}
+      {bulkNotice && (
         <p className={s.successNotice} role="status">
-          {guardNotice ?? bulkNotice}
+          {bulkNotice}
         </p>
+      )}
+      {scan?.status === "running" && (
+        <ProgressBanner title="扫描全部账号模型" completed={scan.completed} total={scan.total}>
+          <small>{scanSummary(scan)}</small>
+        </ProgressBanner>
       )}
       <Panel
         title="模型目录"
@@ -1039,37 +1429,39 @@ export function Models() {
         }
       >
         <div className={s.toolbar}>
-          <input
+          <SearchInput
             aria-label="搜索模型"
             placeholder="搜索 ID、名称、描述、厂商，支持空格分隔多关键词…"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={setQuery}
           />
           <div className={s.filterBar}>
-            <select
+            <Select
               aria-label="筛选区域"
               value={filter.region}
-              onChange={(e) => setFilter({ ...filter, region: e.target.value })}
+              onChange={(value) => setFilter({ ...filter, region: value })}
             >
               <option value="">全部区域</option>
               <option value="auto">自动选择</option>
               <option value="cn">中国大陆</option>
               <option value="intl">国际</option>
-            </select>
-            <select
+            </Select>
+            <Select
               aria-label="筛选能力"
               value={filter.capability}
-              onChange={(e) => setFilter({ ...filter, capability: e.target.value })}
+              onChange={(value) => setFilter({ ...filter, capability: value })}
             >
               <option value="">全部能力</option>
+              <option value="media_image">图片生成 / 编辑</option>
+              <option value="media_video">视频生成</option>
               <option value="images">支持视觉</option>
               <option value="tools">支持工具</option>
               <option value="reasoning">支持思考</option>
-            </select>
-            <select
+            </Select>
+            <Select
               aria-label="筛选思考"
               value={filter.effort}
-              onChange={(e) => setFilter({ ...filter, effort: e.target.value })}
+              onChange={(value) => setFilter({ ...filter, effort: value })}
             >
               <option value="">全部档位</option>
               <option value="off">可关闭思考</option>
@@ -1078,16 +1470,16 @@ export function Models() {
                   {value}
                 </option>
               ))}
-            </select>
-            <select
+            </Select>
+            <Select
               aria-label="筛选价格"
               value={filter.price}
-              onChange={(e) => setFilter({ ...filter, price: e.target.value })}
+              onChange={(value) => setFilter({ ...filter, price: value })}
             >
               <option value="">全部价格</option>
               <option value="free">限时免费</option>
               <option value="paid">收费</option>
-            </select>
+            </Select>
             {(filtering || sorting.length > 0) && (
               <button
                 onClick={() => {
@@ -1330,6 +1722,7 @@ export function Models() {
               setEditorRevision(null);
             }}
             onSaved={resource.reload}
+            rateProbe={rateJob}
           />
         )}
       </DrawerPresence>

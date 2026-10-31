@@ -174,9 +174,10 @@ class EndpointTests(unittest.TestCase):
                 self.assertEqual(missing.json()["error"]["type"], "not_found_error")
             finally:
                 converter.CONFIG["model_guard"] = False
-            response = self.client.get("/admin/credentials")
-            self.assertEqual(response.status_code, 401, response.text)
-            self.assertIn("detail", response.json())
+            for headers in ({}, {"Authorization": "Bearer secret"}):
+                response = self.client.get("/admin/credentials", headers=headers)
+                self.assertEqual(response.status_code, 503, response.text)
+                self.assertIn("detail", response.json())
         finally:
             converter.CONFIG["api_key"] = ""
 
@@ -820,7 +821,7 @@ class StartupUsageHydrationTests(unittest.TestCase):
         return path
 
     def test_main_publishes_cached_usage_before_serving(self):
-        """The aggregate must be populated by the time uvicorn.run is entered."""
+        """The aggregate must be populated by the time the server is started."""
         path = self.credential()
         # Preseed the cache for the identity this credential will resolve to.
         probe = converter.CredentialPool([path], blocks_path=self.root / "blocks.json")
@@ -846,7 +847,7 @@ class StartupUsageHydrationTests(unittest.TestCase):
                 # Inspect the aggregate at the moment the server would start serving.
                 observed["usage"] = converter.CONFIG.get("usage_daily")
                 observed["accounts"] = converter.CONFIG.get("usage_daily_accounts")
-            stack.enter_context(patch.object(converter.uvicorn, "run", side_effect=capture))
+            stack.enter_context(patch.object(converter, "run_server", side_effect=capture))
             converter.main()
 
         self.assertIsNotNone(observed["usage"], "main() never published usage")
@@ -869,7 +870,7 @@ class StartupUsageHydrationTests(unittest.TestCase):
             stack.enter_context(patch.object(converter, "seed_credentials"))
             stack.enter_context(patch.object(converter, "preflight", return_value=True))
             stack.enter_context(patch.object(runtime_management, "install"))
-            stack.enter_context(patch.object(converter.uvicorn, "run",
+            stack.enter_context(patch.object(converter, "run_server",
                                             side_effect=lambda *a, **k: observed.setdefault("usage",
                                                                                             converter.CONFIG.get("usage_daily"))))
             converter.main()
@@ -900,7 +901,7 @@ class StartupUsageHydrationTests(unittest.TestCase):
                 events.append(("thread", converter.CONFIG.get("usage_daily") is not None))
                 return Mock()
             stack.enter_context(patch.object(converter.threading, "Thread", side_effect=note_thread))
-            stack.enter_context(patch.object(converter.uvicorn, "run"))
+            stack.enter_context(patch.object(converter, "run_server"))
             converter.main()
         # Every thread must have been started after usage was published.
         self.assertTrue(events)
@@ -929,7 +930,7 @@ class ConfigurationTests(unittest.TestCase):
             stack.enter_context(patch.object(converter, "CredentialPool", return_value=Mock(first=lambda: None)))
             stack.enter_context(patch.object(converter, "credits_mod", None))
             stack.enter_context(patch.object(converter.threading, "Thread"))
-            server = stack.enter_context(patch.object(converter.uvicorn, "run"))
+            server = stack.enter_context(patch.object(converter, "run_server"))
             from app import runtime_management
             close = stack.enter_context(patch.object(runtime_management, "close", wraps=runtime_management.close))
             if invalid:
@@ -957,23 +958,21 @@ class ConfigurationTests(unittest.TestCase):
             "admin_allowed_origins": "", "responses_projection_mode": "balanced",
             "responses_projection_max_bytes": 40000})
 
-    def test_open_binding_without_key_requires_explicit_opt_in(self):
-        # Reject unauthenticated public binding by default.
-        self.configure(flags=("--host", "0.0.0.0"), invalid=True)
-        # Explicit configuration allows unauthenticated binding.
-        self.configure(env={"CODEBUDDY2API_ALLOW_OPEN_NOAUTH": "true"}, flags=("--host", "0.0.0.0"))
-        # Configured authentication permits public binding.
-        self.configure(env={"CODEBUDDY2API_KEY": "k"}, flags=("--host", "0.0.0.0"))
+    def test_open_binding_without_key_starts_and_noauth_only_controls_requests(self):
+        self.configure(flags=("--host", "0.0.0.0"), expected_host="0.0.0.0")
+        self.configure(env={"CODEBUDDY2API_ALLOW_OPEN_NOAUTH": "true"}, flags=("--host", "0.0.0.0"),
+                       expected_host="0.0.0.0")
+        self.configure(env={"CODEBUDDY2API_KEY": "k"}, flags=("--host", "0.0.0.0"), expected_host="0.0.0.0")
 
     def test_persisted_host_is_validated_after_configuration_resolution(self):
         for host in ("0.0.0.0", "::"):
             with self.subTest(host=host):
-                self.configure(stored={"host": host}, invalid=True)
+                self.configure(stored={"host": host}, expected_host=host)
                 self.configure(stored={"host": host}, env={"CODEBUDDY2API_KEY": "k"}, expected_host=host)
                 self.configure(stored={"host": host}, env={"CODEBUDDY2API_ALLOW_OPEN_NOAUTH": "true"},
                                expected_host=host)
         self.configure(stored={"host": "0.0.0.0"}, flags=("--host", "127.0.0.1"), expected_host="127.0.0.1")
-        self.configure(stored={"host": "127.0.0.1"}, flags=("--host", "0.0.0.0"), invalid=True)
+        self.configure(stored={"host": "127.0.0.1"}, flags=("--host", "0.0.0.0"), expected_host="0.0.0.0")
         self.configure(stored={"host": "0.0.0.0"}, env={"CODEBUDDY2API_KEY": ""},
                        flags=("--api-key", "k"), expected_host="0.0.0.0")
 

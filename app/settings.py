@@ -7,7 +7,7 @@ import re
 from urllib.parse import urlsplit
 
 from .desensitize import IDENTITY_MODES
-
+from .media_generation import normalize_media_base_url
 
 def normalize_allowed_origins(value):
     """Normalize a comma/space separated origin list; bare hosts default to HTTPS."""
@@ -35,21 +35,45 @@ def normalize_allowed_origins(value):
     return ",".join(normalized)
 
 
-def normalize_trusted_proxies(value):
-    """Normalize a comma/space separated list of trusted proxy IPs or CIDRs."""
+def normalize_update_mirror(value):
+    """A GitHub download proxy prefix such as https://ghfast.top/; empty means direct."""
+    value = value.strip()
+    if not value:
+        return ""
+    try:
+        parts = urlsplit(value)
+        parts.port  # Raises on an invalid port.
+    except ValueError:
+        raise ValueError("update_mirror: 镜像地址无效") from None
+    if (parts.scheme != "https" or not parts.hostname or parts.username is not None
+            or parts.password is not None or parts.query or parts.fragment):
+        raise ValueError("update_mirror: 镜像地址必须是 https 前缀，例如 https://ghfast.top/")
+    return value if value.endswith("/") else value + "/"
+
+
+def parse_networks(entries, *, limit, label):
+    """Normalize network entries while retaining caller-specific limits."""
     import ipaddress
-    entries = [entry for entry in re.split(r"[\s,]+", value.strip()) if entry]
-    if len(entries) > 32:
-        raise ValueError("trusted_proxies: 代理数量超出上限")
+    if isinstance(entries, str):
+        entries = [entry for entry in re.split(r"[\s,]+", entries.strip()) if entry]
+    if not isinstance(entries, (list, tuple)) or len(entries) > limit:
+        raise ValueError("trusted_proxies: 代理数量超出上限" if label == "trusted_proxies"
+                         else f"{label}最多 {limit} 条")
     normalized = []
     for entry in entries:
         try:
             network = str(ipaddress.ip_network(entry, strict=False))
         except ValueError:
-            raise ValueError(f"trusted_proxies: 地址无效 {entry!r}") from None
+            raise ValueError(f"trusted_proxies: 地址无效 {entry!r}" if label == "trusted_proxies"
+                             else f"{label}第 {len(normalized) + 1} 条无效") from None
         if network not in normalized:
             normalized.append(network)
-    return ",".join(normalized)
+    return normalized
+
+
+def normalize_trusted_proxies(value):
+    """Normalize a comma/space separated list of trusted proxy IPs or CIDRs."""
+    return ",".join(parse_networks(value, limit=32, label="trusted_proxies"))
 
 
 def validate_projection_max_bytes(value):
@@ -61,9 +85,10 @@ def validate_projection_max_bytes(value):
 
 def _item(default, type_, label, *, mode="hot", env=None, minimum=None, maximum=None,
           choices=None, sensitive=False, allow_empty=False, max_length=255, validator=None,
-          hidden=False):
+          hidden=False, env_scope="runtime", lockable=True):
     value = {"default": default, "type": type_, "label": label, "mode": mode,
-             "env": env, "sensitive": sensitive, "hidden": hidden}
+             "env": env, "sensitive": sensitive, "hidden": hidden,
+             "env_scope": env_scope, "lockable": lockable}
     if minimum is not None:
         value["min"] = minimum
     if maximum is not None:
@@ -80,18 +105,13 @@ def _item(default, type_, label, *, mode="hot", env=None, minimum=None, maximum=
 
 
 SCHEMA = {
-    "host": _item("127.0.0.1", "string", "监听地址", mode="restart", env="CODEBUDDY2API_BIND"),
-    "port": _item(8787, "integer", "监听端口", mode="restart", env="CODEBUDDY2API_PORT", minimum=1, maximum=65535),
-    "api_key": _item(None, "secret", "管理与推理密钥", mode="startup", env="CODEBUDDY2API_KEY", sensitive=True),
-    "auth_file": _item(None, "paths", "显式凭证文件", mode="startup", sensitive=True),
-    "auth_dir": _item(None, "path", "凭证目录", mode="startup", env="CODEBUDDY_AUTH_DIR", sensitive=True),
-    "import_dir": _item(None, "path", "导入目录", mode="startup", env="CODEBUDDY_IMPORT_DIR", sensitive=True),
-    # DEPRECATED: text-file logging was retired in favour of the SQLite audit store.
-    # The key is kept only so an old control-database snapshot or CODEBUDDY2API_LOG
-    # still parses instead of failing validation; main() forces it back to None and
-    # warns (converter.py). Nothing in the serving path writes a text log.
-    "log_path": _item(None, "path", "旧文本日志（已停用，保留仅为兼容旧配置）", mode="startup",
-                      env="CODEBUDDY2API_LOG", sensitive=True, hidden=True),
+    "host": _item("127.0.0.1", "string", "监听地址", mode="restart", env="CODEBUDDY2API_BIND", env_scope="deployment"),
+    "port": _item(8787, "integer", "监听端口", mode="restart", env="CODEBUDDY2API_PORT", minimum=1, maximum=65535, env_scope="deployment"),
+    "api_key": _item(None, "secret", "管理密钥（仅推理）", mode="startup", env="CODEBUDDY2API_KEY", sensitive=True, env_scope="deployment"),
+    "auth_file": _item(None, "paths", "显式凭证文件", mode="startup", sensitive=True, env_scope="deployment"),
+    "auth_dir": _item(None, "path", "凭证目录", mode="startup", env="CODEBUDDY_AUTH_DIR", sensitive=True, env_scope="deployment"),
+    "import_dir": _item(None, "path", "导入目录", mode="startup", env="CODEBUDDY_IMPORT_DIR", sensitive=True, env_scope="deployment"),
+    "log_path": _item(None, "path", "旧文本日志（已停用）", mode="startup", env="CODEBUDDY2API_LOG", sensitive=True, hidden=True, env_scope="deployment"),
     "admin_allowed_origins": _item("", "string", "管理页额外信任来源", env="CODEBUDDY2API_ADMIN_ORIGINS",
                                    allow_empty=True, max_length=2000, validator=normalize_allowed_origins),
     "desensitize": _item(False, "boolean", "提示词脱敏"),
@@ -101,6 +121,8 @@ SCHEMA = {
     "identity_normalize": _item("running_on", "string", "客户端身份句改写",
                                 choices=list(IDENTITY_MODES),
                                 env="CODEBUDDY2API_IDENTITY_NORMALIZE"),
+    "prompt_mode": _item("empty", "string", "系统提示词模式",
+                         env="CODEBUDDY2API_PROMPT_MODE", choices=["empty", "prepend"]),
     "no_compact": _item(False, "boolean", "保留提示词全文"),
     "keep_tool_metadata": _item(False, "boolean", "保留工具描述", env="CODEBUDDY2API_KEEP_TOOL_METADATA"),
     "skip_check": _item(False, "boolean", "跳过启动预检", mode="restart"),
@@ -109,6 +131,14 @@ SCHEMA = {
     "credit_price_usd": _item(0.03, "number", "国际积分单价", minimum=0),
     "model_catalog_ttl": _item(21600, "integer", "模型目录缓存秒数", minimum=0, maximum=31536000),
     "model_guard": _item(True, "boolean", "表外模型拦截"),
+    "routing_scheduler": _item("shadow", "string", "路由调度模式",
+                               env="CODEBUDDY2API_ROUTING_SCHEDULER",
+                               choices=["legacy", "shadow", "indexed"]),
+    "catalog_probe_mode": _item("account", "string", "目录探测模式",
+                                env="CODEBUDDY2API_CATALOG_PROBE_MODE",
+                                choices=["account", "representative"]),
+    "housekeep_concurrency": _item(4, "integer", "后台维护并发数", env="CODEBUDDY2API_HOUSEKEEP_CONCURRENCY",
+                                   minimum=1, maximum=16),
     "model_capability_guard": _item(True, "boolean", "模型能力预检", env="CODEBUDDY2API_MODEL_CAPABILITY_GUARD"),
     # Fusion 融合层: 账号池调度与冷却（借鉴 workbuddy2api-panel）
     "model_soft_cooldown": _item(True, "boolean", "模型级软冷却（429 按 账号×模型 隔离，对齐重置墙钟）",
@@ -195,7 +225,7 @@ SCHEMA = {
                          env="CODEBUDDY2API_STREAM_MODE", choices=["compatible", "realtime"]),
     "audit_max_bytes": _item(256 * 1024 * 1024, "integer", "审计明细预算", minimum=1024**2, maximum=1024**4),
     "audit_retention_days": _item(30, "integer", "审计明细保留天数", minimum=1, maximum=36500),
-    "audit_diagnostic_bytes": _item(8192, "integer", "失败诊断最大字节", minimum=0, maximum=8192),
+    "audit_diagnostic_bytes": _item(1536 * 1024, "integer", "失败诊断最大字节", minimum=0, maximum=4 * 1024 * 1024),
     "trusted_proxies": _item("", "string", "可信代理地址（IP/CIDR，逗号分隔）",
                              env="CODEBUDDY2API_TRUSTED_PROXIES", allow_empty=True,
                              max_length=2000, validator=normalize_trusted_proxies),
@@ -226,6 +256,29 @@ SCHEMA = {
     # 客户端显式传入的 key 无论开关如何都原值透传（两条独立行为）。
     "prompt_cache_key_enabled": _item(True, "boolean", "自动生成 prompt_cache_key（按账号隔离，省前缀缓存费用）",
                                       env="CODEBUDDY2API_PROMPT_CACHE_KEY"),
+    "update_mirror": _item("", "string", "GitHub 下载镜像（前缀，留空直连）", env="CODEBUDDY2API_UPDATE_MIRROR",
+                           allow_empty=True, max_length=200, validator=normalize_update_mirror),
+    # The WebUI's own slot for one custom mirror, remembered even while another source is in use.
+    "update_mirror_custom": _item("", "string", "自定义 GitHub 下载镜像", allow_empty=True, max_length=200,
+                                  validator=normalize_update_mirror, hidden=True, env_scope="none"),
+    # Scheduled configuration backups (app/backups.py); only scheduled ones are pruned to the limit.
+    "backup_auto": _item(False, "boolean", "自动备份配置", env="CODEBUDDY2API_BACKUP_AUTO"),
+    "backup_interval_hours": _item(24, "integer", "自动备份间隔（小时）", env="CODEBUDDY2API_BACKUP_INTERVAL_HOURS",
+                                   minimum=1, maximum=720),
+    "backup_keep": _item(7, "integer", "自动备份保留份数", env="CODEBUDDY2API_BACKUP_KEEP", minimum=1, maximum=100),
+    # Local media storage for generated images and videos (app/media_store.py).
+    "media_public_base_url": _item("", "string", "资源访问地址",
+                                   env="CODEBUDDY2API_MEDIA_BASE_URL", allow_empty=True, max_length=200,
+                                   validator=normalize_media_base_url),
+    "media_max_total_mb": _item(1024, "integer", "媒体容量上限（MB）",
+                                env="CODEBUDDY2API_MEDIA_MAX_TOTAL_MB", minimum=64, maximum=1048576),
+    "media_ttl_hours": _item(72, "integer", "媒体保留时长（小时）",
+                             env="CODEBUDDY2API_MEDIA_TTL_HOURS", minimum=1, maximum=8760),
+    # Interface preference: WebUI and `--lang` write it, nothing maps it from the environment.
+    "language": _item("auto", "string", "界面语言", choices=["auto", "zh", "en"],
+                      env_scope="ui", lockable=False),
+    # One-time migration notice; written by `config migrate` and the WebUI dismiss button.
+    "config_notice_muted": _item(False, "boolean", "配置迁移提醒已关闭", hidden=True, env_scope="none"),
 }
 
 
@@ -299,7 +352,8 @@ def resolve_settings(config):
         if spec.get("hidden"):  # Retired knobs stay out of the management UI.
             continue
         source = sources.get(key, "default")
-        locked = spec["sensitive"] or source in ("cli", "environment", "env", "dotenv")
+        locked = spec.get("lockable", True) and (
+            spec["sensitive"] or source in ("cli", "environment", "env", "dotenv"))
         item = {"key": key, "value": None if spec["sensitive"] else (config[key] if config.get(key) is not None else spec["default"]),
                 "stored": None if spec["sensitive"] else saved.get(key), "source": source,
                 "mode": spec["mode"], "type": spec["type"], "label": spec["label"], "locked": locked}

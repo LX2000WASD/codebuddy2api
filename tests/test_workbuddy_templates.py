@@ -9,7 +9,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.desensitize import desensitize_body, desensitize_text
+from app import desensitize as desensitize_module
+from app.desensitize import desensitize_body, desensitize_text, system_as_user_body
 
 
 ZWSP = "\u200b"
@@ -17,6 +18,7 @@ CLAUDE_CLI = "You are Claude Code, Anthropic's official CLI for Claude"
 CLAUDE_CLI_SDK = CLAUDE_CLI + ", running within the Claude Agent SDK"
 CLAUDE_AGENT_SDK = "You are a Claude agent, built on Anthropic's Claude Agent SDK"
 CODEBUDDY = "You are CodeBuddy, Tencent's official CLI"
+WORKBUDDY = "You are WorkBuddy, a powerful AI assistant"
 MAIN_BRANCH = "Main branch (you will usually use this for PRs)"
 MAIN_BRANCH_FIXED = "Main branch (you will usually use this for PR)"
 GIT_STATUS_INTRO = "This is the git status at the start of the conversation."
@@ -49,6 +51,18 @@ class WorkBuddyTextTests(unittest.TestCase):
                 self.assertEqual(
                     desensitize_text(MAIN_BRANCH + suffix), MAIN_BRANCH_FIXED + suffix
                 )
+
+    def test_dsh_identity_uses_workbuddy_wording_without_touching_unrelated_text(self):
+        source = "You are an AI agent powered by DeepSeek Harness."
+        expected = WORKBUDDY + "."
+        self.assertEqual(desensitize_module.desensitize_channel_text(source), expected)
+        self.assertEqual(desensitize_text(source), expected)
+        self.assertEqual(desensitize_module.desensitize_channel_text(source + "\nNext instruction."),
+                         expected + "\nNext instruction.")
+        self.assertEqual(desensitize_module.desensitize_channel_text(expected), expected)
+        variant = "You are a coding agent powered by the deepseek-v4.1-flash model."
+        self.assertEqual(desensitize_module.desensitize_channel_text(variant), WORKBUDDY
+                         + ". This conversation is powered by the deepseek-v4.1-flash model.")
 
     def test_case_whitespace_and_existing_zero_width_spaces(self):
         for source, expected in (
@@ -128,6 +142,126 @@ class WorkBuddyBodyTests(unittest.TestCase):
                                 ),
                                 out,
                             )
+
+    def test_channel_identity_guard_covers_instruction_and_assistant_roles(self):
+        source = "You are an AI agent powered by DeepSeek Harness"
+        expected = WORKBUDDY
+        variants = (
+            source,
+            source.upper(),
+            re.sub(r" +", "\t \n", source),
+            re.sub(r"([A-Za-z])([A-Za-z]+)", rf"\1{ZWSP}\2", source),
+        )
+        for role in ("system", "developer", "assistant"):
+            for blocks in (False, True):
+                for variant in variants:
+                    for suffix in ("", ".", "\nNext instruction."):
+                        with self.subTest(role=role, blocks=blocks, suffix=suffix):
+                            body = {"messages": [{"role": role, "content": text_content(variant + suffix, blocks)}]}
+                            before = copy.deepcopy(body)
+                            out = desensitize_module.desensitize_channel_body(body)
+                            self.assertEqual(out["messages"][0]["content"], text_content(expected + suffix, blocks))
+                            self.assertEqual(body, before)
+                            self.assertEqual(desensitize_module.desensitize_channel_body(out), out)
+
+    def test_channel_identity_guard_covers_all_official_dsh_modes(self):
+        shared_modes = ("standard", "ptc", "cordis", "headless", "web", "sdk", "acp")
+        for mode in shared_modes:
+            for model in ("deepseek-v4-flash", "deepseek-v4.1-flash", "openai/gpt-5.4", "{{model}}"):
+                with self.subTest(mode=mode, model=model):
+                    source = f"You are a coding agent powered by the {model} model."
+                    expected = WORKBUDDY + f". This conversation is powered by the {model} model."
+                    actual = desensitize_module.desensitize_channel_text(source)
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(desensitize_module.desensitize_channel_text(actual), actual)
+
+        variant = re.sub(r" +", "\t \n", "You are a coding agent powered by the deepseek-v4.1-flash model.")
+        self.assertEqual(desensitize_module.desensitize_channel_text(variant), WORKBUDDY
+                         + ". This conversation is powered by the deepseek-v4.1-flash model.")
+        cases = {
+            "minimal": (
+                "You are a helpful software engineer assistant.",
+                WORKBUDDY + ".",
+            ),
+            "custom-persona": (
+                "You are DeepSeek Harness.",
+                WORKBUDDY + ".",
+            ),
+            "web-surface": (
+                "You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names.",
+                "You are interacting with the user through the WorkBuddy Web GUI whose URL the runtime context names.",
+            ),
+            "legacy-web-surface": (
+                "You are interacting with the user through the DeepSeek Harness Web GUI at http://127.0.0.1:3100.",
+                "You are interacting with the user through the WorkBuddy Web GUI at http://127.0.0.1:3100.",
+            ),
+            "web-surface-followup": (
+                "There is a Web GUI whose URL the runtime context names.\n"
+                "When the user refers to this page, use this GUI.",
+                "There is a Web GUI whose URL the runtime context names. The interface, when the user refers to this page, use this GUI.",
+            ),
+        }
+        for mode, (source, expected) in cases.items():
+            with self.subTest(mode=mode):
+                actual = desensitize_module.desensitize_channel_text(source)
+                self.assertEqual(actual, expected)
+                self.assertEqual(desensitize_module.desensitize_channel_text(actual), actual)
+
+    def test_channel_system_as_user_retry_preserves_blocks_and_is_idempotent(self):
+        image = {"type": "image_url", "image_url": {"url": "https://example.invalid/image.png"}}
+        body = {"model": "auto", "messages": [
+            {"role": "system", "content": "system rules"},
+            {"role": "system", "content": [{"type": "text", "text": "more rules"}, image]},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "answer"},
+        ]}
+        before = copy.deepcopy(body)
+        out = system_as_user_body(body)
+        self.assertEqual(body, before)
+        self.assertEqual(out["messages"][0], {"role": "system", "content": "You are a helpful assistant."})
+        self.assertEqual(out["messages"][1]["role"], "user")
+        content = out["messages"][1]["content"]
+        self.assertIn("<instructions>\n", content[0]["text"])
+        self.assertIn("system rules", "".join(block.get("text", "") for block in content if block.get("type") == "text"))
+        self.assertIn("more rules", "".join(block.get("text", "") for block in content if block.get("type") == "text"))
+        self.assertIn(image, content)
+        self.assertEqual(content[-1]["text"], "hello")
+        self.assertEqual(system_as_user_body(out), out)
+
+        for source in (
+            "You are in plan mode. Stay in plan mode until the user approves your plan through exit_plan_mode or switches the session mode.",
+            "The runtime context names the DeepSeek Harness implementation checkout.",
+            "You are not signed in to DeepSeek Harness.",
+        ):
+            with self.subTest(preserved=source):
+                self.assertEqual(desensitize_module.desensitize_channel_text(source), source)
+
+    def test_channel_identity_guard_is_narrow_and_preserves_message_fields(self):
+        source = "You are an AI agent powered by DeepSeek Harness."
+        persona = "You are a coding agent powered by the deepseek-v4.1-flash model."
+        non_role = "The runtime context names the DeepSeek Harness implementation checkout."
+        body = {"messages": [
+            {"role": "user", "content": source},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": source, "cache_control": {"type": "ephemeral"}},
+                {"type": "other", "text": source},
+            ], "tool_calls": [{"id": "call_1", "function": {"arguments": source}}]},
+            {"role": "assistant", "content": CLAUDE_CLI + ". " + persona},
+            {"role": "assistant", "content": non_role},
+            {"role": "tool", "content": source},
+        ]}
+        before = copy.deepcopy(body)
+        out = desensitize_module.desensitize_channel_body(body)
+        self.assertEqual(out["messages"][0], before["messages"][0])
+        self.assertEqual(out["messages"][1]["content"][0]["text"], WORKBUDDY + ".")
+        self.assertEqual(out["messages"][1]["content"][0]["cache_control"], {"type": "ephemeral"})
+        self.assertEqual(out["messages"][1]["content"][1], before["messages"][1]["content"][1])
+        self.assertEqual(out["messages"][1]["tool_calls"], before["messages"][1]["tool_calls"])
+        self.assertEqual(out["messages"][2]["content"], CLAUDE_CLI + ". " + WORKBUDDY
+                         + ". This conversation is powered by the deepseek-v4.1-flash model.")
+        self.assertEqual(out["messages"][3]["content"], non_role)
+        self.assertEqual(out["messages"][4], before["messages"][4])
+        self.assertEqual(body, before)
 
     def test_separate_system_messages_are_each_adapted(self):
         for compact in (False, True):

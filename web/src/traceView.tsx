@@ -43,6 +43,8 @@ const STAGES: Record<string, StageMeta> = {
   intl_image_merge: { label: "logs.stage.intlImageMerge", tone: "normal" },
   failover_recovered: { label: "logs.stage.failoverRecovered", tone: "warn" },
   attempts_truncated: { label: "logs.stage.attemptsTruncated", tone: "warn" },
+  // Gateway-executed web tools (app/server_tools.py): one row per search or fetch.
+  server_tool: { label: "logs.stage.serverTool", tone: "normal" },
   // Recorded when the bounded parser gave up on an oversized body (observability.py
   // :493). Informational: it explains why a trail stops early without any stage failing.
   observer: { label: "logs.stage.observer", tone: "warn" },
@@ -209,7 +211,7 @@ function TraceRow({ step, scaleMs }: { step: TraceStep; scaleMs: number }) {
       <span className={s.traceOrdinal}>{step.ordinal}</span>
       <div className={s.traceBody}>
         <div className={s.traceLabel}>
-          <span className={s.traceStage} title={step.stage || undefined}>
+          <span className={s.traceStage}>
             {meta ? t(meta.label) : step.stage || t("logs.trace.stageUnknown")}
           </span>
           {step.statusCode !== null && (

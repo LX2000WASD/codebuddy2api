@@ -38,6 +38,9 @@ function fixture() {
       profile: "intl-work",
       enabled: true,
       health: "ready",
+      catalog_ready: true,
+      sync_pending: true,
+      sync_error: "credits: billing unavailable",
       auto_checkin: false,
       auto_travel: false,
       travel_supported: false,
@@ -49,7 +52,13 @@ function fixture() {
     },
   ];
   const reload = vi.fn();
-  vi.mocked(useResource).mockReturnValue({ data: rows, reload, loading: false, error: null });
+  vi.mocked(useResource).mockReturnValue({
+    data: rows,
+    reload,
+    loading: false,
+    refreshing: false,
+    error: null,
+  });
   return { rows, reload };
 }
 
@@ -63,6 +72,8 @@ it("renders server preferences, allows international checkin opt-in, but never o
   const post = vi.spyOn(api, "post");
   render(<Credentials />);
   fireEvent.click(screen.getByRole("button", { name: "任务配置 cn.info" }));
+  expect(screen.getByText("目录已就绪")).toBeTruthy();
+  expect(screen.getByText("同步异常")).toBeTruthy();
   expect(screen.getByRole("switch", { name: "自动签到 cn.info" })).toHaveProperty("checked", true);
   expect(screen.getByRole("switch", { name: "自动旅行 cn.info" })).toHaveProperty("checked", true);
   // The daily turn is international-only, so the domestic switch is shown but unusable.
@@ -218,6 +229,7 @@ it("disables switches when an older backend omits them and rejects malformed typ
     data: [{ id: "old", name: "old.info", enabled: true }],
     reload: vi.fn(),
     loading: false,
+    refreshing: false,
     error: null,
   });
   render(<Credentials />);
@@ -340,4 +352,25 @@ it("does not invent a duration or a claimed credit amount", () => {
   expect(screen.queryByText(/积分数额未返回/)).toBeNull();
   rerender(<TravelSummary trip={{ state: "traveling", remaining_seconds: 0 }} />);
   expect(screen.getByText(/预计已到达，请查询核验/)).toBeTruthy();
+});
+
+it("reports a batch run as a toast that lists only the unfinished accounts", async () => {
+  fixture();
+  const post = vi.spyOn(api, "post").mockResolvedValue({
+    data: {
+      results: [
+        { id: "cn", name: "cn.info", ok: true, message: "余额、目录和用量已同步" },
+        { id: "intl", name: "intl.info", ok: false, message: "操作失败（RuntimeError）" },
+      ],
+    },
+  });
+  render(<Credentials />);
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "同步全部余额" })));
+  expect(post).toHaveBeenLastCalledWith("/sync", undefined, expect.anything());
+  expect(screen.getByText("已完成 1 · 未完成 1")).toBeTruthy();
+  expect(screen.getByText("操作失败（RuntimeError）")).toBeTruthy();
+  expect(screen.queryByText("余额、目录和用量已同步")).toBeNull();
+  // Refreshing the list clears the report along with the stale rows.
+  fireEvent.click(screen.getByRole("button", { name: "刷新列表" }));
+  expect(screen.queryByText("已完成 1 · 未完成 1")).toBeNull();
 });

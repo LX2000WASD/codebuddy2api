@@ -1,5 +1,5 @@
 import { metric, type RecordValue } from "./api";
-import { t as translate } from "./i18n";
+import { t as translate, type MessageKey } from "./i18n";
 import s from "./ui.module.scss";
 
 const labels: Record<string, string> = {
@@ -82,6 +82,8 @@ const labels: Record<string, string> = {
   fetched_at: "同步时间",
   updated_at: "更新时间",
   created_at: "创建时间",
+  mime: "MIME 类型",
+  sha256: "SHA-256",
   generated_at: "生成时间",
   last_failure_at: "最近失败",
   token_expires_at: "令牌到期",
@@ -157,6 +159,7 @@ const labels: Record<string, string> = {
   automatic_vacuum: "自动压缩",
   lock_timeout_ms: "锁等待上限",
   sql_deadline_ms: "SQL 执行上限",
+  dropped: "省略条数",
 };
 const profiles: Record<string, string> = {
   "cn-cli": "大陆 · CodeBuddy",
@@ -168,7 +171,9 @@ const profiles: Record<string, string> = {
 };
 const statuses: Record<string, string> = {
   ready: "就绪",
-  disabled: "已停用",
+  disabled: "人工停用",
+  auto_disabled: "自动禁用",
+  restricted: "被官方限制",
   error: "失败",
   success: "成功",
   cancelled: "已取消",
@@ -242,16 +247,17 @@ const times = new Set([
   "cooldown_until",
   "until",
 ]);
-const ownLabel = (map: Record<string, string>, key: string) =>
+const ownLabel = <V extends string>(map: Record<string, V>, key: string): V | undefined =>
   Object.hasOwn(map, key) ? map[key] : undefined;
 export function profileLabel(value: string) {
   return ownLabel(profiles, value) ?? value;
 }
-const eventKinds: Record<string, string> = {
+const eventKinds: Record<string, MessageKey> = {
   runtime: "logs.kind.runtime",
   admin: "logs.kind.admin",
+  credit: "logs.kind.credit",
 };
-const eventActions: Record<string, string> = {
+const eventActions: Record<string, MessageKey> = {
   credits: "logs.action.credits",
   cred: "logs.action.cred",
   models: "logs.action.models",
@@ -278,6 +284,10 @@ const eventActions: Record<string, string> = {
   "credential.auto_daily_chat": "logs.action.credential_auto_daily_chat",
   "credential.auto_checkin": "logs.action.credential_auto_checkin",
   "credential.auto_travel": "logs.action.credential_auto_travel",
+  "credential.auto_growth": "logs.action.credential_auto_growth",
+  "credential.growth_auto": "logs.action.credential_growth_auto",
+  "credential.growth_batch": "logs.action.credential_growth_batch",
+  "credential.growth_auto_all": "logs.action.credential_growth_auto_all",
   "credential.trial": "logs.action.credential_trial",
   "credential.enabled": "logs.action.credential_enabled",
   "credential.reset-cooldown": "logs.action.credential_reset_cooldown",
@@ -287,9 +297,38 @@ const eventActions: Record<string, string> = {
   "model.updated": "logs.action.model_updated",
   "model.deleted": "logs.action.model_deleted",
   "session.revoke_failed": "logs.action.session_revoke_failed",
+  account_changed: "logs.action.account_changed",
+  key_created: "logs.action.key_created",
+  key_updated: "logs.action.key_updated",
+  key_rotated: "logs.action.key_rotated",
+  key_revealed: "logs.action.key_revealed",
+  key_deleted: "logs.action.key_deleted",
+  sessions_revoked: "logs.action.sessions_revoked",
   "credentials.uploaded": "logs.action.credentials_uploaded",
   "credentials.exported": "logs.action.credentials_exported",
   storage_archive: "logs.action.storage_archive",
+  "storage.backup_created": "logs.action.storage_backup_created",
+  "storage.backup_deleted": "logs.action.storage_backup_deleted",
+  "update.started": "logs.action.update_started",
+  "update.installed": "logs.action.update_installed",
+  "update.failed": "logs.action.update_failed",
+  "buddy.departure_failed": "logs.action.buddy_departure_failed",
+  "buddy.failed": "logs.action.buddy_failed",
+  "buddy.reconciled": "logs.action.buddy_reconciled",
+  "buddy.task_failed": "logs.action.buddy_task_failed",
+  "config.notice_dismissed": "logs.action.config_notice_dismissed",
+  "credentials.refresh_imported": "logs.action.credentials_refresh_imported",
+  housekeeper: "logs.action.housekeeper",
+  "model.rate_probe": "logs.action.model_rate_probe",
+  "models.rate_probe": "logs.action.models_rate_probe",
+  "models.scan": "logs.action.models_scan",
+  trial: "logs.action.trial",
+  "media.asset_deleted": "logs.action.media_asset_deleted",
+  "media.task_refreshed": "logs.action.media_task_refreshed",
+  "credit.income": "logs.action.credit_income",
+  "credit.consume": "logs.action.credit_consume",
+  "credit.expire": "logs.action.credit_expire",
+  "credit.adjust": "logs.action.credit_adjust",
 };
 export function eventActionLabel(action: unknown) {
   return typeof action === "string" ? ownLabel(eventActions, action) : undefined;
@@ -303,7 +342,16 @@ export function bytes(value: number) {
   if (value < 1073741824) return `${(value / 1048576).toFixed(1)} MiB`;
   return `${(value / 1073741824).toFixed(2)} GiB`;
 }
-const valueKeys: Record<string, string> = {
+// Model names the gateway reports for its own web tools, e.g. on /v1/search records.
+const webToolKeys: Record<string, MessageKey> = {
+  "web-search": "val.tool.web_search",
+  "web-fetch": "val.tool.web_fetch",
+};
+export function webToolLabel(model: unknown) {
+  return typeof model === "string" ? ownLabel(webToolKeys, model) : undefined;
+}
+const valueKeys: Record<string, MessageKey> = {
+  ...webToolKeys,
   success: "val.success",
   error: "val.error",
   cancelled: "val.cancelled",
@@ -330,7 +378,10 @@ const valueKeys: Record<string, string> = {
   send: "val.stage.send",
   collect: "val.stage.collect",
   refresh: "val.stage.refresh",
+  server_tool: "val.stage.server_tool",
+  attempts_truncated: "val.stage.attempts_truncated",
   info: "val.level.info",
+  rate_probe: "val.protocol.rate_probe",
 };
 
 export function DataValue({

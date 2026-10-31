@@ -250,8 +250,8 @@ class AuditStoreTests(unittest.TestCase):
             self.store._db.execute("PRAGMA synchronous=OFF")  # bulk seed only
             self.store._db.execute("BEGIN IMMEDIATE")
             self.store._db.executemany(
-                "INSERT INTO requests VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                [(f"s{i}", now - i, "m", "p", "c", "success", 200, payload, 64, None, 5.0)
+                "INSERT INTO requests(id,started_at,model,profile,credential,outcome,status_code,payload,logical_bytes,client_ip,duration_ms,api_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                [(f"s{i}", now - i, "m", "p", "c", "success", 200, payload, 64, None, 5.0, None)
                  for i in range(20000)])
             self.store._db.execute("COMMIT")
             self.store._db.execute("PRAGMA synchronous=FULL")
@@ -404,6 +404,25 @@ class AuditStoreTests(unittest.TestCase):
         self.store.clear("details")
         self.assertEqual(self.store.event("admin", "credential_upload", {"event_id": "evt1"})["reason"], "duplicate")
 
+    def test_credit_changes_keep_signed_deltas_and_filter_by_account_and_type(self):
+        self.store.event("credit", "credit.income", {"credential": "a" * 64, "delta": 500.0, "balance": 530,
+                                                     "source": "体验积分", "package_code": "trial",
+                                                     "expires_at": 2e9, "token": "secret-token"})
+        self.store.event("credit", "credit.consume", {"credential": "b" * 64, "delta": -70.5, "balance": 30,
+                                                      "source": "Bearer sk-leak"})
+        income, consume = sorted(self.store.list_records("credit")["items"], key=lambda item: item["action"])[::-1]
+        self.assertEqual(income["details"], {"credential": "a" * 64, "package_code": "trial", "source": "体验积分",
+                                             "delta": 500.0, "balance": 530, "expires_at": 2e9})
+        self.assertEqual(consume["details"]["delta"], -70.5)
+        self.assertNotIn("source", consume["details"])
+        by_account = self.store.list_records("credit", credential="b" * 64)["items"]
+        self.assertEqual([item["action"] for item in by_account], ["credit.consume"])
+        self.assertEqual([item["action"] for item in self.store.list_records("credit", type="income")["items"]],
+                         ["credit.income"])
+        self.assertEqual(self.store.list_records("admin")["items"], [])
+        with self.assertRaises(ValueError):
+            self.store.list_records("credit", type="refund")
+
     def test_event_tickets_cannot_revive_cleared_details(self):
         pending = {"event_id": "pending-event", **self.store.ticket()}
         self.store.clear("details")
@@ -438,7 +457,7 @@ class AuditStoreTests(unittest.TestCase):
             self.assertEqual(self.store.list_records("runtime")["items"], [])
             self.assertEqual(self.store.storage()["logical_bytes"], 0)
         with closing(sqlite3.connect(self.path)) as db:
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 0)
             total = db.execute("SELECT payload FROM stats_totals WHERE dimension='global'").fetchone()[0]
             self.assertEqual(json.loads(total)["requests"], 1)
 
@@ -476,7 +495,6 @@ class AuditStoreTests(unittest.TestCase):
             actual = db.execute("SELECT logical_bytes,request_count,event_count,ingest_count FROM detail_accounting").fetchone()
             expected = db.execute("SELECT COALESCE((SELECT SUM(logical_bytes) FROM requests),0)+COALESCE((SELECT SUM(logical_bytes) FROM events),0),(SELECT COUNT(*) FROM requests),(SELECT COUNT(*) FROM events),(SELECT COUNT(*) FROM ingest)").fetchone()
             self.assertEqual(actual, expected)
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM attempts WHERE request_id NOT IN (SELECT id FROM requests)").fetchone()[0], 0)
         return actual
 
     def aggregate_snapshot(self):
@@ -689,14 +707,13 @@ class AuditStoreTests(unittest.TestCase):
         stamp = time.time()
         for population in (100, 10000):
             # Synthetic details avoid measuring fixture aggregation/setup. Their
-            # accounting and attempts still exercise the production triggers.
+            # accounting still exercises the production triggers.
             with closing(sqlite3.connect(self.path)) as fixture:
                 first = samples[-1][0] if samples else 0
                 for index in range(first, population):
                     fixture.execute(
                         "INSERT INTO requests(id,started_at,model,profile,credential,outcome,status_code,payload,logical_bytes) VALUES(?,?,?,?,?,?,?,?,?)",
                         (f"seed{index}", stamp, None, None, None, "success", 200, "{}", 256))
-                    fixture.execute("INSERT INTO attempts VALUES(?,?,?)", (f"seed{index}", 0, "{}"))
                     fixture.execute("INSERT INTO events VALUES(?,?,?,?,?,?)", (
                         f"event{index}", stamp, "runtime", "test", "{}", 128))
                 fixture.commit()
@@ -774,8 +791,8 @@ class AuditStoreTests(unittest.TestCase):
         self.assertEqual(self.store.list_records(client_ip="2001:db8::1")["items"][0]["id"], "meta-1")
         self.assertEqual(self.store.list_records(client_ip="198.51.100.1")["items"], [])
 
-    def test_v2_database_gains_client_ip_without_losing_rows(self):
-        legacy_path = Path(self.temp.name) / "private" / "v2.sqlite3"
+    def test_v4_database_gains_api_key_without_losing_rows(self):
+        legacy_path = Path(self.temp.name) / "private" / "v4.sqlite3"
         raw = sqlite3.connect(legacy_path)
         with raw:
             raw.execute("CREATE TABLE state (id INTEGER PRIMARY KEY CHECK(id=1), epoch INTEGER NOT NULL,"
@@ -788,7 +805,7 @@ class AuditStoreTests(unittest.TestCase):
                 "INSERT INTO requests VALUES('legacy-1', ?, 'm', NULL, NULL, 'success', 200, ?, 128)",
                 (time.time(), json.dumps({"id": "legacy-1", "model": "m", "outcome": "success",
                                           "status_code": 200, "attempts": []})))
-            raw.execute("PRAGMA user_version=2")
+            raw.execute("PRAGMA user_version=4")
         raw.close()
         reopened = AuditStore(legacy_path)
         self.addCleanup(reopened.close)
@@ -796,6 +813,7 @@ class AuditStoreTests(unittest.TestCase):
                       [c[1] for c in reopened._db.execute("PRAGMA table_info(requests)")])
         indexes = [row[1] for row in reopened._db.execute("PRAGMA index_list(requests)")]
         self.assertIn("requests_client", indexes)
+        self.assertIn("api_key", [c[1] for c in reopened._db.execute("PRAGMA table_info(requests)")])
         items = reopened.list_records()["items"]
         self.assertEqual([item["id"] for item in items], ["legacy-1"])
         self.assertIsNone(items[0].get("client_ip"))
@@ -807,6 +825,88 @@ class AuditStoreTests(unittest.TestCase):
         accounting = reopened._db.execute("SELECT request_count FROM detail_accounting").fetchone()[0]
         raw_count = reopened._db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
         self.assertEqual(accounting, raw_count)
+
+    def test_attempts_are_stored_once_in_the_request_payload(self):
+        attempts = [{"stage": "upstream_attempt", "profile": "p"}, {"stage": "upstream_http", "status_code": 200}]
+        self.assertTrue(self.store.record_request(self.record(attempts=attempts))["recorded"])
+        with closing(sqlite3.connect(self.path)) as db:
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertNotIn("attempts", tables)
+            payload, logical_bytes = db.execute("SELECT payload,logical_bytes FROM requests").fetchone()
+        self.assertEqual(logical_bytes, len(payload.encode()) + 256)
+        self.assertEqual(self.store.get_request("r1")["attempts"], attempts)
+        self.assertEqual(self.store.list_records()["items"][0]["attempts"], attempts)
+        self.assert_accounting()
+        self.store.clear("details")
+        self.assertEqual(self.assert_accounting(), (0, 0, 0, 1))
+
+    def legacy_attempts_database(self, path, count=3):
+        """Build the pre-change layout: a per-row attempts table, its delete cascade and double-counted bytes."""
+        store = AuditStore(path)
+        for index in range(count):
+            self.assertTrue(store.record_request(self.record(
+                f"legacy-{index}", started_at=time.time() - index,
+                attempts=[{"stage": "upstream_attempt", "profile": "p"},
+                          {"stage": "upstream_http", "status_code": 200}]))["recorded"])
+        store.close()
+        with closing(sqlite3.connect(path)) as db:
+            db.execute("CREATE TABLE attempts (request_id TEXT NOT NULL, ordinal INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(request_id,ordinal))")
+            db.execute("DROP TRIGGER audit_requests_delete")
+            db.execute("CREATE TRIGGER audit_requests_delete AFTER DELETE ON requests BEGIN UPDATE detail_accounting SET logical_bytes=logical_bytes-OLD.logical_bytes,request_count=request_count-1 WHERE id=1; DELETE FROM attempts WHERE request_id=OLD.id; END")
+            for request_id, payload in db.execute("SELECT id,payload FROM requests").fetchall():
+                attempts = json.loads(payload)["attempts"]
+                for ordinal, attempt in enumerate(attempts):
+                    db.execute("INSERT INTO attempts VALUES(?,?,?)", (request_id, ordinal, json.dumps(attempt)))
+                db.execute("UPDATE requests SET logical_bytes=? WHERE id=?", (
+                    len(payload.encode()) + sum(len(json.dumps(a).encode()) + 32 for a in attempts) + 256,
+                    request_id))
+            db.commit()
+
+    def test_legacy_attempts_table_is_dropped_and_bytes_recounted(self):
+        path = Path(self.temp.name) / "private" / "legacy-attempts.sqlite3"
+        self.legacy_attempts_database(path)
+        with closing(sqlite3.connect(path)) as db:
+            doubled = db.execute("SELECT SUM(logical_bytes) FROM requests").fetchone()[0]
+        store = AuditStore(path)
+        self.addCleanup(store.close)
+        with closing(sqlite3.connect(path)) as db:
+            self.assertIsNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='attempts'").fetchone())
+            self.assertNotIn("attempts", db.execute(
+                "SELECT sql FROM sqlite_master WHERE name='audit_requests_delete'").fetchone()[0])
+            for payload, logical_bytes in db.execute("SELECT payload,logical_bytes FROM requests"):
+                self.assertEqual(logical_bytes, len(payload.encode()) + 256)
+            fixed = db.execute("SELECT SUM(logical_bytes) FROM requests").fetchone()[0]
+            self.assertLess(fixed, doubled)
+            self.assertEqual(db.execute("SELECT logical_bytes,request_count FROM detail_accounting").fetchone(),
+                             (fixed, 3))
+        self.assertEqual(len(store.get_request("legacy-0")["attempts"]), 2)
+        # Deletes through the rebuilt trigger keep the accounting exact.
+        self.assertTrue(store.record_request(self.record("fresh"))["recorded"])
+        store.configure(max_bytes=0)
+        store.storage()
+        with closing(sqlite3.connect(path)) as db:
+            self.assertEqual(db.execute("SELECT logical_bytes,request_count FROM detail_accounting").fetchone(), (0, 0))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 0)
+
+    def test_attempts_migration_is_idempotent_and_leaves_clear_working(self):
+        path = Path(self.temp.name) / "private" / "legacy-attempts.sqlite3"
+        self.legacy_attempts_database(path, count=2)
+        AuditStore(path).close()
+        statements = []
+        connect = sqlite3.connect
+        def traced_connect(*args, **kwargs):
+            db = connect(*args, **kwargs)
+            db.set_trace_callback(statements.append)
+            return db
+        with patch("app.audit_store.sqlite3.connect", side_effect=traced_connect):
+            store = AuditStore(path)
+        self.addCleanup(store.close)
+        self.assertFalse(any("UPDATE requests SET logical_bytes" in sql for sql in statements), statements)
+        with closing(sqlite3.connect(path)) as db:
+            expected = db.execute("SELECT SUM(logical_bytes) FROM requests").fetchone()[0]
+            self.assertEqual(db.execute("SELECT logical_bytes FROM detail_accounting").fetchone()[0], expected)
+        self.assertTrue(store.clear("details")["ok"])
+        self.assertEqual(store.storage()["logical_bytes"], 0)
 
 
 class P95CoverageGuardTests(unittest.TestCase):

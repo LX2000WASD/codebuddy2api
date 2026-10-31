@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { NavLink, Navigate, Outlet, Route, Routes, useLocation } from "react-router";
-import { establishSession, errorMessage, useSession } from "./api";
+import { api, establishSession, errorMessage, list, object, useSession } from "./api";
 import { ErrorNotice, Icon } from "./components";
 import { CommandPalette, SIDEBAR_TOGGLE_EVENT, signOut } from "./commandPalette";
 import { CreditsBadge, CreditsDot, useCreditsAlert } from "./insights";
 import { areaForPath, navAreas, navGroups, sectionFor, sectionTarget } from "./navigation";
 import { TaskArea } from "./taskArea";
-import { Appearance } from "./appearance";
+import { Keys } from "./pages/Keys";
+import { Media } from "./pages/Media";
+import { Updates } from "./pages/Updates";
+import { Appearance, LanguageToggle } from "./appearance";
 import s from "./ui.module.scss";
-import { LanguageProvider, useT } from "./i18n";
+import { LanguageProvider, chooseLanguage, serverPreference, useT } from "./i18n";
 
 /** The five task areas are the navigation; the ten former pages are sections inside them. */
 const legacyRoutes = navAreas.flatMap((area) =>
@@ -18,9 +21,19 @@ const legacyRoutes = navAreas.flatMap((area) =>
 function Shell() {
   const t = useT();
   const location = useLocation();
+  const bootstrap = useSession((state) => state.bootstrap);
+  const [bootstrapDismissed, setBootstrapDismissed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [palette, setPalette] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  useEffect(() => {
+    // Cached server-side; the gateway checks releases in the background.
+    void api
+      .get<unknown>("/update")
+      .then((response) => setUpdateAvailable(object(response.data).update_available === true))
+      .catch(() => undefined);
+  }, []);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem("codebuddy.sidebar.collapsed") === "true";
@@ -119,6 +132,12 @@ function Shell() {
                         ) : (
                           <CreditsBadge alert={creditsAlertData} />
                         ))}
+                      {/* A newer gateway release is checked and cached server-side.
+                          The updates page lives under the system area, so that is the
+                          link that carries the hint. */}
+                      {candidate.key === "system" && updateAvailable && (
+                        <span className={s.navDot} title={t("updates.available")} />
+                      )}
                       <span className={s.navArrow}>
                         <Icon name="arrow" />
                       </span>
@@ -157,6 +176,7 @@ function Shell() {
             >
               ⌘K
             </button>
+            <LanguageToggle />
             <Appearance />
             <span className={s.session}>
               <span />
@@ -177,6 +197,23 @@ function Shell() {
         </header>
         <main id="main" className={s.main}>
           <ErrorNotice message={error} />
+          {/* The default admin password is still in place: the only way to clear this
+              banner is to change it on the account tab of the settings area. */}
+          {bootstrap && !bootstrapDismissed && (
+            <div className={s.notice} role="status">
+              <span>
+                {t("app.bootstrapBanner")}{" "}
+                <NavLink to="/dashboard/system?tab=account">{t("app.bootstrapAction")}</NavLink>
+              </span>
+              <button
+                type="button"
+                aria-label={t("common.dismissNotice")}
+                onClick={() => setBootstrapDismissed(true)}
+              >
+                <Icon name="close" />
+              </button>
+            </div>
+          )}
           {/* Keyed by pathname so each navigation replays the enter transition; the
               animation is disabled under prefers-reduced-motion (see ui.module.scss). */}
           <div key={location.pathname} className={s.pageEnter}>
@@ -192,13 +229,24 @@ function Shell() {
 function Login() {
   const t = useT();
   const status = useSession((state) => state.status);
-  const [key, setKey] = useState("");
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(false);
+  const [visible, setVisible] = useState(false);
+  const [caps, setCaps] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [shake, setShake] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (status === "authenticated") return <Navigate to="/dashboard" replace />;
   return (
     <div className={s.login}>
+      <div className={s.loginBackdrop} aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </div>
       <div className={s.loginAppearance}>
+        <LanguageToggle />
         <Appearance />
       </div>
       <section className={s.loginIntro}>
@@ -209,41 +257,121 @@ function Login() {
           CodeBuddy
         </div>
         <h1>{t("login.subtitle")}</h1>
-        <div className={s.loginOrbit}>
+        <div className={s.loginOrbit} aria-hidden="true">
           <Icon name="leaf" />
         </div>
       </section>
-      <section className={s.loginCard}>
+      <section className={`${s.loginCard} ${shake ? s.loginShake : ""}`}>
         <Icon name="shield" />
         <h2>{t("login.title")}</h2>
         <form
+          method="post"
+          action="/admin/session"
           onSubmit={(e) => {
             e.preventDefault();
+            const passwordInput = e.currentTarget.elements.namedItem(
+              "password",
+            ) as HTMLInputElement;
             setBusy(true);
+            setShake(false);
             setError(null);
-            const value = key;
-            setKey("");
-            void establishSession(value)
-              .catch((err: unknown) => setError(errorMessage(err)))
+            void establishSession({ username, password, remember })
+              .then(() => {
+                const Credential = (
+                  window as unknown as {
+                    PasswordCredential?: new (options: {
+                      id: string;
+                      password: string;
+                    }) => Credential;
+                  }
+                ).PasswordCredential;
+                if (Credential && navigator.credentials) {
+                  try {
+                    const credential = new Credential({ id: username, password });
+                    void navigator.credentials.store(credential).catch(() => undefined);
+                  } catch {
+                    // Native autocomplete remains available when credential storage is rejected.
+                  }
+                }
+              })
+              .catch((err: unknown) => {
+                setPassword("");
+                setError(errorMessage(err));
+                setShake(true);
+                passwordInput.focus();
+              })
               .finally(() => setBusy(false));
           }}
         >
           <label className={s.field}>
-            API key
+            {t("login.username")}
+            <span className={s.inputGroup}>
+              <Icon name="user" />
+              <input
+                name="username"
+                autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
+                required
+                autoFocus
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="admin"
+              />
+            </span>
+          </label>
+          <label className={s.field}>
+            {t("login.password")}
+            <span className={s.inputGroup}>
+              <Icon name="lock" />
+              <input
+                name="password"
+                type={visible ? "text" : "password"}
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={t("login.passwordPlaceholder")}
+                aria-describedby={caps ? "login-caps" : undefined}
+                aria-invalid={error ? true : undefined}
+                onKeyDown={(e) => setCaps(e.getModifierState("CapsLock"))}
+                onKeyUp={(e) => setCaps(e.getModifierState("CapsLock"))}
+              />
+              <button
+                type="button"
+                className={s.inputAction}
+                onMouseDown={(e) => e.preventDefault()}
+                aria-label={visible ? t("login.hidePassword") : t("login.showPassword")}
+                aria-pressed={visible}
+                onClick={() => setVisible((value) => !value)}
+              >
+                <Icon name={visible ? "eyeOff" : "eye"} />
+              </button>
+            </span>
+          </label>
+          {caps && (
+            <span id="login-caps" className={s.capsHint} role="status">
+              <Icon name="alert" />
+              {t("login.capsLock")}
+            </span>
+          )}
+          <label className={s.check}>
             <input
-              type="password"
-              name="api-key"
-              autoComplete="off"
-              required
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              placeholder={t("login.keyPlaceholder")}
+              type="checkbox"
+              name="remember"
+              checked={remember}
+              onChange={(e) => setRemember(e.target.checked)}
             />
+            {t("login.remember")}
           </label>
           <ErrorNotice message={error} />
-          <button className={s.primary} disabled={busy || !key.trim()}>
+          <button
+            className={s.primary}
+            disabled={busy || !username.trim() || !password}
+            aria-busy={busy}
+          >
             {busy ? t("login.verifying") : t("login.enter")}
-            <Icon name="arrow" />
+            <Icon name={busy ? "refresh" : "arrow"} />
           </button>
         </form>
       </section>
@@ -294,6 +422,12 @@ export function AppRoutes() {
           {legacyRoutes.map(({ segment, target }) => (
             <Route key={segment} path={segment} element={<Navigate to={target} replace />} />
           ))}
+          {/* Pages the consolidated sidebar does not list yet keep their own route, so
+              their URLs (e2e suites, shared links) resolve instead of bouncing home. */}
+          <Route path="keys" element={<Keys />} />
+          <Route path="media" element={<Media />} />
+          <Route path="updates" element={<Updates />} />
+          <Route path="updates/:tag" element={<Updates />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
@@ -304,6 +438,19 @@ export default function App() {
   useEffect(() => {
     void establishSession();
   }, []);
+  const status = useSession((state) => state.status);
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    // The stored language wins over the browser cache once the session is known.
+    void api
+      .get<unknown>("/settings")
+      .then((response) => {
+        const data = object(response.data);
+        const stored = list(data.items).find((item) => item.key === "language");
+        if (stored) chooseLanguage(serverPreference(stored.value));
+      })
+      .catch(() => undefined);
+  }, [status]);
   return (
     <LanguageProvider>
       <AppRoutes />

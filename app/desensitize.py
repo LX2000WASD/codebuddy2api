@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from typing import Any, Iterable
 
 from app.harness_context import parse_harness_text
@@ -117,11 +118,16 @@ _PATTERN = re.compile(
 )
 
 # Limit substitutions to known templates without globally stripping whitespace.
-def _template_pattern(text: str) -> re.Pattern:
+def _template_source(text: str) -> str:
     words = [(_ZWSP + "*").join(re.escape(char) for char in word) for word in text.split(" ")]
-    return re.compile(r"(?<!\w)" + r"[\s\u200b]+".join(words) + _ZWSP + r"*(?!\w)", re.IGNORECASE)
+    return r"[\s\u200b]+".join(words) + _ZWSP + r"*"
 
 
+def _template_pattern(text: str) -> re.Pattern:
+    return re.compile(r"(?<!\w)" + _template_source(text) + r"(?!\w)", re.IGNORECASE)
+
+
+_DSH_WORKBUDDY_IDENTITY = "You are WorkBuddy, a powerful AI assistant"
 _WORKBUDDY_IDENTITY = "You are CodeBuddy, Tencent's official CLI"
 _CLAUDE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude"
 _TEMPLATE_REPLACEMENTS = tuple(
@@ -131,6 +137,7 @@ _TEMPLATE_REPLACEMENTS = tuple(
         ("You are a Claude agent, built on Anthropic's Claude Agent SDK", _WORKBUDDY_IDENTITY),
         ("Main branch (you will usually use this for PRs)",
          "Main branch (you will usually use this for PR)"),
+        ("You are an AI agent powered by DeepSeek Harness.", _DSH_WORKBUDDY_IDENTITY + "."),
     )
 )
 _WORKBUDDY_IDENTITY_PATTERN = _template_pattern(_WORKBUDDY_IDENTITY)
@@ -171,6 +178,35 @@ def normalize_identity_prefix(text, mode: str = "off"):
     return _DSH_IDENTITY_PATTERN.sub(lambda _m: replacement, text, count=1)
 
 
+_CHANNEL_IDENTITY_PATTERN = _template_pattern("You are an AI agent powered by DeepSeek Harness")
+_DSH_CODING_PATTERN = re.compile(
+    r"(?<!\w)" + _template_source("You are a coding agent powered by the")
+    + r"[\s\u200b]+(?P<model>[^\r\n]{1,200}?)[\s\u200b]+"
+    + _template_source("model") + r"(?!\w)",
+    re.IGNORECASE,
+)
+_DSH_MINIMAL_PATTERN = _template_pattern("You are a helpful software engineer assistant")
+_DSH_DIRECT_PATTERN = _template_pattern("You are DeepSeek Harness")
+_DSH_WEB_GUI_PATTERN = _template_pattern("DeepSeek Harness Web GUI")
+_DSH_WEB_GUI_FINGERPRINT_PATTERN = re.compile(
+    r"\bWeb GUI whose URL the runtime context names\.\s+When the user refers",
+    re.IGNORECASE,
+)
+_CHANNEL_IDENTITY_FIXED = _DSH_WORKBUDDY_IDENTITY
+_CHANNEL_SYSTEM_DEFAULT = "You are a helpful assistant."
+_CHANNEL_INSTRUCTIONS_OPEN = "<instructions>\n"
+_CHANNEL_INSTRUCTIONS_CLOSE = "\n</instructions>"
+
+WORKBUDDY_SYSTEM_PROMPT = (
+    "You are WorkBuddy, a powerful AI assistant.\n\n"
+    "Your main goal is to follow the USER's instructions at each message, denoted by the <user_query> tag."
+)
+CODEBUDDY_SYSTEM_PROMPT = (
+    "You are CodeBuddy Code.\n\n"
+    "You are an interactive CLI tool that helps users with software engineering tasks. "
+    "Use the instructions below and the tools available to you to assist the user. "
+    "Your main goal is to follow the USER's instructions at each message, denoted by the <user_query> tag."
+)
 _GIT_STATUS_CONTEXT = re.compile(
     r"^\s*(?:gitStatus:\s*|#\s*gitStatus\s*\n)"
     r"This is the git status at the start of the conversation\.", re.IGNORECASE | re.MULTILINE,
@@ -268,6 +304,36 @@ def desensitize_text(text: str) -> str:
         return desensitize_text(text[:context.start()]) + _replace_git_status_text(text[context.start():])[0]
     text = _replace_workbuddy_templates(text)
     return _PATTERN.sub(lambda m: _zero_width_split(m.group(0)), text)
+
+
+def _replace_dsh_coding_persona(match: re.Match) -> str:
+    model = match.group("model").strip()
+    return f"{_DSH_WORKBUDDY_IDENTITY}. This conversation is powered by the {model} model"
+
+
+def desensitize_channel_text(text: str) -> str:
+    """Convert official DSH role prompts without changing unrelated brand references."""
+    if not text:
+        return text
+    text = _DSH_CODING_PATTERN.sub(_replace_dsh_coding_persona, text)
+    text = _CHANNEL_IDENTITY_PATTERN.sub(_CHANNEL_IDENTITY_FIXED, text)
+    text = _DSH_MINIMAL_PATTERN.sub(_CHANNEL_IDENTITY_FIXED, text)
+    text = _DSH_DIRECT_PATTERN.sub(_CHANNEL_IDENTITY_FIXED, text)
+    text = _DSH_WEB_GUI_PATTERN.sub("WorkBuddy Web GUI", text)
+    return _DSH_WEB_GUI_FINGERPRINT_PATTERN.sub(
+        "Web GUI whose URL the runtime context names. The interface, when the user refers",
+        text,
+    )
+
+
+def _iter_text_blocks(content):
+    """Yield text containers and keys from string or block-based Chat content."""
+    if isinstance(content, str):
+        yield content, None  # The caller replaces plain strings directly.
+    elif isinstance(content, list):
+        for blk in content:
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                yield blk, "text"
 
 
 def _content_to_text(content) -> str:
@@ -460,6 +526,115 @@ def desensitize_body(body: dict, roles: tuple[str, ...] = ("system",),
         nb["tools"] = _desensitize_tool_value(body["tools"], strip_metadata=strip_tool_metadata)
         changed = True
     return nb if changed else body
+
+
+def desensitize_channel_body(body: dict) -> dict:
+    """Remove the known channel identity from instruction and assistant text."""
+    if not body.get("messages"):
+        return body
+    messages = []
+    for message in body["messages"]:
+        if not isinstance(message, dict) or message.get("role") not in ("system", "developer", "assistant"):
+            messages.append(message)
+            continue
+        adapted = dict(message)
+        content = message.get("content")
+        if isinstance(content, str):
+            adapted["content"] = desensitize_channel_text(content)
+        elif isinstance(content, list):
+            adapted["content"] = [
+                {**block, "text": desensitize_channel_text(block["text"])}
+                if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+                else block
+                for block in content
+            ]
+        messages.append(adapted)
+    return {**body, "messages": messages}
+
+
+def _instruction_blocks(contents: list) -> list[dict]:
+    """Wrap system content as user-visible instructions without dropping non-text blocks."""
+    blocks: list[dict] = [{"type": "text", "text": _CHANNEL_INSTRUCTIONS_OPEN}]
+    for index, content in enumerate(contents):
+        if index:
+            blocks.append({"type": "text", "text": "\n\n"})
+        if isinstance(content, str):
+            blocks.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            blocks.extend(deepcopy(content))
+        elif content is not None:
+            blocks.append({"type": "text", "text": str(content)})
+    blocks.append({"type": "text", "text": _CHANNEL_INSTRUCTIONS_CLOSE})
+    return blocks
+
+
+def _prepend_user_instructions(message: dict, contents: list) -> dict:
+    """Prepend wrapped instructions to one user message while preserving its shape."""
+    moved = _instruction_blocks(contents)
+    existing = message.get("content")
+    updated = dict(message)
+    if isinstance(existing, str):
+        if any(block.get("type") != "text" for block in moved):
+            updated["content"] = moved + ([{"type": "text", "text": existing}] if existing else [])
+        else:
+            text = "".join(block.get("text", "") for block in moved)
+            updated["content"] = text + ("\n\n" + existing if existing else "")
+    elif isinstance(existing, list):
+        updated["content"] = moved + deepcopy(existing)
+    elif existing is None:
+        updated["content"] = moved
+    else:
+        updated["content"] = moved + [{"type": "text", "text": str(existing)}]
+    return updated
+
+
+def system_as_user_body(body: dict) -> dict:
+    """Move a refused system prompt into the first user message for one bounded retry."""
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return body
+    leading: list = []
+    index = 0
+    while index < len(messages) and isinstance(messages[index], dict) \
+            and messages[index].get("role") == "system":
+        leading.append(messages[index].get("content"))
+        index += 1
+    rest = [deepcopy(message) for message in messages[index:]]
+    later_system = False
+    for message in rest:
+        if isinstance(message, dict) and message.get("role") == "system":
+            message["role"] = "user"
+            later_system = True
+    meaningful = any(_content_to_text(content).strip() for content in leading)
+    if meaningful and leading and not (
+        len(leading) == 1 and _content_to_text(leading[0]).strip() == _CHANNEL_SYSTEM_DEFAULT
+    ):
+        user_index = next((i for i, message in enumerate(rest)
+                           if isinstance(message, dict) and message.get("role") == "user"), None)
+        moved = _instruction_blocks(leading)
+        if user_index is None:
+            rest.insert(0, {"role": "user", "content": moved})
+        else:
+            rest[user_index] = _prepend_user_instructions(rest[user_index], leading)
+    if not meaningful and not later_system:
+        return body
+    return {**body, "messages": [{"role": "system", "content": _CHANNEL_SYSTEM_DEFAULT}, *rest]}
+
+
+def apply_system_prompt_mode(body: dict, profile: str, mode: str) -> dict:
+    """Apply an optional profile prompt without mutating canonical messages."""
+    if mode == "empty":
+        return body
+    if mode != "prepend":
+        raise ValueError("prompt_mode 仅支持 empty 或 prepend")
+    prompt = WORKBUDDY_SYSTEM_PROMPT if profile in ("cn-work", "intl-work") else CODEBUDDY_SYSTEM_PROMPT
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return body
+    if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system" \
+            and _content_to_text(messages[0].get("content")) == prompt:
+        return body
+    return {**body, "messages": [{"role": "system", "content": prompt}, *messages]}
 
 
 # ---------------------------------------------------------------------------

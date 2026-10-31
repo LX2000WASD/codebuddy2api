@@ -40,7 +40,7 @@ class EnvironmentConfigTests(unittest.TestCase):
              patch.object(converter, 'seed_credentials') as seed, patch.object(converter, 'CredentialPool') as pool, \
              patch.object(converter, '_publish_model_cache'), patch.object(runtime_management, 'install'), \
              patch.object(converter.threading, 'Thread'), patch.object(converter, '_log'), \
-             patch.object(converter.uvicorn, 'run') as server, contextlib.redirect_stderr(io.StringIO()):
+             patch.object(converter, 'run_server') as server, contextlib.redirect_stderr(io.StringIO()):
             try:
                 converter.main()
                 snapshot = {item['key']: item for item in resolve_settings(converter.CONFIG)}
@@ -89,9 +89,11 @@ class EnvironmentConfigTests(unittest.TestCase):
             with self.subTest(env=env), self.assertRaises(ValueError):
                 self.start(env)
 
-    def test_environment_public_binding_without_key_is_rejected(self):
-        with self.assertRaises(SystemExit):
-            self.start({'CODEBUDDY2API_BIND': '0.0.0.0', 'CODEBUDDY2API_KEY': ''})
+    def test_environment_public_binding_without_key_starts_with_blank_key_unset(self):
+        server, _, config = self.start({'CODEBUDDY2API_BIND': '0.0.0.0', 'CODEBUDDY2API_KEY': ''})
+        self.assertEqual(server['host'], '0.0.0.0')
+        self.assertEqual(config['api_key'], '')
+        self.assertEqual(config['settings_sources']['api_key'], 'default')
 
     def test_existing_runtime_limit_and_retry_variables_reach_effective_config(self):
         values = {'MAX_INBOUND_BYTES': '4096', 'MAX_COLLECT_BYTES': '0', 'MAX_CONCURRENT': '2',
@@ -117,6 +119,17 @@ class EnvironmentConfigTests(unittest.TestCase):
                     {'CODEBUDDY2API_MAX_INFLIGHT_PER_ACCOUNT': '-1'}):
             with self.subTest(env=env), self.assertRaises(SystemExit):
                 self.start(env)
+
+    def test_rollout_switches_default_to_conservative_modes(self):
+        _, items, config = self.start()
+        self.assertEqual(config['routing_scheduler'], 'shadow')
+        self.assertEqual(config['catalog_probe_mode'], 'account')
+        self.assertEqual(items['routing_scheduler']['source'], 'default')
+        self.assertEqual(items['catalog_probe_mode']['source'], 'default')
+        _, _, explicit = self.start(cli=('--routing-scheduler', 'indexed',
+                                         '--catalog-probe-mode', 'representative'))
+        self.assertEqual(explicit['routing_scheduler'], 'indexed')
+        self.assertEqual(explicit['catalog_probe_mode'], 'representative')
 
 
     def test_capability_guard_defaults_precedence_and_validation(self):
@@ -235,6 +248,23 @@ class EnvironmentConfigTests(unittest.TestCase):
                          ('passthrough', 0))
         self.assertTrue(all(items[key]['source'] == 'cli' and items[key]['locked']
                             for key in ('responses_projection_mode', 'responses_projection_max_bytes')))
+    def test_prompt_mode_precedence_and_validation(self):
+        _, items, config = self.start(saved={'prompt_mode': 'prepend'})
+        self.assertEqual(config['prompt_mode'], 'prepend')
+        self.assertEqual(items['prompt_mode']['source'], 'management')
+        self.assertEqual(items['prompt_mode']['choices'], ['empty', 'prepend'])
+        _, items, config = self.start({'CODEBUDDY2API_PROMPT_MODE': 'prepend'})
+        self.assertEqual(config['prompt_mode'], 'prepend')
+        self.assertTrue(items['prompt_mode']['locked'])
+        _, items, config = self.start({'CODEBUDDY2API_PROMPT_MODE': 'invalid'},
+                                      cli=('--prompt-mode=prepend',), saved={'prompt_mode': 'empty'})
+        self.assertEqual(config['prompt_mode'], 'prepend')
+        self.assertEqual(items['prompt_mode']['source'], 'cli')
+        with self.assertRaises(ValueError):
+            self.start({'CODEBUDDY2API_PROMPT_MODE': 'invalid'})
+        _, _, config = self.start()
+        self.assertEqual(config['prompt_mode'], 'empty')
+
     def test_request_context_mode_precedence_and_validation(self):
         _, items, config = self.start(saved={'request_context_mode': 'scoped'})
         self.assertEqual(config['request_context_mode'], 'scoped')
@@ -249,6 +279,16 @@ class EnvironmentConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.start({'CODEBUDDY2API_REQUEST_CONTEXT_MODE': 'invalid'})
 
+
+    def test_language_is_never_locked_and_the_notice_flag_stays_hidden(self):
+        from app.settings import SCHEMA, resolve_settings
+        config = {"settings_sources": {key: "dotenv" for key in SCHEMA}}
+        config.update({key: spec["default"] for key, spec in SCHEMA.items()})
+        items = {item["key"]: item for item in resolve_settings(config)}
+        self.assertFalse(items["language"]["locked"])
+        self.assertEqual(items["language"]["value"], "auto")
+        self.assertNotIn("config_notice_muted", items)
+        self.assertTrue(items["host"]["locked"])
 
     def test_example_covers_all_active_runtime_environment_names(self):
         example = (ROOT / '.env.example').read_text()
@@ -271,6 +311,8 @@ class EnvironmentConfigTests(unittest.TestCase):
             self.skipTest('Compose plugin unavailable')
         dotenv = self.root / 'compose.env'
         dotenv.write_text(''.join(name + '=' + value + '\n' for name, value in values.items()))
+        # The service reads .env through env_file; point it at this batch instead of the checkout.
+        env['CODEBUDDY2API_ENV_FILE'] = str(dotenv)
         command = ['docker', 'compose', '--project-directory', str(self.root), '--env-file', str(dotenv),
                    '-f', str(ROOT / 'docker-compose.yml'), 'config', '--format', 'json']
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=20)
@@ -293,7 +335,8 @@ class EnvironmentConfigTests(unittest.TestCase):
         service = self.compose(values)
         port = service['ports'][0]
         self.assertEqual((port['host_ip'], str(port['published']), port['target']), ('127.0.0.2', '9087', 8787))
-        self.assertEqual(service['command'][:5], ['python3', 'converter.py', '--host', '0.0.0.0', '--port'])
+        # Compose inherits the image command instead of repeating the listener flags.
+        self.assertIsNone(service.get('command'))
         self.assertEqual(service['environment']['CODEBUDDY_AUTH_DIR'], '/data/auth')
         for name, value in values.items():
             if name not in ('CODEBUDDY2API_BIND', 'CODEBUDDY2API_PORT'):
@@ -310,7 +353,8 @@ class EnvironmentConfigTests(unittest.TestCase):
                      'CODEBUDDY2API_ADMIN_ORIGINS'):
             self.assertIsNone(service['environment'].get(name))
         self.assertEqual(service['ports'][0]['host_ip'], '127.0.0.1')
-        self.assertEqual(service['environment']['CODEBUDDY_IMPORT_DIR'], '/data/auth/imports')
+        # Container defaults to the data directory's imports/; .env may override it.
+        self.assertIsNone(service['environment'].get('CODEBUDDY_IMPORT_DIR'))
 
 
 if __name__ == '__main__':

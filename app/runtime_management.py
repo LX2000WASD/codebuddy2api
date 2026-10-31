@@ -3,17 +3,22 @@
 import os
 import sqlite3
 import sys
+import threading
 from pathlib import Path
 
 from . import buddy
 from .admin_api import install_admin
+from .api_keys import KeyStore
 from .audit_store import AuditStore
+from .backups import Backups
 from .control_store import ControlStore
 from .gateway_management import Management, install_pages
 from .inference_auth import InferenceAuthMiddleware
+from .media_store import MediaStore
 from .model_policy import PolicyScopeMiddleware
 from .observability import AuditMiddleware
 from .settings import SCHEMA, apply_persisted_settings
+from .updates import Updater
 
 
 class UnavailableAudit:
@@ -45,6 +50,9 @@ class UnavailableAudit:
 
     def list_records(self, *args, **kwargs):
         return {"items": [], "next_cursor": None, "has_more": False, "degraded": True}
+
+    def api_key_stats(self, *args, **kwargs):
+        return {"degraded": True, "items": {}}
 
     def get_request(self, id):
         return None
@@ -85,15 +93,24 @@ def initialize(gateway, args, argv=None, *, parser=None, dotenv_keys=()):
             key = options[matches[0]].dest if len(matches) == 1 else flag[2:].replace("-", "_")
             explicit.add(aliases.get(key, key))
     apply_persisted_settings(config, explicit=explicit)
-    from .startup import resolve_startup_key
+    from .startup import allows_open_noauth, resolve_startup_auth
     try:
-        resolve_startup_key(config, args, dotenv_keys)
+        resolve_startup_auth(config, args, dotenv_keys)
     except BaseException:
         control.close()
         raise
     for key in SCHEMA:
         if hasattr(args, key) and key != "api_key":
             setattr(args, key, config[key])
+    config["allow_open_noauth"] = allows_open_noauth()
+    config["key_store"] = KeyStore(control)
+    if config.get("api_key") or config["key_store"].has_any():
+        if config["allow_open_noauth"]:
+            print("[auth] 已存在 API key，OPEN_NOAUTH 不生效", file=sys.stderr)
+    elif config["allow_open_noauth"]:
+        print("[auth] 推理接口与账号池额度（billing）匿名开放", file=sys.stderr)
+    else:
+        print("[auth] 尚未创建 API key，请登录 WebUI 创建", file=sys.stderr)
     config["trial_ledger"] = gateway.trial_rewards.TrialLedger(store=control.state)
     try:
         config["audit_store"] = AuditStore(root / "logs.sqlite3", max_bytes=config["audit_max_bytes"],
@@ -102,7 +119,15 @@ def initialize(gateway, args, argv=None, *, parser=None, dotenv_keys=()):
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
         config["audit_store"] = UnavailableAudit(type(error).__name__)
         print("[audit] 日志库不可用，推理服务继续；请检查目录权限或使用备份恢复日志库。", file=sys.stderr)
+    try:
+        config["media_store"] = MediaStore(root)
+    except (OSError, ValueError, sqlite3.Error) as error:
+        config["media_store"] = None
+        print(f"[media] 媒体存储不可用（{type(error).__name__}），图像/视频接口将返回 503。", file=sys.stderr)
     config["management"] = Management(gateway)
+    config["backups"] = Backups(config, data_dir=root, version=gateway.APP_VERSION)
+    config["updater"] = Updater(config, root=Path(gateway.__file__).resolve().parent,
+                                data_dir=root, version=gateway.APP_VERSION, backups=config["backups"])
     return config["management"]
 
 
@@ -122,7 +147,30 @@ def install(gateway):
 
 
 def close(config):
-    for key in ("audit_store", "control_store"):
+    stop = config.get("key_housekeeping_stop")
+    if stop is not None:
+        stop.set()
+        thread = config.get("key_housekeeping_thread")
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=5)
+    if config.get("key_store") is not None:
+        config["key_store"].flush_used()
+    for key in ("audit_store", "control_store", "media_store"):
         store = config.get(key)
         if store is not None:
             store.close()
+
+
+def start_key_housekeeping(config):
+    stop = threading.Event()
+
+    def run():
+        while not stop.wait(60):
+            try:
+                config["key_store"].flush_used()
+            except (OSError, ValueError, sqlite3.Error):
+                print("[auth] 密钥最后使用时间暂时无法保存", file=sys.stderr)
+
+    thread = threading.Thread(target=run, daemon=True, name="api-key-housekeeping")
+    config.update(key_housekeeping_stop=stop, key_housekeeping_thread=thread)
+    thread.start()

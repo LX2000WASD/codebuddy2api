@@ -5,6 +5,7 @@ import { AppRoutes, Guard } from "./App";
 import { api, useSession, type ModelRule } from "./api";
 import { CLEAR_CONFIRMATION, ClearLogs } from "./components";
 import { ModelEditor, validateRule } from "./pages/Models";
+import { choose } from "./test-utils";
 const rule: ModelRule = {
   id: "upstream",
   public_id: "public",
@@ -94,10 +95,10 @@ describe("model rules and route preview", () => {
   });
 });
 describe("destructive warnings", () => {
-  it("blocks full clear until exact phrase and current key, and clears key after submit", async () => {
+  it("blocks full clear until exact phrase and current password, and clears password after submit", async () => {
     const post = vi.spyOn(api, "post").mockResolvedValue({ data: { ok: true } });
     render(<ClearLogs onClose={vi.fn()} onDone={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("清理范围"), { target: { value: "all" } });
+    choose(screen.getByLabelText("清理范围"), "all");
     const submit = screen.getByRole("button", { name: "确认不可撤销的清理" });
     expect(submit).toHaveProperty("disabled", true);
     expect(screen.getByText(/将永久删除全部请求明细/)).toBeTruthy();
@@ -105,17 +106,23 @@ describe("destructive warnings", () => {
       target: { value: CLEAR_CONFIRMATION },
     });
     expect(submit).toHaveProperty("disabled", true);
-    fireEvent.change(screen.getByLabelText("当前 API key"), { target: { value: "test-only-key" } });
+    fireEvent.change(screen.getByLabelText("当前管理密码"), {
+      target: { value: "test-only-password" },
+    });
     expect(submit).toHaveProperty("disabled", false);
     fireEvent.click(submit);
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith("/logs/clear", {
         scope: "all",
         confirmation: CLEAR_CONFIRMATION,
-        api_key: "test-only-key",
+        password: "test-only-password",
       }),
     );
-    expect(screen.getByLabelText("当前 API key")).toHaveProperty("value", "");
+    expect(screen.getByLabelText("当前管理密码")).toHaveProperty("value", "");
+    expect(screen.getByLabelText("当前管理密码")).toHaveProperty(
+      "autocomplete",
+      "current-password",
+    );
   });
   it("ordinary clear preserves statistics and sends no key", async () => {
     const post = vi.spyOn(api, "post").mockResolvedValue({ data: { ok: true } });

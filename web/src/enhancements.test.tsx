@@ -168,6 +168,7 @@ describe("scoped credential buttons", () => {
       data: [{ id: "one", name: "one.info", enabled: true, profile: "cn-cli", health: "ready" }],
       reload: vi.fn(),
       loading: false,
+      refreshing: false,
       error: null,
     });
     const post = vi.spyOn(api, "post").mockResolvedValue({
@@ -208,6 +209,7 @@ describe("scoped credential buttons", () => {
       ],
       reload: vi.fn(),
       loading: false,
+      refreshing: false,
       error: null,
     });
     const post = vi.spyOn(api, "post").mockResolvedValue({
@@ -237,5 +239,34 @@ describe("scoped credential buttons", () => {
     // The failure is surfaced rather than silently swallowed.
     expect(await screen.findByText("未完成")).toBeTruthy();
     expect(screen.getByText(/写入失败/)).toBeTruthy();
+  });
+
+  it("shows the restricted label and one-click release action", async () => {
+    vi.mocked(useResource).mockReturnValue({
+      data: [
+        {
+          id: "one",
+          name: "one.info",
+          enabled: false,
+          restricted: true,
+          restricted_until: Date.now() / 1000 + 7200,
+          profile: "cn-cli",
+          health: "restricted",
+        },
+      ],
+      reload: vi.fn(),
+      loading: false,
+      refreshing: false,
+      error: null,
+    });
+    const patch = vi.spyOn(api, "patch").mockResolvedValue({
+      data: { id: "one", enabled: true, revision: 2 },
+    });
+    render(<Credentials />);
+    expect(screen.getByText(/被官方限制/)).toBeTruthy();
+    openRowMenu("one.info");
+    const button = screen.getByRole("button", { name: "解除官方限制 one.info" });
+    await act(async () => fireEvent.click(button));
+    expect(patch).toHaveBeenCalledWith("/credentials/one", { enabled: true });
   });
 });

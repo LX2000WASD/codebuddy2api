@@ -7,8 +7,8 @@
 - 支持 Chat Completions、Responses 和 Anthropic Messages，包含工具调用与流式输出。
 - 内置 **WebUI**：浏览器登录添加账号，管理模型、凭证、日志与设置，无需桌面端。
 - 多账号自动选路，兼容国内／国际站，自动刷新凭证。
-- 按账号配置自动任务：国内个人账号默认签到后派 Buddy 旅行，可分别关闭；国际自动签到与每日活跃默认关闭。成长中心仅面向个人账号，企业账号不参与。
-- 在上游 v1.3.6 之上叠加**本地移植层**：账号×模型级**软**冷却、积分保底、临期积分加权、传输层连败降权、诊断与告警、趋势统计——见[本地移植层](#本地移植层)。
+- 按账号配置自动任务：国内个人账号默认签到后派 Buddy 旅行，可分别关闭；国际自动签到与每日活跃默认关闭。成长中心仅面向个人账号：已完成任务自动领取积分与能量，行为链按任务开关执行；企业账号不参与。
+- 在上游 v1.5.0 之上叠加**本地移植层**：账号×模型级**软**冷却、积分保底、临期积分加权、传输层连败降权、诊断与告警、趋势统计——见[本地移植层](#本地移植层)。
 
 ## 仓库来源（两个上游）
 
@@ -16,7 +16,7 @@
 
 | 角色 | 仓库 | 说明 |
 |------|------|------|
-| 上游网关（基座） | [maiphucgiang/codebuddy2api](https://github.com/maiphucgiang/codebuddy2api) | Python 网关 + WebUI。本分支已跟进上游 **v1.3.6**（2026-10-15 合并，此前基于 v1.3.2）。 |
+| 上游网关（基座） | [maiphucgiang/codebuddy2api](https://github.com/maiphucgiang/codebuddy2api) | Python 网关 + WebUI。本分支已跟进上游 **v1.5.0**（2026-10-31 合并，此前基于 v1.3.6）。 |
 | 第二上游（借鉴） | [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) | Go 网关 + Web 管理面板（MIT），是已删库的 `Sliverkiss/workbuddy2api` 的增强分支。其**账号运营与可观测性**思路被移植进下面的本地层，未使用其 Go 代码。 |
 | 本分支 | `LX2000WASD/codebuddy2api`（分支 `local/main`） | 上游基座 + 本地移植层。使用自己发布的镜像，改动**不向上游回流**。 |
 
@@ -24,7 +24,7 @@
 
 ## 本地移植层
 
-在上游 v1.3.6（`local/main`）之上新增，全部可选，可在 WebUI 或 `.env` 中开关：
+在上游 v1.5.0（`local/main`）之上新增，全部可选，可在 WebUI 或 `.env` 中开关：
 
 **选路与账号运营**
 
@@ -56,7 +56,7 @@ cd codebuddy2api
 cp .env.example .env
 ```
 
-编辑 `.env`：将 `CODEBUDDY2API_KEY` 设置为自己的随机密钥，并指定镜像；升级时保留已有 `.env`：
+编辑 `.env`：将 `CODEBUDDY2API_KEY` 设置为自己的随机密钥，并指定镜像。它既是外部管理推理密钥，也是修改密码前的初始 WebUI 密码；Compose 会把整个文件加载进容器，每个键都会生效，无关的键也无影响，未设置的键沿用网关默认值或 WebUI 里保存的值。升级时保留已有 `.env`：
 
 ```dotenv
 # 本分支（含本地移植层，建议固定到某个提交）
@@ -70,13 +70,14 @@ docker compose pull
 docker compose up -d --no-build
 ```
 
-`:local` 跟随 `local/main` 的最新构建；每次构建同时发布不可变的 `:local-<sha>` 标签（完整 40 位提交号），需固定部署时用后者。上游 `latest` 跟随上游稳定发行版，**不含**本地移植层。
+`:local` 跟随 `local/main` 的最新构建；每次构建同时发布不可变的 `:local-<sha>` 标签（完整 40 位提交号），需固定部署时用后者。未设置 `CODEBUDDY2API_IMAGE` 时 Compose 默认拉取上游 `latest`，它跟随上游稳定发行版、**不含**本地移植层；上游同时发布发行版本标签（例如 `1.5.0`）与跟随 `main` 的 `edge`。
 
 首次使用：
 
-1. 打开 **http://127.0.0.1:8787/dashboard**，使用刚设置的 API key 登录。
-2. 在「凭证管理」通过浏览器登录添加国内或国际账号，也可导入 `.info` 文件。
-3. 在「模型路由」查看可用模型，将其对外 ID 填入客户端。
+1. 打开 **http://127.0.0.1:8787/dashboard**，使用账号 `admin` 和 `CODEBUDDY2API_KEY` 对应的初始密码登录。
+2. 在「凭证管理」通过浏览器登录添加国内或国际账号，也可导入 `.info` 文件，或按端点粘贴刷新令牌批量导入。
+3. 在「密钥管理」为每个客户端创建推理密钥，按需设置模型、IP、有效期和速率限制。
+4. 在「模型路由」查看可用模型，将其对外 ID 填入客户端。
 
 按模板配置时仅允许本机访问。远程访问前请配置 HTTPS 并限制网络访问；保留并妥善备份 `auth/` 数据目录。如需直接运行源码或在终端登录，见[部署指南](docs/deployment.zh-CN.md)。
 
@@ -86,10 +87,17 @@ docker compose up -d --no-build
 |------|----------|
 | OpenAI Chat / Responses | `http://127.0.0.1:8787/v1` |
 | Anthropic Messages | `http://127.0.0.1:8787` |
+| MCP（web_search + web_fetch 工具） | `http://127.0.0.1:8787/v1/mcp` |
+| REST 联网搜索 / 抓取 | `POST http://127.0.0.1:8787/v1/search` / `POST http://127.0.0.1:8787/v1/fetch` |
+| 图像 / 视频生成 | `POST http://127.0.0.1:8787/v1/images/generations` / `POST /v1/images/edits` / `POST /v1/videos` |
 
-- **API Key**：与 WebUI 登录使用同一个密钥。
+- 媒体生成按上游积分计费，只路由到已实测验证的账号产品；见[媒体生成](docs/clients.zh-CN.md#媒体生成)。
+
+- **API Key**：使用「密钥管理」创建的密钥，或外部配置的管理密钥；WebUI 管理 Cookie 不能调用 `/v1/*`。
 - **模型**：使用 WebUI 中的对外 ID，或查询 `GET /v1/models`。
 - 国内、国际账号共用这些地址，无需额外的地域参数。Anthropic SDK 会自行追加 `/v1/messages`，不要把它写入 Base URL。
+- 搜索与抓取端点不调用模型。在请求里声明 Anthropic `web_search_*`／`web_fetch_*` 或 OpenAI `web_search` 服务端工具时，网关会自行执行，见[联网搜索与抓取](docs/clients.zh-CN.md#联网搜索与抓取)。
+- 工具参数：三种推理协议均会将空参数根转换为对象 Schema；带字段级布尔 `required` 标记的旧式参数映射会包入 `properties`，必填字段名汇总到根部。`pattern` 等 Schema 关键字若对应的是字段，仍按字段名处理。标准 Schema、含 `$`／`x-` 扩展的根以及嵌套 Schema 保持原样。
 
 [Codex CLI、Claude Code / CC Switch 等配置示例 →](docs/clients.zh-CN.md)
 
@@ -117,6 +125,7 @@ docker build -f Dockerfile.local -t codebuddy2api:local .
 ├── web/                 # WebUI 前端（React/TypeScript，构建产物由网关托管）
 │   └── src/fusion/      # 本地层：融合层客户端、类型与开发期 mock
 ├── tests/               # 离线回归测试
+├── preview/             # 开发预览：真实网关 + 模拟上游 + 合成账号
 ├── docs/                # 用户文档（中英对照）+ 中文融合层 API 契约
 ├── examples/            # 客户端配置示例
 ├── scripts/             # 版本与依赖锁定工具
@@ -136,11 +145,12 @@ docker build -f Dockerfile.local -t codebuddy2api:local .
 | [客户端配置](docs/clients.zh-CN.md) | Codex CLI、Claude Code、CC Switch 与通用客户端 |
 | [进阶参考](docs/advanced.zh-CN.md) | 参数、API、模型调度、请求限制与故障排查 |
 | [融合层管理 API](docs/fusion-api.md) | 本地层端点契约：健康、状态、诊断、统计、告警 |
+| [开发预览](docs/development.zh-CN.md) | 不用真实账号，对接模拟上游运行 WebUI 与各个 API |
 
 ## 常见问题
 
 - **绑定域名后经 HTTPS 反代无法登录 WebUI？** 将对外来源加入 `admin_allowed_origins` 信任列表——见[管理 Origin 校验](docs/advanced.zh-CN.md#管理-origin--csrf-开关)。
-- **没有 Docker？** 准备依赖和 WebUI 后，直接 `uv run converter.py` 或 `python3 converter.py`，无需 `.env`；首次本地启动保存默认 key 并仅在终端显示一次——见[本地 Python 运行](docs/deployment.zh-CN.md#本地-python-运行)。
+- **没有 Docker？** 准备依赖和 WebUI 后，直接 `uv run --locked --no-build converter.py` 或 `python3 converter.py`，无需 `.env`；首次启动会输出初始管理账号和随机密码，不会自动创建推理密钥，请登录后在「密钥管理」创建——见[本地 Python 运行](docs/deployment.zh-CN.md#本地-python-运行)。
 - **数据在哪里？** 全部位于 `auth/`（Docker 中为 `/data/auth`）：凭证、设置与日志数据库——见[数据与备份](docs/webui.zh-CN.md#数据与备份)。
 - **镜像标签怎么选？** `local` 跟随本分支，`local-<sha>` 固定其中一次构建，上游 `latest`/`edge` 跟随上游发行版。本分支标签见 [GHCR: LX2000WASD/codebuddy2api](https://github.com/LX2000WASD/codebuddy2api/pkgs/container/codebuddy2api)；[部署指南](docs/deployment.zh-CN.md#使用已发布镜像)同时覆盖上游与本分支镜像。
 - **本地移植层哪些开关默认打开？** 弹性项默认开（写超时重放、write 20s、TTFB 30s、传输连败 5 次/600s 出池）；保守项默认关（`CODEBUDDY2API_CREDIT_FLOOR=0`、`CODEBUDDY2API_ALERT_ENABLED=false`），`stats_tokens_rate_ttfb_ms` 为预留键、暂不生效。

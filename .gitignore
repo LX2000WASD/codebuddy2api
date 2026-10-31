@@ -57,3 +57,5 @@ backup-codebuddy-auth*/
 # playwright/浏览器验证产物
 .playwright-mcp/
 dashboard-public.png
+# One-click update staging directory
+/.update/

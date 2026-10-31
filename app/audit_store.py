@@ -16,7 +16,7 @@ import uuid
 from typing import Any
 from urllib.parse import quote
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _CLEANUP_BATCH = 128
 _CLEANUP_SECONDS = 0.05
 METRICS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
@@ -183,6 +183,32 @@ def safe_agent(value: Any) -> str | None:
         return None
     return None if _SECRET.search(cleaned) else cleaned
 
+
+def safe_diagnostic(value: Any, limit: int = 256) -> str | None:
+    """Short printable upstream diagnostic text; collapsed to one line and secret-checked."""
+    if not isinstance(value, str):
+        return None
+    cleaned = " ".join(value.split())[:limit]
+    if not cleaned or not cleaned.isprintable() or _SECRET.search(cleaned):
+        return None
+    return cleaned
+
+
+_UPSTREAM_BODY_LIMIT = 256 * 1024
+_JWT = re.compile(r"eyJ[A-Za-z0-9_-]{10,}")
+
+
+def safe_body(value: Any, limit: int = _UPSTREAM_BODY_LIMIT) -> str | None:
+    """Bounded upstream error JSON; redacted upstream, re-checked here for token leakage."""
+    if not isinstance(value, str) or not value:
+        return None
+    if len(value) > limit:
+        value = value[:limit] + "...[truncated]"
+    if _JWT.search(value):
+        return None
+    return value
+
+
 def number(value: Any) -> int | float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -198,12 +224,48 @@ def safe_attempt(value: Any) -> dict:
     result = {}
     for key in ("stage", "code", "error_code", "model", "upstream_model", "profile",
                 "credential", "usage_source", "outcome", "consent_source", "agreement_revision", "conversation_id", "request_id",
-                "attempt_id", "upstream_request_id", "session_source"):
+                "attempt_id", "upstream_request_id", "session_source", "upstream_code"):
         clean = safe_label(value.get(key))
+        if clean is not None:
+            result[key] = clean
+    for key in ("upstream_msg",):
+        clean = safe_diagnostic(value.get(key))
+        if clean is not None:
+            result[key] = clean
+    for key in ("upstream_body",):
+        clean = safe_body(value.get(key))
         if clean is not None:
             result[key] = clean
     for key in ("status_code", "duration_ms", "attempt", "retry_after", "max_attempts", "total_tokens",
                 "attempt_index", "dropped", "merged_runs", "merged_messages"):
+        clean = number(value.get(key))
+        if clean is not None:
+            result[key] = clean
+    return result
+
+
+CREDIT_CHANGES = ("income", "consume", "expire", "adjust")
+
+
+def safe_credit_change(value: Any) -> dict:
+    """Signed credit deltas plus the upstream package label; never account names or tokens."""
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for key in ("credential", "package_code"):
+        clean = safe_label(value.get(key))
+        if clean is not None:
+            result[key] = clean
+    source = value.get("source")
+    # Package labels are short upstream display text, often Chinese, so they cannot be identifiers.
+    if (isinstance(source, str) and 0 < len(source) <= 60 and source.isprintable()
+            and not _SECRET.search(source)):
+        result["source"] = source
+    delta = value.get("delta")
+    if not isinstance(delta, bool) and isinstance(delta, (int, float)) and math.isfinite(delta) \
+            and abs(delta) <= 1e12:
+        result["delta"] = delta
+    for key in ("balance", "expires_at"):
         clean = number(value.get(key))
         if clean is not None:
             result[key] = clean
@@ -253,7 +315,7 @@ class AuditStore:
     TRANSIENT_WINDOW_SECONDS = 3600
 
     def __init__(self, path, max_bytes=256 * 1024 * 1024, retention_days=30,
-                 preview_limit=8192):
+                 preview_limit=1536 * 1024):
         self._validate(max_bytes, retention_days, preview_limit)
         self.max_bytes, self.retention_days, self.preview_limit = max_bytes, retention_days, preview_limit
         self._lock = threading.Lock()
@@ -277,22 +339,23 @@ class AuditStore:
             self._db.execute("BEGIN IMMEDIATE")
             version = self._db.execute("PRAGMA user_version").fetchone()[0]
             tables = self._db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            if version not in (0, 1, 2, 3, SCHEMA_VERSION) or (version == 0 and tables):
+            if version not in (0, 1, 2, 3, 4, SCHEMA_VERSION) or (version == 0 and tables):
                 raise ValueError("unsupported audit schema")
             self._db.execute("CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), epoch INTEGER NOT NULL, detail_generation INTEGER NOT NULL, cleared_at REAL NOT NULL)")
             self._db.execute("INSERT OR IGNORE INTO state VALUES(1,0,0,0)")
             self._db.execute("CREATE TABLE IF NOT EXISTS ingest (id TEXT PRIMARY KEY, kind TEXT NOT NULL, created_at REAL NOT NULL)")
             self._db.execute("CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, started_at REAL NOT NULL, model TEXT, profile TEXT, credential TEXT, outcome TEXT, status_code INTEGER, payload TEXT NOT NULL, logical_bytes INTEGER NOT NULL)")
             self._db.execute("CREATE INDEX IF NOT EXISTS requests_time ON requests(started_at,id)")
-            self._db.execute("CREATE TABLE IF NOT EXISTS attempts (request_id TEXT NOT NULL, ordinal INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(request_id,ordinal))")
             self._db.execute("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, started_at REAL NOT NULL, kind TEXT NOT NULL, action TEXT, payload TEXT NOT NULL, logical_bytes INTEGER NOT NULL)")
             self._db.execute("CREATE INDEX IF NOT EXISTS events_time ON events(started_at,id)")
             self._init_accounting()
+            self._migrate_attempts()
             for table in ("stats_hourly", "stats_daily", "stats_totals"):
                 self._db.execute(f"CREATE TABLE IF NOT EXISTS {table} (bucket INTEGER NOT NULL, dimension TEXT NOT NULL, dimension_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(bucket,dimension,dimension_key))")
             self._migrate_ingest_time()
             self._migrate_client_ip()
             self._migrate_duration()
+            self._migrate_api_key()
             self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             self._epoch = self._db.execute("SELECT epoch FROM state").fetchone()[0]
             self._db.execute("COMMIT")
@@ -328,6 +391,23 @@ class AuditStore:
             self._db.execute("UPDATE requests SET duration_ms=json_extract(payload,'$.duration_ms')")
         self._db.execute("CREATE INDEX IF NOT EXISTS requests_duration ON requests(started_at,duration_ms)")
 
+    def _migrate_api_key(self):
+        columns = [row[1] for row in self._db.execute("PRAGMA table_info(requests)").fetchall()]
+        if "api_key" not in columns:
+            self._db.execute("ALTER TABLE requests ADD COLUMN api_key TEXT")
+        self._db.execute("CREATE INDEX IF NOT EXISTS requests_api_key ON requests(api_key, started_at)")
+
+    def _migrate_attempts(self):
+        # Attempts live only in the request payload; the per-row copy was never read.
+        if not self._db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='attempts'").fetchone():
+            return
+        # Recount without the duplicated attempts; audit_requests_update keeps detail_accounting in step.
+        self._db.execute("UPDATE requests SET logical_bytes=length(CAST(payload AS BLOB))+256")
+        # The old delete trigger cascades into the table dropped below.
+        self._db.execute("DROP TRIGGER IF EXISTS audit_requests_delete")
+        self._init_accounting()
+        self._db.execute("DROP TABLE attempts")
+
     def _open_read(self):
         """Fresh read-only WAL snapshot per call; None falls back to the write path."""
         try:
@@ -347,8 +427,7 @@ class AuditStore:
             self._db.execute("INSERT INTO detail_accounting SELECT 1,COALESCE((SELECT SUM(logical_bytes) FROM requests),0)+COALESCE((SELECT SUM(logical_bytes) FROM events),0),(SELECT COUNT(*) FROM requests),(SELECT COUNT(*) FROM events),(SELECT COUNT(*) FROM ingest),NULL")
         for table, counter in (("requests", "request_count"), ("events", "event_count")):
             self._db.execute(f"CREATE TRIGGER IF NOT EXISTS audit_{table}_insert AFTER INSERT ON {table} BEGIN UPDATE detail_accounting SET logical_bytes=logical_bytes+NEW.logical_bytes,{counter}={counter}+1 WHERE id=1; END")
-            cascade = "DELETE FROM attempts WHERE request_id=OLD.id;" if table == "requests" else ""
-            self._db.execute(f"CREATE TRIGGER IF NOT EXISTS audit_{table}_delete AFTER DELETE ON {table} BEGIN UPDATE detail_accounting SET logical_bytes=logical_bytes-OLD.logical_bytes,{counter}={counter}-1 WHERE id=1; {cascade} END")
+            self._db.execute(f"CREATE TRIGGER IF NOT EXISTS audit_{table}_delete AFTER DELETE ON {table} BEGIN UPDATE detail_accounting SET logical_bytes=logical_bytes-OLD.logical_bytes,{counter}={counter}-1 WHERE id=1; END")
             self._db.execute(f"CREATE TRIGGER IF NOT EXISTS audit_{table}_update AFTER UPDATE OF logical_bytes ON {table} BEGIN UPDATE detail_accounting SET logical_bytes=logical_bytes+NEW.logical_bytes-OLD.logical_bytes WHERE id=1; END")
         for operation, delta in (("INSERT", "+1"), ("DELETE", "-1")):
             self._db.execute(f"CREATE TRIGGER IF NOT EXISTS audit_ingest_{operation.lower()} AFTER {operation} ON ingest BEGIN UPDATE detail_accounting SET ingest_count=ingest_count{delta} WHERE id=1; END")
@@ -359,7 +438,7 @@ class AuditStore:
             raise ValueError("invalid max_bytes")
         if isinstance(retention_days, bool) or not isinstance(retention_days, int) or not 1 <= retention_days <= 36500:
             raise ValueError("invalid retention_days")
-        if isinstance(preview_limit, bool) or not isinstance(preview_limit, int) or not 0 <= preview_limit <= 65536:
+        if isinstance(preview_limit, bool) or not isinstance(preview_limit, int) or not 0 <= preview_limit <= 4 * 1024 * 1024:
             raise ValueError("invalid preview_limit")
 
     def _fault(self, exc, dropped=False):
@@ -524,7 +603,7 @@ class AuditStore:
         # Unknown model/profile/credential values get no bucket of their own: the global
         # row still counts the request, and an empty key would rank as "未识别模型".
         dimensions += [(key, value)
-                       for key in ("model", "profile", "credential")
+                       for key in ("model", "profile", "credential", "api_key")
                        if (value := record.get("public_model" if key == "model" else key))]
         for table, seconds in (("stats_hourly", 3600), ("stats_daily", 86400), ("stats_totals", 0)):
             bucket = int(record["started_at"] // seconds) * seconds if seconds else 0
@@ -537,6 +616,10 @@ class AuditStore:
         result = {key: safe_label(source.get(key)) for key in
                   ("upstream_model", "profile", "credential", "protocol", "error_code", "usage_source")}
         result["client_ip"] = safe_label(source.get("client_ip"))
+        api_key = source.get("api_key")
+        result["api_key"] = api_key if isinstance(api_key, str) and (
+            re.fullmatch(r"k_[A-Za-z0-9_-]{12}", api_key)
+            or api_key in ("admin-external", "anonymous")) else None
         result["user_agent"] = safe_agent(source.get("user_agent"))
         result["stream_mode"] = (source.get("stream_mode")
                                  if source.get("stream_mode") in ("compatible", "realtime") else None)
@@ -592,13 +675,10 @@ class AuditStore:
             if keep:
                 payload = json.dumps(data, separators=(",", ":"))
                 db.execute(
-                    "INSERT INTO requests(id,started_at,model,profile,credential,outcome,status_code,payload,logical_bytes,client_ip,duration_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO requests(id,started_at,model,profile,credential,outcome,status_code,payload,logical_bytes,client_ip,duration_ms,api_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (data["id"], data["started_at"], data["model"], data["profile"], data["credential"],
                      data["outcome"], data["status_code"], payload,
-                     len(payload.encode()) + sum(len(json.dumps(a).encode()) + 32 for a in data["attempts"]) + 256,
-                     data["client_ip"], data["duration_ms"]))
-                for i, attempt in enumerate(data["attempts"]):
-                    db.execute("INSERT INTO attempts VALUES(?,?,?)", (data["id"], i, json.dumps(attempt)))
+                     len(payload.encode()) + 256, data["client_ip"], data["duration_ms"], data["api_key"]))
             self._prune()
             return {"ok": True, "recorded": True, "details": bool(keep and db.execute("SELECT 1 FROM requests WHERE id=?", (data["id"],)).fetchone())}
         return self._run(commit, {"ok": False, "recorded": False, "reason": "storage_failure"}, write=True, dropped=True)
@@ -669,7 +749,7 @@ class AuditStore:
         self._db.execute("UPDATE detail_accounting SET cleanup_target=? WHERE id=1", (target,))
 
     def event(self, kind, action, details=None):
-        if kind not in ("runtime", "admin"):
+        if kind not in ("runtime", "admin", "credit"):
             raise ValueError("invalid event kind")
         started_at = time.time()
         def commit(db):
@@ -684,7 +764,8 @@ class AuditStore:
                     source.get("detail_generation", state["detail_generation"]) != state["detail_generation"]):
                 return {"ok": True, "recorded": False, "reason": "details_cleared"}
             data = {"id": event_id, "kind": kind, "action": safe_label(action),
-                    "started_at": started_at, "details": safe_attempt(source)}
+                    "started_at": started_at,
+                    "details": safe_credit_change(source) if kind == "credit" else safe_attempt(source)}
             payload = json.dumps(data)
             db.execute("INSERT INTO events VALUES(?,?,?,?,?,?)", (event_id, data["started_at"], kind, data["action"], payload, len(payload.encode()) + 128))
             self._prune()
@@ -692,7 +773,7 @@ class AuditStore:
         return self._run(commit, {"ok": False, "recorded": False}, write=True, dropped=True)
 
     def list_records(self, kind="request", limit=50, cursor=None, **filters):
-        if kind not in ("request", "runtime", "admin"):
+        if kind not in ("request", "runtime", "admin", "credit"):
             raise ValueError("invalid record kind")
         limit = max(1, min(int(limit), 200))
         # Expiry cleanup is incremental, but expired details are never visible.
@@ -711,7 +792,7 @@ class AuditStore:
             clauses.append("(started_at<? OR (started_at=? AND id<?))")
             params.extend((stamp, stamp, record_id))
         if kind == "request":
-            for key in ("model", "profile", "credential", "outcome", "status_code", "client_ip"):
+            for key in ("model", "profile", "credential", "outcome", "status_code", "client_ip", "api_key"):
                 value = filters.get(key)
                 if value is not None and value != "":
                     clauses.append(f"{key}=?")
@@ -721,6 +802,16 @@ class AuditStore:
                 column = "outcome" if status in ("success", "error", "cancelled") else "status_code"
                 clauses.append(f"{column}=?")
                 params.append(status)
+        if kind == "credit":
+            if filters.get("credential"):
+                clauses.append("json_extract(payload,'$.details.credential')=?")
+                params.append(filters["credential"])
+            change = filters.get("type")
+            if change:
+                if change not in CREDIT_CHANGES:
+                    raise ValueError("invalid credit change type")
+                clauses.append("action=?")
+                params.append("credit." + change)
         for key, op in (("since", ">="), ("until", "<=")):
             if filters.get(key) is not None:
                 clauses.append(f"started_at{op}?")
@@ -963,6 +1054,51 @@ class AuditStore:
             return out
         return self._read_run(fetch, {})
 
+    def api_key_stats(self, now=None):
+        """Return approximate rolling-24-hour aggregates keyed by API key id."""
+        now = time.time() if now is None else float(now)
+        start = int(now // 3600) * 3600 - 23 * 3600
+
+        def fetch(db):
+            result = {}
+            rows = db.execute(
+                "SELECT dimension_key,payload FROM stats_hourly "
+                "WHERE dimension='api_key' AND bucket>=?", (start,)).fetchall()
+            for row in rows:
+                target = result.setdefault(row[0], {"requests": 0, "success": 0, "error": 0,
+                                                     "total_tokens": None, "credit": None})
+                stats = json.loads(row[1])
+                for key in ("requests", "success", "error"):
+                    target[key] += stats.get(key) or 0
+                for key in ("total_tokens", "credit"):
+                    value = stats.get(key)
+                    if isinstance(value, (int, float)):
+                        target[key] = (target[key] or 0) + value
+            return {"degraded": False, "items": result}
+
+        return self._read_run(fetch, {"degraded": True, "items": {}})
+
+    def credit_samples(self, since):
+        """Per-request upstream charges with their token counts, oldest first.
+
+        Only requests whose upstream usage reported a credit figure are returned; the
+        model is the upstream one, since billing follows what was actually sent.
+        """
+        def fetch(db):
+            rows = db.execute(
+                "SELECT started_at, profile, COALESCE(json_extract(payload,'$.upstream_model'), model) AS model, "
+                "json_extract(payload,'$.credit') AS credit, "
+                "COALESCE(json_extract(payload,'$.input_tokens'),0) AS input_tokens, "
+                "COALESCE(json_extract(payload,'$.cache_read_tokens'),0) AS cache_read_tokens, "
+                "COALESCE(json_extract(payload,'$.output_tokens'),0) AS output_tokens "
+                "FROM requests WHERE started_at>=? AND json_extract(payload,'$.credit') IS NOT NULL "
+                "AND profile IS NOT NULL "
+                # Probes are logged too, but their calibrated samples come from the probe table.
+                "AND COALESCE(json_extract(payload,'$.protocol'),'')!='rate_probe' "
+                "ORDER BY started_at", (since,)).fetchall()
+            return [dict(row) for row in rows if row["model"]]
+        return self._read_run(fetch, [])
+
     def storage(self):
         # Opening the storage/dashboard page keeps incremental cleanup moving
         # with the same bounded write slice; heavy scans stay read-only.
@@ -1002,7 +1138,7 @@ class AuditStore:
         if scope not in ("details", "all"):
             raise ValueError("invalid clear scope")
         def commit(db):
-            for table in ("requests", "attempts", "events"):
+            for table in ("requests", "events"):
                 db.execute(f"DELETE FROM {table}")
             db.execute("UPDATE detail_accounting SET cleanup_target=NULL WHERE id=1")
             db.execute("UPDATE state SET detail_generation=detail_generation+1,cleared_at=? WHERE id=1", (time.time(),))
@@ -1070,7 +1206,7 @@ class AuditStore:
                     last = (0.0, "")
                     while True:
                         rows = step(lambda last=last: self._db.execute(
-                            "SELECT id,started_at,model,profile,credential,outcome,status_code,payload,client_ip "
+                            "SELECT id,started_at,model,profile,credential,outcome,status_code,payload,client_ip,api_key "
                             "FROM requests WHERE started_at<? AND (started_at,id)>(?,?) "
                             "ORDER BY started_at,id LIMIT 2000",
                             (cutoff, *last)).fetchall())
@@ -1080,7 +1216,8 @@ class AuditStore:
                             handle.write(json.dumps(
                                 {"kind": "request", "id": row[0], "started_at": row[1], "model": row[2],
                                  "profile": row[3], "credential": row[4], "outcome": row[5],
-                                 "status_code": row[6], "payload": json.loads(row[7]), "client_ip": row[8]},
+                                 "status_code": row[6], "payload": json.loads(row[7]), "client_ip": row[8],
+                                 "api_key": row[9]},
                                 ensure_ascii=False) + "\n")
                             request_ids.append(row[0])
                         last = (rows[-1][1], rows[-1][0])

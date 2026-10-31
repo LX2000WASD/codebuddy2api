@@ -5,10 +5,16 @@ import hashlib
 import json
 import secrets
 import threading
+import time
 import uuid
 
 
-PATHS = {"/v1/chat/completions": "chat", "/v1/responses": "responses", "/v1/messages": "messages"}
+# Tracked inference entrypoints: /v1/messages/count_tokens stays excluded because it
+# performs token estimation only and must not claim an upstream session.
+PATHS = {"/v1/chat/completions": "chat", "/v1/responses": "responses", "/v1/messages": "messages",
+         "/v1/search": "search", "/v1/fetch": "fetch", "/v1/mcp": "mcp",
+         "/v1/images/generations": "images", "/v1/images/edits": "images", "/v1/videos": "videos",
+         "/v1/embeddings": "embeddings", "/v1/rerank": "rerank"}
 _SCOPE_KEY = "codebuddy.request_context"
 _current = ContextVar("request_context", default=None)
 
@@ -58,8 +64,63 @@ def _content_parts(content):
 @dataclass(frozen=True)
 class Attempt:
     id: str
+    request_id: str
+    trace_id: str
     index: int
     span: str
+
+
+_WORKBUDDY_PROFILES = frozenset({"cn-work", "intl-work"})
+_UUID_TIME_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
+# The 48-bit time field must decode to a plausible recent instant: the shipped clients emit
+# UUIDv7 identifiers timestamped at the operation moment. Without a persisted first-seen
+# clock the base is this process's start, so one session keeps one identifier for the life of
+# the process. Persisting the first-seen instant is a follow-up.
+_UUID_TIME_BASE_MS = int(time.time() * 1000)
+
+
+def _uuid_text(value):
+    return str(uuid.UUID(hex=value)) if isinstance(value, str) and len(value) == 32 else str(value)
+
+
+def _stable_uuid7(parts):
+    """Derive a stable UUIDv7-shaped identifier timestamped within the last week."""
+    raw = bytearray.fromhex(_digest(parts)[:32])
+    timestamp = _UUID_TIME_BASE_MS - int.from_bytes(raw[:8], "big") % _UUID_TIME_WINDOW_MS
+    raw[:6] = timestamp.to_bytes(6, "big")
+    raw[6] = (raw[6] & 0x0F) | 0x70
+    raw[8] = (raw[8] & 0x3F) | 0x80
+    return str(uuid.UUID(bytes=bytes(raw)))
+
+
+def session_conversation_id(profile, account, session_key):
+    parts = [profile, account, session_key]
+    return _stable_uuid7(parts) if profile == "cn-work" else str(uuid.UUID(hex=_digest(parts)[:32]))
+
+
+def build_attempt_headers(headers, profile, *, root, message_id, request_id, trace_id, span, parent,
+                          conversation_id=None):
+    """Build one upstream attempt with profile-specific ID relationships."""
+    if profile in _WORKBUDDY_PROFILES:
+        message_id, request_id = _uuid_text(message_id), _uuid_text(request_id)
+    else:
+        request_id, trace_id = message_id, root
+    outgoing = {**headers, "X-Request-ID": request_id, "X-Conversation-Message-ID": message_id,
+                "X-Conversation-Request-ID": root, "X-Root-Request-ID": root, "X-Trace-ID": trace_id,
+                "traceparent": f"00-{trace_id}-{span}-01", "b3": f"{trace_id}-{span}-1-{parent}",
+                "X-B3-TraceId": trace_id, "X-B3-SpanId": span, "X-B3-ParentSpanId": parent,
+                "X-B3-Sampled": "1"}
+    if profile == "cn-work":
+        outgoing["X-Agent-Runtime"] = "local-agent"
+        if conversation_id:
+            outgoing["X-Root-Request-ID"] = _stable_uuid7(["root", conversation_id]).replace("-", "")
+            outgoing["acp-connection-id"] = _stable_uuid7(["acp", conversation_id])
+            # The shipped clients always send exactly these four members.
+            outgoing["baggage"] = (
+                f"buddyId=,buddyName=,codebuddy.session_id={conversation_id},"
+                f"codebuddy.conversation_request_id={root}"
+            )
+    return outgoing
 
 
 class RequestContext:
@@ -110,23 +171,25 @@ class RequestContext:
         self._bound = True
 
     def conversation_id(self, profile, account):
-        return str(uuid.UUID(hex=_digest([profile, account, self.session_key])[:32]))
+        return session_conversation_id(profile, account, self.session_key)
 
     def start_attempt(self):
         with self._lock:
             self._attempt_index += 1
-            self.attempt = Attempt(uuid.uuid4().hex, self._attempt_index, secrets.token_hex(8))
+            self.attempt = Attempt(id=uuid.uuid4().hex, request_id=uuid.uuid4().hex,
+                                   trace_id=uuid.uuid4().hex, index=self._attempt_index,
+                                   span=secrets.token_hex(8))
             return self.attempt
 
-    def attempt_headers(self, headers, attempt):
+    def attempt_headers(self, headers, attempt, profile=None):
         if not self.scoped:
             return dict(headers)
-        root, span = self.request_id, attempt.span
-        return {**headers, "X-Request-ID": attempt.id, "X-Conversation-Message-ID": attempt.id,
-                "X-Conversation-Request-ID": root, "X-Root-Request-ID": root, "X-Trace-ID": root,
-                "traceparent": f"00-{root}-{span}-01", "b3": f"{root}-{span}-1-{self._root_span}",
-                "X-B3-TraceId": root, "X-B3-SpanId": span, "X-B3-ParentSpanId": self._root_span,
-                "X-B3-Sampled": "1"}
+        return build_attempt_headers(
+            headers, profile, root=self.request_id, message_id=attempt.id,
+            request_id=attempt.request_id, trace_id=attempt.trace_id,
+            span=attempt.span, parent=self._root_span,
+            conversation_id=headers.get("X-Conversation-ID"),
+        )
 
     def attempt_metadata(self):
         data = {"request_id": self.request_id, "session_source": self.session_source}

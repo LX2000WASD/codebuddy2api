@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { choose } from "./select";
 const model = {
   id: "mock-model",
   public_id: "mock-model",
@@ -33,7 +34,11 @@ const request = {
   duration_ms: 1520,
   total_tokens: 420,
   credit: 0,
-  attempts: [{ outcome: "success", credential: "mock-account", status_code: 200 }],
+  attempts: [
+    { outcome: "success", credential: "mock-account", status_code: 200 },
+    { stage: "server_tool", model: "web-search", outcome: "success", duration_ms: 812.5 },
+    { stage: "server_tool", model: "web-fetch", outcome: "error", duration_ms: 40 },
+  ],
 };
 const settings = {
   revision: 1,
@@ -320,13 +325,13 @@ test("international OAuth choices send distinct sites and show the selected offi
   await page.goto("/dashboard/credentials");
   await page.getByRole("button", { name: "添加凭证" }).click();
   const select = page.getByLabel("登录站点");
-  await expect(select).toHaveValue("cn");
+  await expect(select).toHaveText("中国大陆 · CN");
   for (const [site, label, host] of [
     ["intl", "国际 · WorkBuddy", "www.workbuddy.ai"],
     ["intl-codebuddy", "国际 · CodeBuddy", "www.codebuddy.ai"],
   ]) {
-    await select.selectOption({ label });
-    await expect(select).toHaveValue(site);
+    await choose(select, site);
+    await expect(select).toHaveText(label);
     await page.getByRole("button", { name: "发起 OAuth 授权" }).click();
     await expect(page.getByRole("link", { name: /打开官方授权页面/ })).toHaveAttribute(
       "href",
@@ -341,8 +346,10 @@ test("international OAuth choices send distinct sites and show the selected offi
 test("log tabs, cursor, details and guarded destructive clear", async ({ page }) => {
   const mock = await mockAPI(page);
   await page.goto("/dashboard/logs");
+  await expect(page.getByText("联网 2", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "查看详情" }).click();
   await expect(page.getByRole("heading", { name: "实际尝试", exact: true })).toBeVisible();
+  await expect(page.getByRole("group", { name: "联网工具汇总" })).toContainText("852.5 ms");
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "下一页" }).click();
   await expect(page.getByText("第 2 页", { exact: true })).toBeVisible();
@@ -350,14 +357,14 @@ test("log tabs, cursor, details and guarded destructive clear", async ({ page })
   await expect(page.getByText("mock.operation")).toBeVisible();
   await page.getByRole("tab", { name: "管理操作" }).click();
   await page.getByRole("button", { name: "清理日志" }).click();
-  await page.getByLabel("清理范围").selectOption("all");
+  await choose(page.getByLabel("清理范围"), "all");
   await expect(page.getByRole("button", { name: "确认不可撤销的清理" })).toBeDisabled();
   await page.getByLabel("输入“清空全部日志与统计”").fill("清空全部日志与统计");
-  await page.getByLabel("当前 API key").fill("mock-revalidation-key");
+  await page.getByLabel("当前管理密码").fill("mock-revalidation-key");
   await page.getByRole("button", { name: "确认不可撤销的清理" }).click();
   await expect.poll(() => mock.calls.some((call) => call.path === "/admin/logs/clear")).toBe(true);
 });
-test("anonymous login never persists API key and API failure is not zero-data success", async ({
+test("anonymous login never persists account credentials and API failure is not zero-data success", async ({
   page,
 }) => {
   await mockAPI(page, false);
@@ -365,7 +372,8 @@ test("anonymous login never persists API key and API failure is not zero-data su
   await expect(page).toHaveURL(/\/dashboard\/login$/);
   await expect(page.getByText("不会在浏览器中保存 API key。", { exact: true })).toHaveCount(0);
   await expect(page.locator("p")).toHaveCount(0);
-  await page.getByLabel("API key", { exact: true }).fill("mock-login-key");
+  await page.getByLabel("用户名", { exact: true }).fill("admin");
+  await page.getByLabel("密码", { exact: true }).fill("mock-login-key");
   await page.getByRole("button", { name: "进入工作台" }).click();
   await expect(page).toHaveURL(/\/dashboard$/);
   expect(

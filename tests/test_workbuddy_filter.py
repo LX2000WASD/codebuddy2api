@@ -437,6 +437,28 @@ class EndpointFilterTests(unittest.TestCase):
                 observability._current.reset(token)
 
 
+    def test_channel_identity_guard_is_independent_of_template_switch(self):
+        source = "You are an AI agent powered by DeepSeek Harness."
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled), patch.dict(converter.CONFIG, {
+                "desensitize": enabled, "no_compact": True, "keep_tool_metadata": False,
+                "identity_normalize": "running_on",
+            }):
+                body = {"model": "auto", "messages": [
+                    {"role": "system", "content": source},
+                    {"role": "assistant", "content": source},
+                    {"role": "user", "content": source},
+                ]}
+                out = converter._chat_body_desensitize(body)
+                # The assistant copy is the channel guard's: the WorkBuddy persona.
+                self.assertEqual(out["messages"][1]["content"], "You are WorkBuddy, a powerful AI assistant.")
+                # The system copy is the identity switch's when desensitizing is on.
+                identity = out["messages"][0]["content"].replace("\u200b", "")
+                self.assertEqual(identity,
+                                 "You are WorkBuddy, a powerful AI assistant." if not enabled
+                                 else "You are an AI agent running on DeepSeek Harness.")
+                self.assertEqual(out["messages"][2]["content"], source)
+
     def test_short_template_is_replayed_unchanged_for_filter_retry(self):
         """A minimal system prompt must not grow a template between attempts.
 

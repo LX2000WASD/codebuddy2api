@@ -12,10 +12,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import converter
+from app import admin_account
 from app.admin_api import install_admin
 from app.audit_store import AuditStore
 from app.control_store import ControlStore
 from app.gateway_management import Management, install_pages
+from tests.admin_session import credentials, login as session_login
 from app.model_policy import PolicyScopeMiddleware, default_rule
 from app.observability import AuditMiddleware
 from tests import test_region_routing as fixtures
@@ -25,6 +27,7 @@ class ManagedRoutingTests(fixtures.RegionRoutingTests):
     def setUp(self):
         super().setUp()
         self.control = ControlStore(self.root / "control.sqlite3")
+        admin_account.save(self.control, admin_account.new("admin", "synthetic-management-key", "user"))
         self.audit = AuditStore(self.root / "logs.sqlite3")
         self.addCleanup(self.control.close)
         self.addCleanup(self.audit.close)
@@ -43,11 +46,26 @@ class ManagedRoutingTests(fixtures.RegionRoutingTests):
         self.client = self.enterContext(TestClient(application, headers={"Authorization": "Bearer synthetic-management-key"},
                                                   base_url="https://testserver"))
 
+        self.client.headers.update(session_login(
+            self.client, origin="https://testserver", password="synthetic-management-key"))
     def policy(self, source="shared-model", **kwargs):
         rule = {**default_rule(source), **kwargs}
         self.control.update_model(source, rule, self.control.snapshot()["revision"],
                                   known_models=[item["id"] for item in self.management.admin_model_inventory()])
         return rule
+
+    def test_media_models_share_admin_catalog_and_media_preview(self):
+        self.configure(profiles=("cn-cli",))
+        self.account_catalogs({"cn-cli": []}, serves={"cn-cli": []})
+        rows = self.client.get("/admin/models").json()["models"]
+        media = next(row for row in rows if row["id"] == "hy-image-3.5")
+        self.assertEqual(media["media_kinds"], ["image", "edit"])
+        self.assertTrue(media["available"])
+        preview = self.client.post("/admin/models/hy-image-3.5/preview", json={})
+        self.assertEqual(preview.status_code, 200, preview.text)
+        self.assertEqual(len(preview.json()["candidates"]), 1)
+        public = {row["id"]: row for row in self.client.get("/v1/models").json()["data"]}
+        self.assertEqual(public["hy-image-3.5"]["media_kinds"], ["image", "edit"])
 
     def test_model_metadata_respects_alias_and_draft_scope_without_exposing_identity(self):
         tables = {profile: [{**fixtures.model('shared-model', 'x0.00'), 'supportsImages': profile == 'cn-cli',
@@ -85,7 +103,7 @@ class ManagedRoutingTests(fixtures.RegionRoutingTests):
         self.post_ok('chat/completions', body, {'intl-work'})
         data = self.client.get('/admin/models').json()
         self.assertFalse(data['model_capability_guard'])
-        self.assertEqual(data['models'][0]['capabilities']['images'], 'unsupported')
+        self.assertEqual(next(row for row in data['models'] if row['id'] == 'shared-model')['capabilities']['images'], 'unsupported')
 
 
     def test_managed_alias_all_protocols_strict_binding_and_response_names(self):
@@ -241,7 +259,7 @@ class ManagedRoutingTests(fixtures.RegionRoutingTests):
         denied = self.client.post("/admin/logs/clear", json={"scope": "all"})
         self.assertEqual(denied.status_code, 403)
         done = self.client.post("/admin/logs/clear", json={"scope": "all", "confirmation": "清空全部日志与统计",
-                                                         "api_key": "synthetic-management-key"})
+                                                         "password": "synthetic-management-key"})
         self.assertEqual(done.status_code, 200, done.text)
         self.assertEqual(self.audit.dashboard(1)["summary"]["requests"], 0)
         self.assertEqual(len(list(self.root.glob("*.info"))), 4)
@@ -265,7 +283,9 @@ class ManagedRoutingTests(fixtures.RegionRoutingTests):
                      # the redirect can run.
                      "/dashboard/models", "/dashboard/credentials", "/dashboard/logs",
                      "/dashboard/settings", "/dashboard/storage", "/dashboard/trends",
-                     "/dashboard/diagnostics", "/dashboard/alerts", "/dashboard/credits"):
+                     "/dashboard/diagnostics", "/dashboard/alerts", "/dashboard/credits",
+                     # Upstream v1.5.0 pages: API keys, media library and updates.
+                     "/dashboard/keys", "/dashboard/media", "/dashboard/updates"):
             response = self.client.get(path, follow_redirects=False)
             self.assertEqual(response.status_code, 200, f"{path} -> {response.status_code}")
             self.assertIn("isolated management shell", response.text)
@@ -320,7 +340,7 @@ class ManagedRoutingTests(fixtures.RegionRoutingTests):
     def test_managed_cookie_oauth_poll_without_browser_origin_still_requires_csrf(self):
         from unittest.mock import Mock
         origin = {"Origin": "https://testserver"}
-        login = self.client.post("/admin/session", json={"api_key": "synthetic-management-key"}, headers=origin)
+        login = self.client.post("/admin/session", json=credentials("synthetic-management-key"), headers=origin)
         csrf = login.json()["csrf_token"]
         self.client.headers.pop("authorization")
         manager = Mock()
