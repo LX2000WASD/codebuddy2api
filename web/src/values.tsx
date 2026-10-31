@@ -294,6 +294,7 @@ const eventActions: Record<string, MessageKey> = {
   // Runtime log components are emitted as their own action codes (converter._log).
   travel: "logs.action.travel",
   "credential.paused": "logs.action.credential_paused",
+  "credential.restricted_probe": "logs.action.credential_restricted_probe",
   "oauth.saved": "logs.action.oauth_saved",
   "settings.updated": "logs.action.settings_updated",
   "model.created": "logs.action.model_created",

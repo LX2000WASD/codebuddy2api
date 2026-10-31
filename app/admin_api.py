@@ -758,6 +758,19 @@ def install_admin(app, config, gateway):
             return JSONResponse({"id": identity, field: value, "revision": control.snapshot()["revision"]})
         return await run_in_threadpool(apply)
 
+    @route("POST", "/admin/credentials/{id}/restricted-probe")
+    async def credential_restricted_probe(request):
+        """Send one real chat request on a restricted account to ask if upstream lifted it."""
+        identity = request.path_params["id"]
+        # The probe module records one audit event per attempt, including this manual one, so
+        # the probe count and the release count stay answerable from one place.
+        result = await run_in_threadpool(gateway.admin_probe_restricted_credential, identity)
+        return JSONResponse(result)
+
+    @route("GET", "/admin/restricted-probes")
+    async def restricted_probes(request):
+        return JSONResponse(gateway.admin_restricted_probes())
+
     @route("GET", "/admin/credentials/{id}/growth-tasks")
     async def growth_tasks_get(request):
         identity = request.path_params["id"]

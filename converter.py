@@ -42,9 +42,7 @@ try:
     from app.desensitize import (apply_system_prompt_mode, desensitize_body,
                                  desensitize_channel_body, system_as_user_body)
 except ImportError:  # Disable desensitization when its module is unavailable.
-    def desensitize_body(body, roles=("system",), desensitize_harness_user=False,
-                         desensitize_tools=False, compact_harness=False,
-                         strip_tool_metadata=False):
+    def desensitize_body(body, roles=("system",), compact_harness=False, identity_mode="off"):
         return body
 
     def desensitize_channel_body(body):
@@ -133,9 +131,10 @@ from app.site_routing import (DOMESTIC, INTERNATIONAL, PROFILE_ENDPOINTS, site_f
                               paid_embedding_url_for_headers, rerank_url_for_headers)
 from app import dsml, mcp_server, server_tools, web_fetch, web_search, media_generation, media_store, embeddings, rerank
 from app.inbound_limits import anthropic_path
-from app.client_profiles import (CLI_VERSION, CLI_USER_AGENT, credential_headers, credential_refresh_headers,
-                                 catalog_cache_key, account_key, canonical_uid, enterprise_id_of, identity_email,
-                                 is_enterprise_account, normalize_uid)
+from app.client_profiles import (CLI_VERSION, CLI_USER_AGENT, chat_headers, credential_headers,
+                                 credential_refresh_headers, catalog_cache_key, account_key, canonical_uid,
+                                 enterprise_id_of, identity_email, is_enterprise_account, normalize_uid)
+from app import restricted_probe
 try:
     from app import credits as credits_mod
 except ImportError:  # Disable credit maintenance when its module is unavailable.
@@ -3671,7 +3670,7 @@ CONFIG: dict = {"api_key": "", "cred": None, "log_path": None, "ledger": None,
                 "stream_tools": False,   # Stream tool-bearing requests byte-by-byte (no aggregate retry)
                 "coalesce_reasoning": True,  # Merge reasoning into one client block (upstream v1.3.2); False streams it live
                 "thinking_pin_models": ",".join(THINKING_PIN_MODELS),  # Reasoning→thinking pin substrings
-                "desensitize": False, "no_compact": False, "keep_tool_metadata": False,  # None prices use module defaults.
+                "desensitize": False, "no_compact": False,  # None prices use module defaults.
                 "prompt_mode": "empty",
                 "prompt_cache_key_enabled": True,  # Generate an account-isolated upstream cache key.
                 # Fusion transport-failure demotion and credit floor: same defaults as the
@@ -3892,6 +3891,9 @@ def _route_chat(payload, body, rid, *, tried=()):
             _guard_request_size(body)
         if merged_runs:
             observe_attempt("intl_image_merge", merged_runs=merged_runs, merged_messages=merged_messages)
+        # Chat-only header scope (10-上游增量 §5-h): the two chat headers belong to this call,
+        # not to the credential's header set, so refresh/catalog/billing never carry them.
+        headers = chat_headers(headers)
         url = chat_url_for_headers(headers)
         observe_route(public_model=payload.get("model", "auto"), upstream_model=routed_model,
                       profile=profile, credential=account_key(profile, headers.get("X-User-Id"),
@@ -4004,6 +4006,24 @@ def admin_set_credential_paused(identity: str, paused: bool) -> dict:
         raise HTTPException(status_code=404, detail={"error": {"message": "凭证不存在"}}) from None
     invalidate_model_table()
     return {"id": identity, "paused": paused}
+
+
+def admin_probe_restricted_credential(identity: str) -> dict:
+    """Probe one restricted account now, from the management surface.
+
+    The manual path answers "did upstream lift it?" on demand and is independent of the
+    automatic switch and of the per-account floor: an operator who asks is the reason to
+    ask. It still sends exactly one request and never retries.
+    """
+    result = restricted_probe.probe_now(sys.modules[__name__], identity)
+    if result.get("message") == "账号不存在":
+        raise HTTPException(status_code=404, detail={"error": {"message": "凭证不存在"}})
+    return result
+
+
+def admin_restricted_probes() -> dict:
+    """Current probe schedule and the last outcome per restricted account."""
+    return restricted_probe.view(CONFIG)
 
 
 class CredentialConflictError(CredentialFileError):
@@ -7553,10 +7573,7 @@ def _chat_body_desensitize(body: dict, *, force_compact: bool = False) -> dict:
         body = desensitize_body(
             body,
             roles=("system", "developer"),
-            desensitize_harness_user=True,
-            desensitize_tools=True,
             compact_harness=bool(force_compact),
-            strip_tool_metadata=not CONFIG.get("keep_tool_metadata", False),
             identity_mode=mode,
         )
     if mode == "off":
@@ -8520,16 +8537,13 @@ def main():
     ap.add_argument("--log", default=None, metavar="PATH",
                     help="已停用：日志统一保存到数据目录中的 logs.sqlite3")
     ap.add_argument("--desensitize", action="store_true",
-                    help="适配固定 CLI 模板、压缩运行时提示并零宽脱敏关键词。默认关闭。")
+                    help="适配固定 CLI 模板并裁剪运行时元数据（不再插入零宽字符）。默认关闭。")
     ap.add_argument("--no-compact", action="store_true",
                     help="配合 --desensitize 保留主要行为指令，仍适配固定模板并裁剪运行时元数据；"
                          "非流式纯审核拒绝最多压缩兜底一次。")
     ap.add_argument("--prompt-mode", choices=("empty", "prepend"),
                     default=os.environ.get("CODEBUDDY2API_PROMPT_MODE", "empty"),
                     help="系统提示词：empty 不附加网关默认提示词（默认）；prepend 在最前面插入对应后端的精简官方提示词")
-    ap.add_argument("--keep-tool-metadata", type=_boolean_arg, nargs="?", const=True,
-                    default=os.environ.get("CODEBUDDY2API_KEEP_TOOL_METADATA", "false"),
-                    help="保留工具描述及参数 description/title；启用脱敏时仍处理描述文本，默认 false")
     ap.add_argument("--responses-projection-mode", choices=PROJECTION_MODES,
                     default=os.environ.get("CODEBUDDY2API_RESPONSES_PROJECTION_MODE", "balanced"),
                     help="Responses 上下文：balanced 仅改写有固定摘要的已识别 harness，其余文本原样保留；passthrough 完全关闭投影；默认 balanced")
@@ -8793,6 +8807,10 @@ def main():
     if credits_mod is not None:
         threading.Thread(target=_housekeeper_loop, args=(CONFIG["cred_pool"], ledger),
                          daemon=True, name="cred-housekeeper").start()
+    # Restricted accounts have no expiry, so this loop is their only automatic way back. It is
+    # a no-op while the switch is off, and probes at most one account per tick.
+    threading.Thread(target=restricted_probe.loop, args=(sys.modules[__name__],),
+                     daemon=True, name="restricted-probe").start()
     if (updater := CONFIG.get("updater")) is not None:
         threading.Thread(target=updater.check_loop, daemon=True, name="update-check").start()
     if (backups := CONFIG.get("backups")) is not None:
@@ -8825,7 +8843,7 @@ def main():
     if CONFIG["log_path"]:
         sys.stderr.write(f"   日志      : {CONFIG['log_path']}\n")
     if args.desensitize:
-        mode = "零宽脱敏 + 保留全文" if args.no_compact else "零宽脱敏 + 压缩摘要"
+        mode = "模板适配 + 保留全文" if args.no_compact else "模板适配 + 压缩摘要"
         sys.stderr.write(f"   脱敏      : 已启用（{mode}）\n")
     sys.stderr.write("按 Ctrl+C 退出。\n\n")
 
