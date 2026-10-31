@@ -726,8 +726,8 @@ def fetch_personal_model_scopes(access_token: str, user_agent: str = "", *, doma
     auth = {"accessToken": access_token, "domain": domain}
     profile = profile_for_auth(auth)
     headers = credential_headers(auth, {"uid": uid})
+    # A catalog read is an RPC call, and the desktop client keeps X-Requested-With for chat.
     headers.update({"Accept": "application/json, text/plain, */*",
-                    "X-Requested-With": "XMLHttpRequest",
                     "X-Request-ID": secrets.token_hex(16)})
     if user_agent:
         headers["User-Agent"] = user_agent

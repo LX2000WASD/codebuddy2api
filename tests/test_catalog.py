@@ -231,7 +231,11 @@ class CatalogSelectionTests(unittest.TestCase):
                     self.assertEqual(headers["x-user-id"], "user")
                     self.assertEqual(headers["x-enterprise-id"], "enterprise")
                     self.assertEqual(headers["x-tenant-id"], "enterprise")
-                    for name, value in identity_headers(profile).items():
+                    # The catalog call carries the identity block for this tenant, so the
+                    # enterprise account resolves X-Private-Data to "false" on every build.
+                    expected_identity = identity_headers(
+                        profile, {"uid": "user", "enterpriseId": "enterprise"})
+                    for name, value in expected_identity.items():
                         self.assertEqual(headers[name], value)
                     if profile.endswith("cli"):
                         self.assertEqual(headers["x-client-platform"], "cli")

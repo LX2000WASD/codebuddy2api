@@ -160,16 +160,22 @@ class RegionRoutingTests(unittest.TestCase):
         self.assertEqual(request.url.host, HOSTS[profile])
         self.assertEqual(request.headers["x-domain"], self.credentials[uid]["auth"]["domain"])
         self.assertEqual(request.headers["authorization"], "Bearer synthetic-access-" + uid)
-        expected_private = "true" if request.headers.get("X-Enterprise-Id") else "false"
-        if profile in ("cn-cli", "cn-work"):
-            self.assertEqual(request.headers["X-Private-Data"], expected_private, profile)
-        expected_identity = client_profiles.identity_headers(profile)
-        if profile == "cn-work":
-            expected_identity["X-Private-Data"] = expected_private
-        for name, value in expected_identity.items():
-            self.assertEqual(request.headers[name], value, (profile, name))
-        self.assertEqual(request.headers["x-ide-type"],
-                         "CLI" if profile.endswith("-cli") else "WorkBuddy")
+        if request.url.path == "/v2/plugin/auth/token/refresh":
+            # The refresh exchange carries the official set only: no identity block at all.
+            for name in ("X-IDE-Type", "X-IDE-Name", "X-IDE-Version", "X-Private-Data",
+                         "X-CodeBuddy-Request", "X-Requested-With", "x-stainless-lang"):
+                self.assertNotIn(name, request.headers)
+        else:
+            # X-Private-Data follows the shipped resolver: a tenant always reports "false", a
+            # personal account follows its own release (CN false, intl true).
+            account = {"uid": uid}
+            if request.headers.get("X-Enterprise-Id"):
+                account["enterpriseId"] = request.headers["X-Enterprise-Id"]
+            expected_identity = client_profiles.identity_headers(profile, account)
+            for name, value in expected_identity.items():
+                self.assertEqual(request.headers[name], value, (profile, name))
+            self.assertEqual(request.headers["x-ide-type"],
+                             "CLI" if profile.endswith("-cli") else "WorkBuddy")
         if profile.endswith("-work"):
             self.assertNotIn("x-client-platform", request.headers)
         if request.url.path == "/v3/config":

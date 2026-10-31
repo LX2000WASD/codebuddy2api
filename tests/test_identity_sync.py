@@ -91,13 +91,15 @@ class IdentitySyncTests(unittest.TestCase):
         return picked[1]["X-User-Id"] if picked else None
 
     def test_official_versions_and_private_data_are_profile_scoped(self):
+        # Baseline from the official builds: CN desktop 5.9.3, intl desktop 5.9.4, both CLI
+        # lines 2.165.0; a personal account follows its own release for X-Private-Data.
         expected = {
             "cn-cli": ("CLI/2.165.0 CodeBuddy/2.165.0", "2.165.0", "false", "2.165.0"),
-            "intl-cli": ("CLI/2.161.0 CodeBuddy/2.161.0", "2.161.0", "false", "2.161.0"),
+            "intl-cli": ("CLI/2.165.0 CodeBuddy/2.165.0", "2.165.0", "true", "2.165.0"),
             "cn-work": ("WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0", "5.9.3", "false", "5.9.3:2.165.0"),
             # The intl desktop build spells the product "workbuddy-ai" in the second UA slot;
             # upstream v1.5.0 emits "WorkBuddy AI", which no released build sends.
-            "intl-work": ("WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0", "5.8.4", "true", "5.8.4:2.161.0"),
+            "intl-work": ("WorkBuddy/5.9.4 workbuddy-ai/5.9.4 CLI/2.165.0", "5.9.4", "true", "5.9.4:2.165.0"),
         }
         for profile, (user_agent, ide_version, private_data, revision) in expected.items():
             with self.subTest(profile=profile):
@@ -109,15 +111,20 @@ class IdentitySyncTests(unittest.TestCase):
                 self.assertEqual(client_profiles.catalog_cache_key(profile), f"{profile}:{revision}")
 
     def test_private_data_and_identity_headers_follow_the_real_account(self):
+        # The shipped resolver is "explicit ?? (!isEnterprise && productDefault)", so a
+        # tenant always reports "false" no matter which release it runs.
         for profile, domain in DOMAINS.items():
             with self.subTest(profile=profile):
                 headers = client_profiles.credential_headers(
                     {"domain": domain, "accessToken": "synthetic"},
                     {"uid": "A", "enterpriseId": "tenant"})
-                expected = "true" if profile in ("cn-cli", "cn-work", "intl-work") else "false"
-                self.assertEqual(headers["X-Private-Data"], expected)
+                self.assertEqual(headers["X-Private-Data"], "false")
                 self.assertEqual(headers["X-Enterprise-Id"], "tenant")
                 self.assertNotIn("X-Id-Source", headers)
+                personal = client_profiles.credential_headers(
+                    {"domain": domain, "accessToken": "synthetic"}, {"uid": "A"})
+                self.assertEqual(personal["X-Private-Data"],
+                                 "true" if profile.startswith("intl") else "false")
 
         payload = base64.urlsafe_b64encode(json.dumps({
             "id_source": "sso_login", "token_source": "qq"}).encode()).rstrip(b"=").decode()
@@ -138,14 +145,38 @@ class IdentitySyncTests(unittest.TestCase):
         self.assertNotIn("X-Auth-Method", plain)
 
         auth = {"domain": "www.workbuddy.cn", "accessToken": "synthetic"}
-        for headers in (client_profiles.catalog_headers(auth, {"uid": "A"}),
-                        client_profiles.refresh_headers("www.workbuddy.cn", "A"),
-                        client_profiles.credential_refresh_headers(auth, {"uid": "A"})):
-            self.assertRegex(headers["X-Request-ID"], r"^[0-9a-f]{32}$")
-            self.assertEqual(headers["Accept"], "application/json, text/plain, */*")
-            self.assertNotIn("X-CodeBuddy-Request", headers)
+        catalog = client_profiles.catalog_headers(auth, {"uid": "A"})
+        self.assertRegex(catalog["X-Request-ID"], r"^[0-9a-f]{32}$")
+        self.assertEqual(catalog["Accept"], "application/json, text/plain, */*")
+        self.assertNotIn("X-CodeBuddy-Request", catalog)
+        self.assertNotIn("X-Requested-With", catalog)
         self.assertNotIn("X-Request-ID", client_profiles.catalog_headers(
             {"domain": "www.codebuddy.cn", "accessToken": "synthetic"}, {"uid": "A"}))
+
+        # Refresh keeps the official set only: domain, tenant, the two refresh headers and a
+        # trace id. No stainless block, no X-Agent-* triple, no X-IDE-* fingerprint.
+        for headers in (client_profiles.refresh_headers("www.workbuddy.cn", "A"),
+                        client_profiles.credential_refresh_headers(auth, {"uid": "A"})):
+            self.assertRegex(headers["X-Request-ID"], r"^[0-9a-f]{32}$")
+            self.assertEqual(headers["X-Domain"], "www.workbuddy.cn")
+            self.assertEqual(headers["X-User-Id"], "A")
+            for name in ("x-stainless-lang", "X-Agent-Intent", "X-Agent-Purpose", "X-Agent-Type",
+                         "X-IDE-Type", "X-IDE-Name", "X-IDE-Version", "X-Private-Data",
+                         "X-CodeBuddy-Request", "X-Requested-With"):
+                self.assertNotIn(name, headers)
+        self.assertNotIn("Authorization", client_profiles.refresh_headers("www.workbuddy.cn", "A"))
+        self.assertEqual(client_profiles.credential_refresh_headers(auth, {"uid": "A"})["Authorization"],
+                         "Bearer synthetic")
+
+    def test_chat_only_headers_are_scoped_to_chat(self):
+        auth = {"domain": "www.workbuddy.cn", "accessToken": "synthetic"}
+        base = client_profiles.credential_headers(auth, {"uid": "A"})
+        self.assertNotIn("X-CodeBuddy-Request", base)
+        self.assertNotIn("X-Requested-With", base)
+        chat = client_profiles.chat_headers(base)
+        self.assertEqual(chat["X-CodeBuddy-Request"], "1")
+        self.assertEqual(chat["X-Requested-With"], "XMLHttpRequest")
+        self.assertNotIn("X-CodeBuddy-Request", base, "the overlay must not mutate its input")
 
     def test_account_fingerprint_is_stable_and_unambiguous(self):
         key = client_profiles.account_key
@@ -486,9 +517,9 @@ class IdentitySyncTests(unittest.TestCase):
                     patch.object(c, "run_server", side_effect=barrier), \
                     patch("sys.stderr", new=io.StringIO()):
                 c.main()
-            # refresher, reconcile, housekeeping, key housekeeping, lease heartbeat, update check,
-            # scheduled backups and the server itself.
-            self.assertEqual(len(observed), 8)
+            # refresher, reconcile, housekeeping, restricted probe, key housekeeping, lease
+            # heartbeat, update check, scheduled backups and the server itself.
+            self.assertEqual(len(observed), 9)
 
 
 if __name__ == "__main__":

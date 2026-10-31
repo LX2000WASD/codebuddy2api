@@ -4,6 +4,7 @@ import time
 
 import httpx
 
+from .client_profiles import chat_headers
 from .site_routing import PROFILE_ENDPOINTS, profile_for_headers
 from .upstream_compat import channel_fallback_url
 from .upstream_io import ChatSSEAccumulator, UpstreamResponseError, open_backend_stream_sync
@@ -44,7 +45,7 @@ def first_task(data):
 
 def _chat(client, headers, record, model):
     conversation, request_id = record["conversation_id"], record["request_id"]
-    headers = {**headers, "Accept": "text/event-stream", "Content-Type": "application/json",
+    headers = {**chat_headers(headers), "Accept": "text/event-stream", "Content-Type": "application/json",
                "X-Conversation-ID": conversation,
                "X-Parent-Conversation-ID": conversation, "X-Request-ID": request_id,
                "X-Root-Request-ID": request_id, "X-Conversation-Request-ID": request_id,

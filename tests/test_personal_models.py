@@ -65,7 +65,8 @@ class PersonalModelTableTests(TestCase):
         url = client.get.call_args.args[0]
         self.assertEqual(url, "https://www.codebuddy.cn/v2/enterprises/personal/models")
         headers = client.get.call_args.kwargs["headers"]
-        self.assertEqual(headers["X-Requested-With"], "XMLHttpRequest")
+        # A catalog read is an RPC call: X-Requested-With belongs to chat completions only.
+        self.assertNotIn("X-Requested-With", {name.lower() for name in headers})
         self.assertEqual(len(headers["X-Request-ID"]), 32)
         self.assertNotIn("user-1", headers["X-Request-ID"])
 

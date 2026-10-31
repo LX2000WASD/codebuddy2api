@@ -23,6 +23,7 @@ from fastapi import HTTPException
 
 from . import model_policy, rate_measurement
 from .background_jobs import JobBoard
+from .client_profiles import chat_headers
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +160,8 @@ def _send(gateway, entry, model, profile):
         headers = cm.get_headers()
     headers.update(gateway._dynamic_request_headers(None))
     headers["X-Conversation-ID"] = PROBE_CONVERSATION_PREFIX + uuid.uuid4().hex
+    # The probe posts to /v2/chat/completions, so it carries the chat-only headers too.
+    headers.update(chat_headers({}))
     routed = gateway._upstream_model(model, profile)
     started, clock = time.time(), time.monotonic()
     try:

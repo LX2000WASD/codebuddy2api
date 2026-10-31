@@ -8,14 +8,18 @@ import uuid
 
 from .site_routing import domain_for_auth, profile_for_auth, profile_product, profile_region
 
+# Shipped package versions, taken from the official builds rather than from the upstream
+# mirror: the domestic desktop is 5.9.3, the international desktop is 5.9.4, and both CLI
+# lines are 2.165.0 (10-上游增量 §2.1, panel mitmproxy traces of 2026-10-28/10-30).
 CLI_VERSION = "2.165.0"
 WORKBUDDY_VERSION = "5.9.3"
 WORKBUDDY_CLI_VERSION = CLI_VERSION
-INTL_CLI_VERSION = "2.161.0"
-INTL_WORKBUDDY_VERSION = "5.8.4"
+INTL_CLI_VERSION = "2.165.0"
+INTL_WORKBUDDY_VERSION = "5.9.4"
 INTL_WORKBUDDY_CLI_VERSION = INTL_CLI_VERSION
 CLI_USER_AGENT = f"CLI/{CLI_VERSION} CodeBuddy/{CLI_VERSION}"
 
+# Headers every released client sends on any authenticated call.
 SDK_HEADERS = {
     "x-stainless-arch": "x64",
     "x-stainless-lang": "js",
@@ -27,9 +31,19 @@ SDK_HEADERS = {
     "X-Agent-Intent": "craft",
     "X-Agent-Purpose": "conversation",
     "X-Agent-Type": "main",
-    "X-Private-Data": "false",
-    "X-CodeBuddy-Request": "1",
 }
+
+# Only chat completions carries these two. The shipped desktop client sends them on
+# nothing else: refresh, report, busy, v3-config and billing all omit them, and the whole
+# RPC family (56/56 traced requests) never sends X-Requested-With. Sending them on every
+# outbound call is the one header-scope difference a gateway leaks without any behavioural
+# symptom.
+CHAT_HEADERS = {"X-CodeBuddy-Request": "1", "X-Requested-With": "XMLHttpRequest"}
+
+
+def chat_headers(headers: dict) -> dict:
+    """Return the outgoing header set for one /v2/chat/completions request."""
+    return {**headers, **CHAT_HEADERS}
 
 
 def _versions(profile):
@@ -38,12 +52,29 @@ def _versions(profile):
     return CLI_VERSION, WORKBUDDY_VERSION, WORKBUDDY_CLI_VERSION
 
 
-def identity_headers(profile: str) -> dict:
+def private_data_value(profile: str, account=None) -> str:
+    """X-Private-Data exactly as the shipped resolver computes it.
+
+    The decompiled applyPrivateDataHeaderPolicy resolves
+    "explicit ?? (!isEnterprise && (productDefault ?? true))", where productDefault is
+    "!productFeatures.DefaultModelOptimizationOff". That flag belongs to the release, not to
+    the account: the domestic 5.9.3 build ships it on (header "false"), the international
+    5.9.4 build ships it off (header "true"). An enterprise tenant therefore always reports
+    "false", and a personal account follows its own build. Deciding by release instead of by
+    tenant is what the retired global constant got wrong for every international account.
+    """
+    if is_enterprise_account(account):
+        return "false"
+    return "true" if profile_region(profile) == "intl" else "false"
+
+
+def identity_headers(profile: str, account=None) -> dict:
     """Use verified package versions without reading desktop settings or device identities."""
     cli_version, workbuddy_version, workbuddy_cli_version = _versions(profile)
     if profile_product(profile) == "cli":
         return {"User-Agent": f"CLI/{cli_version} CodeBuddy/{cli_version}",
-                "X-IDE-Type": "CLI", "X-IDE-Name": "CLI", "X-IDE-Version": cli_version}
+                "X-IDE-Type": "CLI", "X-IDE-Name": "CLI", "X-IDE-Version": cli_version,
+                "X-Private-Data": private_data_value(profile, account)}
     # The official desktop client spells the international product "workbuddy-ai"
     # (lower case, hyphenated) in the second User-Agent slot; the domestic build repeats
     # "WorkBuddy". Matching the shipped string matters because the upstream fingerprints
@@ -52,7 +83,7 @@ def identity_headers(profile: str) -> dict:
     return {
         "User-Agent": f"WorkBuddy/{workbuddy_version} {name}/{workbuddy_version} CLI/{workbuddy_cli_version}",
         "X-IDE-Type": "WorkBuddy", "X-IDE-Name": "WorkBuddy", "X-IDE-Version": workbuddy_version,
-        "X-Private-Data": "true",
+        "X-Private-Data": private_data_value(profile, account),
     }
 
 
@@ -66,13 +97,9 @@ def _auth_headers(auth: dict, account: dict) -> dict:
         "X-Enterprise-Id": enterprise_id,
         "X-Tenant-Id": enterprise_id,
         "X-Domain": domain_for_auth(auth),
-        "X-Product": "SaaS", "X-Requested-With": "XMLHttpRequest",
+        "X-Product": "SaaS",
     }
-    profile = profile_for_auth(auth)
-    headers.update(identity_headers(profile))
-    if profile in ("cn-cli", "cn-work"):
-        # CLI 2.165+ disables model optimization for enterprise accounts.
-        headers["X-Private-Data"] = "true" if is_enterprise_account(account) else "false"
+    headers.update(identity_headers(profile_for_auth(auth), account))
     return headers
 
 
@@ -129,21 +156,43 @@ def _cn_work_nonchat_headers(headers: dict, profile: str) -> dict:
     if profile == "cn-work":
         headers["Accept"] = "application/json, text/plain, */*"
         headers["X-Request-ID"] = uuid.uuid4().hex
-        headers.pop("X-CodeBuddy-Request", None)
+    return headers
+
+
+def _refresh_headers(auth: dict, account: dict) -> dict:
+    """The official refresh exchange header set, and only that.
+
+    The shipped client composes the refresh call as enterpriseHeaders + the two refresh
+    headers + traceSpan.requestHeaders (report 30 A-4). The stainless block, the X-Agent-*
+    triple, X-IDE-* and the identity claim headers never appear there, so composing it from
+    credential_headers leaked a whole product fingerprint onto a call the desktop client
+    sends almost bare.
+    """
+    enterprise_id = enterprise_id_of(account) or ""
+    headers = {
+        "Content-Type": "application/json",
+        "X-Domain": domain_for_auth(auth),
+        "X-Product": "SaaS",
+        "X-User-Id": str(account.get("uid") or ""),
+        "X-Enterprise-Id": enterprise_id,
+        "X-Tenant-Id": enterprise_id,
+        "X-Request-ID": uuid.uuid4().hex,
+    }
+    # The desktop client keeps its (possibly expired) bearer on this call; the refresh token
+    # travels separately and is the credential upstream actually checks.
+    if auth.get("accessToken"):
+        headers["Authorization"] = f"Bearer {auth['accessToken']}"
     return headers
 
 
 def credential_refresh_headers(auth: dict, account: dict) -> dict:
-    headers = credential_headers(auth, account)
-    return _cn_work_nonchat_headers(headers, profile_for_auth(auth))
+    """Refresh headers for one stored credential; the refresh token is the only credential."""
+    return _refresh_headers(auth, account)
 
 
 def refresh_headers(domain: str, uid: str = "") -> dict:
     """Build headers for a refresh exchange that has no access token yet."""
-    auth = {"accessToken": "", "domain": domain}
-    headers = {**SDK_HEADERS, **_auth_headers(auth, {"uid": uid})}
-    headers.pop("Authorization", None)  # The refresh token is the only credential in this request.
-    return _cn_work_nonchat_headers(headers, profile_for_auth(auth))
+    return _refresh_headers({"accessToken": "", "domain": domain}, {"uid": uid})
 
 
 def catalog_headers(auth: dict, account: dict | None = None, *, user_agent="") -> dict:
