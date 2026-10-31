@@ -4,7 +4,9 @@ version: "3.8"
 
 services:
   codebuddy2api:
-    image: ${CODEBUDDY2API_IMAGE:-ghcr.io/maiphucgiang/codebuddy2api:latest}
+    # Default to this fork image: the local port layer only exists there, and silently
+    # pulling upstream would drop it. Set CODEBUDDY2API_IMAGE to pin upstream or :local-<sha>.
+    image: ${CODEBUDDY2API_IMAGE:-ghcr.io/lx2000wasd/codebuddy2api:local}
     build: .
     container_name: codebuddy2api
     ports:
