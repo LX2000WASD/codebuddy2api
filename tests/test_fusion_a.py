@@ -201,7 +201,11 @@ class AuthFailThresholdTests(FusionFixture):
         self.assertEqual(pool.snapshot()[0]["auth_fails"], 0)
 
     def test_request_illegal_403_parks_briefly_without_disabling(self):
-        """上游 403/11140（request illegal）是请求级判定：同请求换号可成功，不能当凭证失能。"""
+        """无控制库时 11140 只挂短冷却，绝不按认证失败累计。
+
+        有控制库时这条判定会升级为持久停权（见 UpstreamRestrictionTests）：停的是「该账号
+        的推理」，不是把凭证当坏号；两种形态都不计入认证失败，避免一轮风控禁掉整池。
+        """
         pool, paths = self.pool(("a.info",), ("uid-a",))
         cm = pool.first()
         body = b'{"code":11140,"msg":"request illegal","requestId":"req-1"}'

@@ -82,7 +82,8 @@
       "health": "ready | disabled | circuit_open | expired | error",
       "enabled": false,
       "paused": true,                     // 独立暂停状态: 只退出选号, 与 enabled 正交 (见 §10)
-      "disabled_reason": "人工停用 | 认证熔断 | 登录身份过期 | 同步失败 | 后端错误 | null",
+      "restricted": false,                // 上游停权(403/11140): 与人工停用共用 enabled=false (见 §11)
+      "disabled_reason": "上游限制（11140） | 人工停用 | 认证熔断 | 登录身份过期 | 同步失败 | 后端错误 | null",
       "cooldown": {
         "fail_until": 1718084000.0,       // 无熔断时为 0
         "remaining_seconds": 800,         // 已过期恒为 0
@@ -117,7 +118,7 @@
 - `model_locks` 按 `profile + model` 聚合**全部账号**的模型级冷却（含 Fusion-A 的模型级冷却表），并合并 `model_block`（后端确认不支持的模型对，与 `/admin/model-blocks` 同源）。kind=model_block 时 reason 为「后端模型不可用」，`account_ids` 为受影响绑定账号（可能为全部启用账号，此时为提示性锁定）。
 - 冷却原因文本为安全过滤后的固定短文本，不含上游返回体。
 - `cooldown` 只在**冷却仍生效**（`fail_until > now`）时带 `reason`；`fail_until` 已过期时 `reason` 为 `null`、`remaining_seconds` 为 0，且 `last_error_code` 也为 `null`——熔断过期后不得继续上报过期原因（`last_error` 在内存里要等显式重置才清除，见 `converter.py` 的 `clear_cooldowns`/`reset_cooldowns_for`）。`sync_error` 是余额/目录同步错误，与熔断无关，因此不受此门控。
-- 上游停权（§11）的账号在这里同样是 `health="disabled"`：`health` 枚举不新增取值，受限原因与证据只在 `GET /admin/credentials` 的 `restricted*` 字段里。
+- 上游停权（§11）的账号在这里同样是 `health="disabled"`（`health` 枚举不新增取值），但 `disabled_reason` 报「上游限制（11140）」且 `accounts[].restricted=true`；证据字段仍在 `GET /admin/credentials` 的 `restricted*` 里。
 - 503 当且仅当凭证池未初始化（此时 accounts 与 model_locks 为空数组）。
 
 ---
@@ -542,5 +543,5 @@ FEFO（先到期先出）明细 + 日均需耗，供首页提醒卡片。
   - `PATCH /admin/credentials/{id}` `{"enabled": true}`：启用即人工放行，`restricted` 与证据字段一并清除（只改本地状态，不访问上游）；
   - `POST /admin/credentials/{id}/reset-cooldown`：清冷却的同时解除停权，结果新增 `restricted_released: bool`，命中时 `message` 为「已人工解除上游停权（403/11140）并清除该账号冷却」。
 - 链路级判定不升级为账号停权（同一账号可能 chat 200、打卡 403/11140）：自动化链路上的同码 403 只关该链当日——每日活跃写 `daily_chats.state=restricted` 并停止当日排期（手动触发也直接跳过），签到不会把 403 记成「今日已签到」。
-- 现状提示：`/admin/diagnostic` 的 `accounts[].disabled_reason` 目前仍把受限号归为「人工停用」；原因与证据以 `/admin/credentials` 的 `restricted*` 字段为准。
+- 诊断视图（§3）同样不新增 `health` 取值：受限号报 `health="disabled"`、`disabled_reason="上游限制（11140）"` 与 `accounts[].restricted=true`；完整证据仍只在 `/admin/credentials` 的 `restricted*` 字段里。
 

@@ -43,9 +43,12 @@ def _account_view(row, identity, now):
     enabled = bool(row.get("enabled"))
     paused = row.get("paused") if isinstance(row.get("paused"), bool) else (not enabled)
     health = row.get("health") or ("disabled" if not enabled else "ready")
+    # 上游停权（403/11140）与人工停用共用 enabled=false，只有 inventory 的 restricted 字段
+    # 能区分两者；把它带出来，运维才不会以为是自己手停的（docs/fusion-api.md §11）。
+    restricted = row.get("restricted") is True
     reason = None
     if health == "disabled":
-        reason = "人工停用"
+        reason = "上游限制（11140）" if restricted else "人工停用"
     elif health == "circuit_open":
         reason = "认证熔断"
     elif health == "expired":
@@ -69,7 +72,7 @@ def _account_view(row, identity, now):
                           "until": deadline, "remaining_seconds": max(0.0, round(deadline - now, 1))})
     return {"id": identity, "name": _safe_text(row.get("name"), 160) or "unknown",
             "profile": _safe_text(row.get("profile"), 64) or "unknown",
-            "health": health, "enabled": enabled, "paused": paused,
+            "health": health, "enabled": enabled, "paused": paused, "restricted": restricted,
             "disabled_reason": reason,
             "cooldown": {"fail_until": until,
                          "remaining_seconds": max(0.0, round(until - now, 1)) if cooling else 0.0,
