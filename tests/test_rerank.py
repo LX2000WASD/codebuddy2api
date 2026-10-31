@@ -75,7 +75,7 @@ class RerankRoutingTests(fixtures.RegionRoutingTests):
         self.assertIn(profile, ("cn-cli", "cn-work"))
         self.assertEqual(request.url.host, httpx.URL(converter.PROFILE_ENDPOINTS[profile]).host)
         self.assertEqual(request.headers["authorization"], "Bearer synthetic-access-" + uid)
-        body = json.loads(request.content)
+        body = json.loads(fixtures.request_content(request))
         self.rerank_requests.append((request, body))
         if self.rerank_replies:
             status, payload = self.rerank_replies.pop(0)

@@ -106,7 +106,7 @@ class ThinkingPinTests(GatewayFixture, unittest.TestCase):
                     payload["stream"] = False
                     response = self.fx.client.post(route, json=payload)
                     self.assertEqual(response.status_code, 200, response.text)
-                    upstream = json.loads(self.fx.requests[-1].content)
+                    upstream = json.loads(fixtures.request_content(self.fx.requests[-1]))
                     self.assertEqual(upstream.get("thinking"), {"type": "enabled"})
                     self.assertEqual(upstream.get("reasoning_effort"), "max")
 
@@ -284,7 +284,7 @@ class ProjectionOffTests(GatewayFixture, unittest.TestCase):
         with patch.dict(gateway.CONFIG, {"responses_projection_mode": "passthrough"}):
             response = self.fx.client.post("/v1/responses", json=payload)
         self.assertEqual(response.status_code, 200, response.text)
-        upstream = json.loads(self.fx.requests[-1].content)
+        upstream = json.loads(fixtures.request_content(self.fx.requests[-1]))
         contents = [str(m.get("content")) for m in upstream["messages"]]
         self.assertTrue(any(len(c) >= 5000 for c in contents), "完整 assistant 输出被截断")
 

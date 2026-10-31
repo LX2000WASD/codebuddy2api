@@ -132,12 +132,6 @@ function Shell() {
                         ) : (
                           <CreditsBadge alert={creditsAlertData} />
                         ))}
-                      {/* A newer gateway release is checked and cached server-side.
-                          The updates page lives under the system area, so that is the
-                          link that carries the hint. */}
-                      {candidate.key === "system" && updateAvailable && (
-                        <span className={s.navDot} title={t("updates.available")} />
-                      )}
                       <span className={s.navArrow}>
                         <Icon name="arrow" />
                       </span>
@@ -147,6 +141,25 @@ function Shell() {
             </div>
           ))}
         </nav>
+        {/* Release updates are the one destination that is not a task area, so they sit
+            beside the navigation rather than inside it: the landmark stays "five areas"
+            (and the "is anything newer?" hint lives on this link). */}
+        <NavLink
+          to="/dashboard/updates"
+          aria-label={
+            updateAvailable ? `${t("nav.updates")} · ${t("updates.available")}` : t("nav.updates")
+          }
+          title={collapsed ? t("nav.updates") : undefined}
+          data-label={t("nav.updates")}
+          className={({ isActive }) => `${s.navItem} ${isActive ? s.active : ""}`}
+        >
+          <Icon name="up" />
+          <span className={s.navText}>{t("nav.updates")}</span>
+          {updateAvailable && <span className={s.navDot} />}
+          <span className={s.navArrow}>
+            <Icon name="arrow" />
+          </span>
+        </NavLink>
         <button
           className={s.sidebarBar}
           onClick={toggleSidebar}
@@ -402,6 +415,7 @@ export function Guard() {
   return status === "authenticated" ? <Outlet /> : <Navigate to="/dashboard/login" replace />;
 }
 export function AppRoutes() {
+  const { search } = useLocation();
   return (
     <Routes>
       <Route path="/dashboard/login" element={<Login />} />
@@ -420,7 +434,13 @@ export function AppRoutes() {
           {/* Old URLs keep working: they redirect into the task area that absorbed
               them, so bookmarks and shared links never hit a 404. */}
           {legacyRoutes.map(({ segment, target }) => (
-            <Route key={segment} path={segment} element={<Navigate to={target} replace />} />
+            <Route
+              key={segment}
+              path={segment}
+              // A retired URL that carried its own query (e.g. /dashboard/settings?tab=account)
+              // keeps it: the target forwards the search unless it sets one itself.
+              element={<Navigate to={target.includes("?") ? target : target + search} replace />}
+            />
           ))}
           {/* Pages the consolidated sidebar does not list yet keep their own route, so
               their URLs (e2e suites, shared links) resolve instead of bouncing home. */}

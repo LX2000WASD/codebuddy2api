@@ -38,6 +38,10 @@ REQUEST_TIMEOUT = httpx.Timeout(30, connect=10, write=15, pool=10)
 MAX_BODY_BYTES = 64 * 1024
 TERMINAL_STATES = ("completed",)
 FAILED_STATES = ("failed", "error", "cancelled", "canceled")
+# Upstream account restriction (HTTP 403 + this business code), the same verdict the
+# inference path reads as "request illegal": the account, not the request, is refused.
+# Kept as a local literal because app modules must not import the gateway module.
+RESTRICTED_CODE = 11140
 
 _MESSAGES = {
     "unsupported": "活跃打卡仅适用于国际 WorkBuddy 账号，国内账号及国际 CodeBuddy 不适用",
@@ -55,6 +59,7 @@ _MESSAGES = {
     "acp_network": "ACP 通道连接失败或中断，未确认打卡成功，今日不重试",
     "acp_protocol": "ACP 通道响应格式无效（缺少连接标识或会话信息），未确认打卡成功，今日不重试",
     "rejected": "官方未确认本次打卡，资格和额度由官方决定",
+    "restricted": "官方判定账号受限（HTTP 403 / 11140），今日不再尝试打卡；解除受限后可重试",
     "auth_error": "官方拒绝了当前凭证，请刷新 Token 或重新登录后核对",
     "storage_error": "打卡记录无法读取或保存，已停止操作；请检查数据目录权限和磁盘空间",
     "changed": "凭证身份、代次或启用状态已变化，已停止后续操作，请刷新列表核对",
@@ -157,7 +162,10 @@ def _check(status, payload):
     code = payload.get("code")
     code = code if type(code) is int and -(2**31) <= code < 2**31 else None
     if status in (401, 403):
-        raise ChatFailure("auth_error", status, code)
+        # A restriction is a terminal verdict for the day, not a rejection to retry: telling
+        # it apart from a plain 401/403 is what keeps a restricted account from re-hitting
+        # the console on every sweep.
+        raise ChatFailure("restricted" if code == RESTRICTED_CODE else "auth_error", status, code)
     if status not in (200, 201, 202):
         raise ChatFailure("http_error", status, code)
     if code not in (0, None):
@@ -283,12 +291,24 @@ def perform(token, profile, *, uid="", domain="", can_write=lambda: True,
         except ChatFailure:
             pass
 
+    def close_day(state):
+        """Record the day's terminal state so no later sweep schedules it again."""
+        try:
+            write_store("daily_chat_checkpoint", day, state=state)
+        except ChatFailure:
+            pass
+
     if not supported(profile):
         return unavailable()
     try:
         previous = write_store("daily_chat_record", day)
         if previous:
             phase = previous.get("phase")
+            if previous.get("state") == "restricted":
+                # The console already refused this account today; reconnecting would only
+                # repeat the verdict. Tomorrow is a new row and a new attempt.
+                return stop("restricted", skipped=True,
+                            conversation_id=previous.get("conversation_id"))
             if phase in {"confirmed", "reconciled"}:
                 # Like a check-in that already ran: the day's goal is met, just not again.
                 result.update(ok=True, state="done", skipped=True, message=_MESSAGES["done"],
@@ -377,6 +397,8 @@ def perform(token, profile, *, uid="", domain="", can_write=lambda: True,
         if kind == "network_error" and fields.get("http_status") in (401, 403):
             kind = "auth_error"
         cancel_unless_sent()
+        if kind == "restricted":
+            close_day(kind)
         result.update(state=kind, message=_MESSAGES.get(kind, _MESSAGES["network_error"]), **fields)
         return result
     except acp_client.AcpError as error:

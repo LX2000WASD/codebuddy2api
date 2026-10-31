@@ -421,7 +421,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         def handler(request):
             self.assertNotIn("Content-Encoding", request.headers)
             self.assertNotEqual(request.headers.get("Accept-Encoding"), "identity")
-            self.assertEqual(json.loads(request.content), body)
+            self.assertEqual(json.loads(gzip.decompress(request.content) if request.headers.get("Content-Encoding") == "gzip" else request.content), body)
             return httpx.Response(200, json={"code": 0, "data": {}})
 
         with httpx.Client(transport=httpx.MockTransport(handler)) as client:
@@ -461,7 +461,11 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(attempts), 2)
                 self.assertEqual(attempts[0].content, attempts[1].content)
                 for request in attempts:
-                    self.assertEqual(request.headers["Accept-Encoding"], "identity")
+                    # Deliberate deviation from upstream v1.5.0: a client that compresses its
+                    # body still advertises the encodings it accepts, and the shipped clients
+                    # send this list. Upstream set "identity" here, which no real build does.
+                    self.assertEqual(request.headers["Accept-Encoding"],
+                                     "gzip, compress, deflate, br")
                     self.assertEqual("content-encoding" in request.headers, expected_gzip)
                     raw = gzip.decompress(request.content) if expected_gzip else request.content
                     self.assertEqual(json.loads(raw), body)

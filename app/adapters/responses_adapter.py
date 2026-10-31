@@ -1070,7 +1070,9 @@ class ResponsesStreamConverter:
             # output 数组按 item 实际发射（output_index 分配）顺序排列，与流式事件一致
             # （本地移植的交错索引修复）；常规发射顺序（reasoning → text → tools）
             # 下与上游固定顺序相同。
-            items: list[tuple[int, dict]] = []
+            # Seeded web_search_call items own output indices 0.._seed_count-1, which is what
+            # _claim_output() assumes when it starts the first real item after them.
+            items: list[tuple[int, dict]] = list(enumerate(output))
             if self._emitted_reasoning_item:
                 items.append((self._reasoning_output_idx, self._reasoning_item(status)))
             if self._emitted_msg_item or self._content:

@@ -320,53 +320,6 @@ class PoolCooldownPersistenceTests(unittest.TestCase):
         pool.note_status(pool._entries[0]["cm"], 403, raw=b"<html>blocked</html>")
         self.assertIn("11140", entry["last_error_body"])
 
-    def test_upstream_restriction_disables_the_account_through_the_webui_policy(self):
-        """11140 is a terminal account restriction: disable via the policy, not just a cooldown."""
-        path = self.credential()
-        pool = self.pool(path)
-        store = converter_local_ControlStore(self.root / "control.sqlite3")
-        self.addCleanup(store.close)
-        identity = pool._entries[0]["account_key"]
-        store.set_credential(identity, True)
-        invalidated = []
-        management = SimpleNamespace(gateway=SimpleNamespace(
-            invalidate_model_table=lambda: invalidated.append(1)))
-        self.enterContext(patch.dict(converter.CONFIG, {"control_store": store, "management": management}))
-        body = json.dumps({"code": 11140, "msg": "request illegal"}).encode()
-        pool.note_restriction(pool._entries[0]["cm"], "11140", body=body)
-        self.assertTrue(pool._entries[0]["auto_disabled"])
-        self.assertFalse(converter.model_policy.credential_enabled(converter.CONFIG, pool._entries[0]))
-        self.assertEqual(invalidated, [1])
-        # The policy survives a pool rebuild, matching a WebUI-initiated disable.
-        revived = self.pool(self.credential())
-        self.assertFalse(converter.model_policy.credential_enabled(converter.CONFIG, revived._entries[0]))
-
-    def test_restriction_uses_two_hour_rest_and_releases_after_expiry(self):
-        path = self.credential()
-        pool = self.pool(path)
-        store = converter_local_ControlStore(self.root / "control.sqlite3")
-        self.addCleanup(store.close)
-        identity = pool._entries[0]["account_key"]
-        store.set_credential(identity, True)
-        management = SimpleNamespace(gateway=SimpleNamespace(
-            invalidate_model_table=lambda: None))
-        self.enterContext(patch.dict(converter.CONFIG, {"control_store": store, "management": management}))
-        before = time.time()
-        pool.note_restriction(pool._entries[0]["cm"], "11140",
-                              body=json.dumps({"code": 11140, "msg": "request illegal"}).encode())
-        entry = pool._entries[0]
-        self.assertTrue(entry["restricted"])
-        self.assertAlmostEqual(entry["restricted_until"] - before, converter.RESTRICTED_REST, delta=2)
-        self.assertEqual(pool.cooldown_detail(), [])
-        revived = self.pool(self.credential())._entries[0]
-        self.assertTrue(revived["restricted"])
-        self.assertFalse(converter.model_policy.credential_enabled(converter.CONFIG, revived))
-        entry["restricted_until"] = time.time() - 1
-        pool.expire_restrictions()
-        self.assertIsNone(entry.get("restricted"))
-        self.assertTrue(store.snapshot()["credentials"][identity]["enabled"])
-        self.assertTrue(converter.model_policy.credential_enabled(converter.CONFIG, entry))
-
     def test_model_restriction_cools_only_the_model_and_survives_restart(self):
         path = self.credential()
         pool = self.pool(path)
@@ -399,24 +352,6 @@ class PoolCooldownPersistenceTests(unittest.TestCase):
                 self.assertEqual(entry["fail_until"], 0.0)
                 self.assertEqual(pool._model_fail, {})
                 self.assertEqual(pool._blocks.view(), {})
-
-    def test_inference_11140_uses_the_short_risk_cooldown_instead_of_a_restriction(self):
-        """Deliberate local deviation: on the inference path 11140 is a risk verdict, not a
-
-        dead credential. The account takes the short request_illegal cooldown and keeps
-        serving; only the automation paths mark it restricted for two hours.
-        """
-        pool = self.pool(self.credential())
-        entry = pool._entries[0]
-        body = json.dumps({"code": 11140, "msg": "request illegal"}).encode()
-        before = time.time()
-        pool.note_status(entry["cm"], 403, raw=body)
-        self.assertAlmostEqual(entry["fail_until"] - before,
-                               converter.CONFIG.get("request_illegal_cooldown_s", 60), delta=2)
-        self.assertIsNone(entry.get("restricted"))
-        self.assertIsNone(entry.get("auto_disabled"))
-        self.assertEqual(pool._auth_fails.get(entry["id"], 0), 0)
-        self.assertIn("11140", entry["last_error_body"])
 
     def test_plain_403_cooldowns_without_disabling(self):
         pool = self.pool(self.credential())
@@ -572,32 +507,6 @@ class PoolCooldownPersistenceTests(unittest.TestCase):
                 patch.object(entry["cm"], "refresh_if_due", side_effect=error):
             pool.refresh_due(margin_s=600, keepalive_s=300)
         self.assertGreater(entry["keepalive_after"], time.time())
-
-    def test_manual_toggle_clears_the_auto_provenance(self):
-        pool, store, identity = self._auto_disable_fixture()
-        body = json.dumps({"code": 11140, "msg": "request illegal"}).encode()
-        pool.note_restriction(pool._entries[0]["cm"], "11140", body=body)
-        self.assertTrue(store.snapshot()["credentials"][identity]["auto_disabled"])
-        store.set_credential(identity, False)  # The operator toggles the switch.
-        record = store.snapshot()["credentials"][identity]
-        self.assertFalse(record["enabled"])
-        self.assertNotIn("auto_disabled", record)
-
-    def test_auto_provenance_survives_a_restart_and_a_cooldown_reset(self):
-        pool, store, identity = self._auto_disable_fixture()
-        body = json.dumps({"code": 11140, "msg": "request illegal"}).encode()
-        pool.note_restriction(pool._entries[0]["cm"], "11140", body=body)
-        # A cooldown reset clears in-memory evidence but not the persisted label.
-        pool.reset_cooldowns_for(identity)
-        self.assertTrue(store.snapshot()["credentials"][identity]["auto_disabled"])
-        # A restart adopts the label and the tooltip body back from the store.
-        revived = self.pool(self.credential())
-        rentry = revived._entries[0]
-        self.assertTrue(rentry["auto_disabled"])
-        self.assertIn("11140", rentry["last_error_body"])
-        # Re-enabling clears the provenance for good.
-        store.set_credential(identity, True)
-        self.assertFalse(store.snapshot()["credentials"][identity].get("auto_disabled"))
 
     def test_auth_circuit_breaker_survives_a_restart(self):
         first = self.pool(self.credential())

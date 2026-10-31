@@ -1,5 +1,6 @@
 """Responses projection regressions for harness blocks, generated content, and limits."""
 from copy import deepcopy
+import gzip
 import json
 from pathlib import Path
 import sys
@@ -339,7 +340,7 @@ class ResponsesEndpointTests(unittest.TestCase):
         self.client = self.enterContext(TestClient(converter.app))
 
     def handle(self, request):
-        self.captured.append(json.loads(request.content))
+        self.captured.append(json.loads(gzip.decompress(request.content) if request.headers.get("Content-Encoding") == "gzip" else request.content))
         chunk = {"choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}]}
         return httpx.Response(200, content=("data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n").encode())
 

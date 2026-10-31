@@ -1,6 +1,7 @@
 """Test WorkBuddy adaptation, filter detection and retry boundaries using MockTransport."""
 import asyncio
 import copy
+import gzip
 import json
 import sys
 import unittest
@@ -219,7 +220,7 @@ class EndpointFilterTests(unittest.TestCase):
                         self.assertEqual(response.status_code, 200, response.text)
                         self.assertEqual(len(self.requests), 2 if no_compact and not stream else 1)
                         for request in self.requests:
-                            sent = json.loads(request.content)["tools"][0]["function"]
+                            sent = json.loads(gzip.decompress(request.content) if request.headers.get("Content-Encoding") == "gzip" else request.content)["tools"][0]["function"]
                             self.assertEqual(sent["description"].replace("\u200b", ""), description)
                             self.assertIn("\u200b", sent["description"])
                             self.assertEqual(sent["parameters"]["title"], "Inspection inputs")

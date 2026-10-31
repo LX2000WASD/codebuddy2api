@@ -797,7 +797,7 @@ export function Credentials() {
         title: `${label}已${enabled ? "开启" : "关闭"}`,
         body: <span>保存不会立即执行，后续维护按新设置执行。</span>,
       });
-    });
+    }, credential.id);
   };
   const [channel, setChannel] = useState<ChannelKey>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -1785,7 +1785,9 @@ export function Credentials() {
                 </Panel>
               </>
             )}
-            {detail.tab === "credits" && <CreditsPanel credential={liveDetail} now={coarseNow / 1000} />}
+            {detail.tab === "credits" && (
+              <CreditsPanel credential={liveDetail} now={coarseNow / 1000} />
+            )}
             {detail.tab === "tasks" && (
               <Panel title="自动任务与日常维护">
                 <div className={s.panelBody}>

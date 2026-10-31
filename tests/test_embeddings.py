@@ -120,7 +120,7 @@ class EmbeddingRoutingTests(fixtures.RegionRoutingTests):
         expected_host = httpx.URL(converter.PROFILE_ENDPOINTS[profile]).host if codebase else "www.workbuddy.cn"
         self.assertEqual(request.url.host, expected_host)
         self.assertEqual(request.headers["authorization"], "Bearer synthetic-access-" + uid)
-        body = json.loads(request.content)
+        body = json.loads(fixtures.request_content(request))
         self.embedding_requests.append((request, body))
         if self.embedding_replies:
             status, payload = self.embedding_replies.pop(0)

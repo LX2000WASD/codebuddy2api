@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow direct exe
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
+import gzip
 import json
 import multiprocessing
 import os
@@ -89,7 +90,7 @@ class ClaimTrialTests(unittest.TestCase):
             calls.append(request)
             self.assertEqual(str(request.url), "https://www.workbuddy.ai/billing/ide/trial")
             self.assertEqual(request.method, "POST")
-            self.assertEqual(json.loads(request.content), {})
+            self.assertEqual(json.loads(gzip.decompress(request.content) if request.headers.get("Content-Encoding") == "gzip" else request.content), {})
             for name, value in supplied.items():
                 self.assertEqual(request.headers[name], value)
             self.assertEqual(request.headers["content-type"], "application/json")

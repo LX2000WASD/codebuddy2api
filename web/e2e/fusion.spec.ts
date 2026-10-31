@@ -3,13 +3,16 @@ import { expect, test, type Page } from "@playwright/test";
 // The fusion views ship with a local fixture layer while the Fusion-B backend
 // lands, so the new pages must render WITHOUT any /admin request beyond the session.
 //
-// One shell-level request is expected and is not one of theirs: the sidebar shows how
-// many accounts have credits expiring soon, which it reads from the same shared
-// /admin/credentials snapshot the credentials page uses (identical request key, so
-// visiting that page is a TTL hit rather than another fetch). Excluding exactly that
-// one path keeps the assertion meaningful — it still proves these views issue no
-// /admin request of their own, and it would still fail if one started to.
-const SHELL_REQUESTS = new Set(["GET /admin/credentials"]);
+// Shell-level requests are expected and are not the views' own: the sidebar reads the
+// shared /admin/credentials snapshot to badge expiring credits, the header checks for a
+// newer release, and the language preference is read from /admin/settings. Excluding
+// exactly those paths keeps the assertion meaningful — it still proves these views issue
+// no /admin request of their own, and it would still fail if one started to.
+const SHELL_REQUESTS = new Set([
+  "GET /admin/credentials",
+  "GET /admin/update",
+  "GET /admin/settings",
+]);
 async function mockSession(page: Page) {
   const fusionPaths: string[] = [];
   page.on("request", (request) => {

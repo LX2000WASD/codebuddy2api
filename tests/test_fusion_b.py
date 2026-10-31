@@ -710,6 +710,26 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(block_lock["kind"], "model_block")
         self.assertTrue(block_lock["advisory"])
 
+    def test_restricted_account_reports_an_upstream_reason(self):
+        """上游停权与人工停用都表现为 enabled=false：诊断必须把原因分开。"""
+        class FakeManagement:
+            def admin_credential_inventory(self):
+                return [{"id": "acc-restricted", "name": "r.info", "profile": "intl-cli",
+                         "enabled": False, "health": "disabled", "restricted": True,
+                         "restricted_at": 1700000000.0, "catalog_ready": True},
+                        {"id": "acc-manual", "name": "m.info", "profile": "cn-cli",
+                         "enabled": False, "health": "disabled", "restricted": False,
+                         "catalog_ready": True}]
+
+        self.config["management"] = FakeManagement()
+        accounts = {item["id"]: item
+                    for item in self.client.get("/admin/diagnostic").json()["accounts"]}
+        self.assertEqual(accounts["acc-restricted"]["disabled_reason"], "上游限制（11140）")
+        self.assertTrue(accounts["acc-restricted"]["restricted"])
+        # 人工停用的账号不会被顶替成上游原因，反之亦然。
+        self.assertEqual(accounts["acc-manual"]["disabled_reason"], "人工停用")
+        self.assertFalse(accounts["acc-manual"]["restricted"])
+
     def test_expired_cooldown_stops_reporting_its_stale_reason(self):
         """An expired breaker must not keep claiming a fault anywhere.
 

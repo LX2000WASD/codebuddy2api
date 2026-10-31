@@ -248,7 +248,9 @@ ${t("updates.guide.restart")}`}
 export function Updates() {
   const t = useT();
   const { tag } = useParams();
-  const resource = useResource("/update", normalize);
+  // No snapshot reuse: "is there a newer release" is the one answer on this page, and
+  // a five-second-old copy of it is exactly the stale verdict the page exists to avoid.
+  const resource = useResource("/update", normalize, { ttlMs: 0 });
   const { reload } = resource;
   const [checking, setChecking] = useState(false);
   const [mirrorOpen, setMirrorOpen] = useState(false);

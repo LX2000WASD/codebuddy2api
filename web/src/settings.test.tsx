@@ -39,7 +39,13 @@ const base = {
 };
 
 function resource(data: unknown) {
-  vi.mocked(useResource).mockReturnValue({ data, error: null, loading: false, reload: vi.fn() });
+  vi.mocked(useResource).mockReturnValue({
+    data,
+    error: null,
+    loading: false,
+    refreshing: false,
+    reload: vi.fn(),
+  });
 }
 function page(items: unknown[]) {
   resource({ ...settings, items });

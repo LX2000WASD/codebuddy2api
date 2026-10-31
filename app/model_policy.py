@@ -87,6 +87,21 @@ def credential_enabled(config, entry, policy=None):
 
 
 
+def credential_restriction(config, entry, policy=None):
+    """Upstream restriction fields (403/11140) for the management view, never for routing.
+
+    A restricted account is disabled in the same control-store write, so routing keeps reading
+    one boolean. These fields exist to tell an upstream verdict apart from a manual switch-off
+    and to carry the evidence an operator needs before releasing it.
+    """
+    record = _policy(config, policy)["credentials"].get(entry.get("account_key")) or {}
+    restricted = record.get("restricted") is True
+    return {"restricted": restricted,
+            "restricted_at": record.get("restricted_at") if restricted else None,
+            "restricted_reason": record.get("restricted_reason") if restricted else None,
+            "restricted_evidence": record.get("restricted_evidence") if restricted else None}
+
+
 def credential_auto_checkin(config, entry, policy=None):
     """International accounts opt in explicitly; the preference is independent of routing."""
     default = entry.get("profile") in {"cn-cli", "cn-work"}

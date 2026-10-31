@@ -212,7 +212,7 @@ class DailyChatTests(fixtures.CredentialActionTests):
         self.assertEqual(len(self.console.created), 1)
         record = self.control.daily_chat_record(self.intl["account_key"], result["day"])
         self.assertEqual(record["phase"], "confirmed")
-        self.assertTrue(self.control.daily_chat_done(self.intl["account_key"], result["day"]))
+        self.assertTrue(self.control.daily_chat_settled(self.intl["account_key"], result["day"]))
 
     def test_console_headers_carry_no_cli_fingerprint(self):
         self.turn()
@@ -275,7 +275,7 @@ class DailyChatTests(fixtures.CredentialActionTests):
         record = self.control.daily_chat_record(self.intl["account_key"], result["day"])
         # 'sent' means the turn really ran: it stays unconfirmed for the rest of the day.
         self.assertEqual(record["phase"], "sent")
-        self.assertFalse(self.control.daily_chat_done(self.intl["account_key"], result["day"]))
+        self.assertFalse(self.control.daily_chat_settled(self.intl["account_key"], result["day"]))
 
     def test_unready_sandbox_retries_then_gives_up_without_sending(self):
         # A sandbox that never becomes ready must not spend the day: the turn was
@@ -290,7 +290,7 @@ class DailyChatTests(fixtures.CredentialActionTests):
         record = self.control.daily_chat_record(self.intl["account_key"], result["day"])
         # Cancelled, not sent: nothing reached the agent, so the day is not spent.
         self.assertEqual(record["phase"], "cancelled")
-        self.assertFalse(self.control.daily_chat_done(self.intl["account_key"], result["day"]))
+        self.assertFalse(self.control.daily_chat_settled(self.intl["account_key"], result["day"]))
         self.assertIsNotNone(self.control.reserve_daily_chat(self.intl["account_key"], result["day"]))
 
     def test_sandbox_readiness_is_retried_until_it_answers(self):
@@ -337,7 +337,7 @@ class DailyChatTests(fixtures.CredentialActionTests):
         self.assertEqual(result["state"], "acp_network")
         record = self.control.daily_chat_record(self.intl["account_key"], result["day"])
         self.assertEqual(record["phase"], "cancelled")
-        self.assertFalse(self.control.daily_chat_done(self.intl["account_key"], result["day"]))
+        self.assertFalse(self.control.daily_chat_settled(self.intl["account_key"], result["day"]))
         self.assertIsNotNone(self.control.reserve_daily_chat(self.intl["account_key"], result["day"]))
 
     def test_acp_failure_after_prompt_keeps_the_day_spent(self):
@@ -361,7 +361,7 @@ class DailyChatTests(fixtures.CredentialActionTests):
         record = self.control.daily_chat_record(self.intl["account_key"], result["day"])
         # The turn was sent, so it stays unconfirmed; the next attempt is tomorrow.
         self.assertEqual(record["phase"], "sent")
-        self.assertFalse(self.control.daily_chat_done(self.intl["account_key"], result["day"]))
+        self.assertFalse(self.control.daily_chat_settled(self.intl["account_key"], result["day"]))
 
     def test_unwritable_store_stops_before_any_request(self):
         with patch.object(self.control, "daily_chat_record", side_effect=OSError("synthetic")):
@@ -394,6 +394,42 @@ class DailyChatTests(fixtures.CredentialActionTests):
                 self.assertNotIn(forbidden, text, forbidden)
         self.assertEqual(result["code"], 11140)
         self.assertEqual(result["http_status"], 429)
+
+    # -- upstream restriction -------------------------------------------------
+
+    def test_restricted_console_closes_the_day_without_leaving_it_retryable(self):
+        """403 + 11140 是当日终态：留 cancelled 会被每小时维护周期当成「可重试」再撞一次。"""
+        with patch.object(daily_chat, "create_conversation",
+                          side_effect=daily_chat.ChatFailure("restricted", 403, 11140)):
+            result = self.turn()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["state"], "restricted")
+        self.assertEqual(result["http_status"], 403)
+        self.assertEqual(result["code"], 11140)
+        day = result["day"]
+        record = self.control.daily_chat_record(self.intl["account_key"], day)
+        self.assertEqual(record["phase"], "cancelled")
+        self.assertEqual(record["state"], "restricted")
+        self.assertTrue(self.control.daily_chat_settled(self.intl["account_key"], day))
+        # 维护周期读的就是这个闸：当日不再排期。
+        self.assertTrue(converter._daily_chat_settled(self.intl, day))
+        # 再跑一次（人工点或维护周期）都不再发任何请求，也不重新预占。
+        again = self.turn()
+        self.assertEqual(again["state"], "restricted")
+        self.assertTrue(again["skipped"])
+        self.assertEqual(self.console.created, [])
+        self.assertEqual(self.control.daily_chat_record(self.intl["account_key"], day)["phase"], "cancelled")
+        # 明天是另一行记录，不受今天影响。
+        self.assertFalse(self.control.daily_chat_settled(self.intl["account_key"], "2026-10-02"))
+
+    def test_plain_console_403_stays_auth_error_and_keeps_the_day_open(self):
+        with patch.object(daily_chat, "create_conversation",
+                          side_effect=daily_chat.ChatFailure("auth_error", 403, 90001)):
+            result = self.turn()
+        self.assertEqual(result["state"], "auth_error")
+        day = result["day"]
+        self.assertFalse(self.control.daily_chat_settled(self.intl["account_key"], day))
+        self.assertIsNotNone(self.control.reserve_daily_chat(self.intl["account_key"], day))
 
     # -- manual action and preference ---------------------------------------
 

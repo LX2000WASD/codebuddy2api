@@ -71,7 +71,7 @@ test.describe("narrow layout", () => {
   test("settings tabs wrap instead of pushing the page sideways", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 800 });
     await openDashboard(page);
-    await expect(page.getByRole("tab", { name: /系统只读/ })).toBeVisible();
+    await expect(page.getByRole("tab", { name: /服务与接入/ })).toBeVisible();
     const numbers = await page.evaluate(() => {
       const scroller = document.scrollingElement!;
       const tabs = document.querySelector<HTMLElement>("[class*=tabs]");

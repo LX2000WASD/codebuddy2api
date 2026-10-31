@@ -46,7 +46,8 @@ class Management:
                 ledger = self.CONFIG.get("ledger")
                 balance = ledger.entry(path) if ledger else {}
                 record = policy.credential(entry)
-                enabled = record.get("enabled", True)
+                enabled = model_policy.credential_enabled(self.CONFIG, entry, policy)
+                restriction = model_policy.credential_restriction(self.CONFIG, entry, policy)
                 until = entry.get("fail_until", 0)
                 # A breaker that already expired is not a failure: `last_error` is only
                 # cleared by an explicit reset (converter.py clear_cooldowns /
@@ -55,9 +56,9 @@ class Management:
                 # credential page derive their alert from these two fields.
                 cooling = until > now
                 stale_error = entry.get("last_error") if cooling else None
-                # Upstream v1.5.0 marks a restricted account separately from a cooldown.
-                restricted = entry.get("restricted") is True
-                restricted_until = entry.get("restricted_until") if restricted else None
+                # The upstream restriction (403/11140) lives in the control store, not on the
+                # entry: it is one durable verdict next to enabled=false, with its evidence.
+                restricted = restriction["restricted"]
                 cooldowns = [{"model": model, "until": deadline,
                               "remaining_seconds": max(0, round(deadline - now))}
                              for (cid, model), deadline in pool._model_fail.items()
@@ -69,8 +70,7 @@ class Management:
                          "disabled" if not enabled else "error" if row.get("error") else
                          "circuit_open" if until > now else "expired" if row.get("token_expired") else "ready")
                 row.update(id=identity, name=Path(path).name, enabled=enabled, health=state,
-                           auto_disabled=auto_disabled, restricted=restricted,
-                           restricted_until=restricted_until,
+                           **restriction,
                            auto_checkin=model_policy.credential_auto_checkin(self.CONFIG, entry),
                            checkin=checkin.view(balance.get("checkin") or {}),
                            auto_travel=model_policy.credential_auto_travel(self.CONFIG, entry),

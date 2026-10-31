@@ -5,6 +5,7 @@ import { Credentials } from "./pages/Credentials";
 import { Diagnostics } from "./pages/Diagnostics";
 import { Credits } from "./pages/Credits";
 import { __resetFusionMock, __setFusionLatency } from "./fusion/mock";
+import { choose } from "./test-utils";
 
 /**
  * The three hand-written tables (credentials list, diagnostics x2, credits
@@ -40,6 +41,7 @@ function mockCredentials(rows: Record<string, unknown>[]) {
     data: rows,
     reload: vi.fn(),
     loading: false,
+    refreshing: false,
     error: null,
   });
 }
@@ -112,7 +114,7 @@ describe("credentials list migrated to DataTable", () => {
     mockCredentials(rows);
     vi.spyOn(api, "get").mockResolvedValue({ data: { items: [] } });
     render(<Credentials />);
-    fireEvent.change(screen.getByLabelText("每页显示数量"), { target: { value: "10" } });
+    choose(screen.getByLabelText("每页显示数量"), "10");
     showListView();
 
     const table = screen.getAllByRole("table")[0];

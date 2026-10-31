@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { api } from "./api";
 import { Dashboard } from "./pages/Dashboard";
+import { choose } from "./test-utils";
 
 // The dashboard used to issue a second, byte-identical /dashboard request
 // (~1.35 MB) whenever it asked for hourly buckets, and to prefetch the hourly
@@ -46,7 +47,7 @@ describe("dashboard request budget", () => {
     const get = mockDashboard();
     render(<Dashboard />);
     await screen.findByRole("img", { name: "按日用量趋势" });
-    fireEvent.change(screen.getByLabelText("统计粒度"), { target: { value: "hour" } });
+    choose(screen.getByLabelText("统计粒度"), "hour");
     await screen.findByRole("img", { name: "按小时用量趋势" });
     // Let any trailing effect fire before counting.
     await new Promise((resolve) => setTimeout(resolve, 50));

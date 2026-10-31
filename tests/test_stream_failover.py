@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 import converter
 from app.audit_store import AuditStore
+from app.control_store import ControlStore
 from app.observability import AuditMiddleware
 from tests import test_region_routing as fixtures
 
@@ -446,6 +447,37 @@ class StreamFailoverTests(fixtures.RegionRoutingTests):
             with self.subTest(status=status):
                 self.assertTrue(converter._failover_safe(
                     converter.UpstreamHTTPError(status, b'{"error":{"code":"quota"}}')))
+
+    def test_request_illegal_11140_is_never_replayed(self):
+        """403 + 11140 是账号级停权判定：换号只是把同一判定摊到更多账号上，并掩盖停权效果。"""
+        restricted = {"error": {"message": "request illegal", "type": "upstream_error", "code": 11140}}
+        self.assertFalse(converter._failover_safe(
+            converter.UpstreamHTTPError(403, json.dumps(restricted).encode())))
+        with allow_failover(2):
+            self.poison_with_status(403, restricted)
+            response, sent = self.stream_post()
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(len(sent), 1, "11140 不得换号重放")
+        self.assertEqual(self.failover_lines(), [])
+
+    def test_restricted_account_receives_no_further_requests(self):
+        """命中一次 11140 即持久停权：该账号不再被选中，后面的请求不会再撞它。"""
+        control = ControlStore(self.root / "control.sqlite3")
+        self.addCleanup(control.close)
+        converter.CONFIG["control_store"] = control
+        restricted = {"error": {"message": "request illegal", "type": "upstream_error", "code": 11140}}
+        with allow_failover(2):
+            self.poison_with_status(403, restricted)
+            response, sent = self.stream_post()
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(len(sent), 1)
+        poisoned = self.uids(sent)[0]
+        entry = next(e for e in self.pool.entries() if e["cm"].summary()["uid"] == poisoned)
+        self.assertTrue(control.snapshot()["credentials"][entry["account_key"]]["restricted"])
+        for _ in range(3):                     # 注入器仍指向它，选中它就是失败
+            again, later = self.stream_post()
+            self.assertEqual(again.status_code, 200, again.text)
+            self.assertNotIn(poisoned, self.uids(later))
 
     def test_deterministic_http_statuses_are_not_replayed(self):
         for status in DETERMINISTIC_STATUS:

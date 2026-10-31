@@ -2,6 +2,7 @@
 """Interface-level regression tests for Responses multi-agent tools and namespace identity mapping."""
 
 from copy import deepcopy
+import gzip
 import json
 import re
 import sys
@@ -426,7 +427,7 @@ class ResponsesMultiAgentInterfaceTests(unittest.TestCase):
         self.upstream_requests.clear()
 
         def respond(request):
-            body = json.loads(request.content)
+            body = json.loads(gzip.decompress(request.content) if request.headers.get("Content-Encoding") == "gzip" else request.content)
             names = [tool["function"]["name"] for tool in body.get("tools", [])]
             names.extend(call["function"]["name"] for message in body["messages"] for call in message.get("tool_calls", []))
             if any(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name) is None for name in names):

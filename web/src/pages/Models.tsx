@@ -910,9 +910,6 @@ function modelColumns({
             ))}
             {m.embedding && <Badge tone="neutral">{t("models.embedding")}</Badge>}
             {m.rerank && <Badge tone="neutral">{t("models.rerank")}</Badge>}
-            {m.available === false && m.enabled && (
-              <Badge tone="warn">{t("models.avail.none")}</Badge>
-            )}
           </div>
           <small className={s.mono}>{m.upstream_id ?? m.id}</small>
           {modelDisplayName(m) && <small>{modelDisplayName(m)}</small>}

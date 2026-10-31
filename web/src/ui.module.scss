@@ -2460,6 +2460,9 @@ $white: var(--page);
 }
 .tabs {
   display: flex;
+  // Settings and log tabs both grow with the number of sections; wrapping keeps a
+  // narrow viewport from pushing the whole page sideways.
+  flex-wrap: wrap;
   gap: var(--space-2);
   border-bottom: 1px solid $line;
   margin-bottom: var(--space-5);
@@ -5681,4 +5684,3 @@ tr.selectedRow {
 .warnText {
   color: var(--warning-fg);
 }
-

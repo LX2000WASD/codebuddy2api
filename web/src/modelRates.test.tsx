@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { api, type ModelRule } from "./api";
 import { type Job } from "./jobs";
@@ -131,6 +131,14 @@ describe("output limit probes", () => {
       },
     });
     render(<Models />);
+    // The probe overlay sits in the max-output cell, and that column starts hidden
+    // (the catalog hides context/output/effort to fit 1280px), so reveal it first.
+    fireEvent.click(await screen.findByRole("button", { name: "列可见性" }));
+    fireEvent.click(
+      within(screen.getByRole("group", { name: "列可见性" })).getByRole("checkbox", {
+        name: "最大输出",
+      }),
+    );
     expect(await screen.findByText("32K ⚠")).toBeTruthy();
   });
 });

@@ -31,6 +31,7 @@ function mockRow(overrides: Record<string, unknown> = {}) {
     data: [{ ...row, ...overrides }],
     reload: vi.fn(),
     loading: false,
+    refreshing: false,
     error: null,
   });
 }

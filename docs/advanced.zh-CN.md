@@ -181,7 +181,7 @@ scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` 
 | `GET /admin/credentials` | 凭证列表与运行状态 |
 | `POST /admin/credentials` | 从服务端受控目录导入 `.info` |
 | `DELETE /admin/credentials/{name}` | 按文件名删除凭证文件；仍被模型绑定引用时返回 409 |
-| `PATCH /admin/credentials/{id}` | 单次请求只接受一个布尔字段：`enabled`、`paused`、`auto_checkin`、`auto_travel`、`auto_daily_chat` 或 `auto_growth`，或 `growth_auto` 任务码映射；`paused` 只退出选号，签到、旅行与保号任务继续运行——详见[融合层 API §5/§10](fusion-api.md)；保存自动任务开关不立即领取 |
+| `PATCH /admin/credentials/{id}` | 单次请求只接受一个布尔字段：`enabled`、`paused`、`auto_checkin`、`auto_travel`、`auto_daily_chat` 或 `auto_growth`，或 `growth_auto` 任务码映射；`paused` 只退出选号，签到、旅行与保号任务继续运行；`enabled: true` 同时是上游停权（403/11140）的人工放行入口——详见[融合层 API §5/§10/§11](fusion-api.md)；保存自动任务开关不立即领取 |
 | `GET /admin/credentials/{id}/growth-tasks` · `POST .../growth-tasks/auto` · `.../auto-all` · `GET /admin/growth-jobs` · `POST /admin/credentials/growth-batch` | 实时成长任务列表；以后台任务执行单任务或全部已开任务；各账号当前与最近任务；为已选账号批量设置任务开关 |
 | `POST /admin/oauth/start` · `GET /admin/oauth/poll` | 发起与轮询登录；`site=cn`（默认）、`intl`（国际 WorkBuddy）或 `intl-codebuddy`（国际 CodeBuddy） |
 | `POST` / `GET` / `DELETE /admin/session` · `DELETE /admin/sessions` | 密码登录、会话查看/退出及全部撤销；记住我会话用同一 SID 滑动续期 |
@@ -341,6 +341,10 @@ Messages 的 `enabled` / `adaptive` 启用 Chat 推理，`output_config.effort` 
 
 | 现象 | 处理与边界 |
 |------|------------|
+| WebUI 无法登录 | 确认设置了 API key；更换 key 后重新登录并重新发起未完成的 OAuth。HTTPS 反代后经域名登录失败时，用 `admin_allowed_origins` 信任对外来源（见上文） |
+| 本地 401 | 客户端密钥与网关不一致 |
+| 上游 401 / 403 | 凭证级认证熔断；在 WebUI 检查并重新登录。响应体是上游「request illegal」判定的 403 不算认证失败，见下一行 |
+| 上游 403 `request illegal`（11140） | 按「单账号风控判定」处理，而不是凭证失能。**推理链路**命中一次即持久停权：控制库同时写 `enabled=false` 与 `restricted` / `restricted_at` / `restricted_reason` / `restricted_evidence`，该号退出选路与四条自动化链，重启也不会自动回池。不计入连续认证失败次数，也不写模型冷却；短冷却（`request_illegal_cooldown_s`，默认 60 秒）保留为同一秒内的去抖，真正生效的是持久停权。该判定**不换号重放**——换号只会把同一判定摊到更多账号上，当前请求把上游 403 原样回给客户端。**没有时间自动释放**：人工用 `POST /admin/credentials/{id}/reset-cooldown`（结果带 `restricted_released`）或 `PATCH /admin/credentials/{id} {"enabled": true}` 放行。自动化链路命中同码不会停权：每日活跃记 `state=restricted` 并停止当日排期，签到不会把 403 记成「今日已签到」（下一轮维护仍可能重试） |
 | WebUI 无法登录 | 使用初始或当前管理密码，或执行 `converter.py admin reset-password`。HTTPS 反代后经域名登录失败时，用 `admin_allowed_origins` 信任对外来源（见上文） |
 | 本地 401 / 403 / 429 | 检查推理密钥是否存在、启用且未过期，再检查 IP/模型允许范围和 RPM；鉴权与权限错误按客户端协议返回 |
 | 上游 401 / 403 | 凭证级认证熔断；在 WebUI 检查并重新登录。响应体是上游「request illegal」判定的 403 不算认证失败，见 11140 一行 |
@@ -354,7 +358,7 @@ Messages 的 `enabled` / `adaptive` 启用 Chat 推理，`output_config.effort` 
 | 发送后断连、读超时、协议错误 | 不做网络重放，避免重复计费；日志记录异常类型与耗时 |
 | 非流式响应还没成形，客户端就挂断 | 立刻取消这次上游调用并归还并发名额，审计记为 `cancelled`，不会被记成一次已完成的回答；流式本来就是这一行为 |
 | 流式在第一个字节之前失败 | 按真实状态码返回，与 `stream=false` 同口径。只带一个流内 `error` 事件的 200 会被客户端读成「模型答了个空」，会话静默结束，审计里还记成一次成功 |
-| 换凭证重放（`--failover-max`） | 默认关闭。开启后，失败发生在「一个字节都没发给下游」之前时换一个凭证重放，最多 N 次，审计记为 `success` 并留下 `failover_recovered` 尝试标记。可重放的失败：上游 HTTP 401/403/429/502/503/504 拒绝，与确定没开始收正文的传输失败（建连失败/超时）；内容审核拒绝、11128/11140/11148、11129/11134/11150/11158、上游已回 200 后合成的 502、读超时与协议错误一律不重放；换不出其他凭证时如实回第一次的状态码。计费口径：401/403/429/503 与建连类失败发生在受理阶段，不会扣费；502/504 可能已被上游处理并计费，但结果到不了下游，不重放也退不回额度——只是把一次已付费请求变成断掉的会话。这类重放在日志里标注「上游可能已处理该请求」，便于对账 |
+| 换凭证重放（`--failover-max`） | 默认关闭。开启后，失败发生在「一个字节都没发给下游」之前时换一个凭证重放，最多 N 次，审计记为 `success` 并留下 `failover_recovered` 尝试标记。可重放的失败：上游 HTTP 401/403/429/502/503/504 拒绝，与确定没开始收正文的传输失败（建连失败/超时）；携带 11140 判定的 403 从不重放（见上表风控行）；内容审核拒绝、11128/11148、11129/11134/11150/11158、上游已回 200 后合成的 502、读超时与协议错误一律不重放；换不出其他凭证时如实回第一次的状态码。计费口径：401/403/429/503 与建连类失败发生在受理阶段，不会扣费；502/504 可能已被上游处理并计费，但结果到不了下游，不重放也退不回额度——只是把一次已付费请求变成断掉的会话。这类重放在日志里标注「上游可能已处理该请求」，便于对账 |
 | 写超时重放（`--retry-write-timeout`） | 默认开启，与写 20 秒、首字节 30 秒配套。写超时只能证明正文没发完，不能证明上游忽略了已收到的部分；跨境长会话比握手更容易遇到写超时，若出现重复计费迹象就传 `false` 关闭。这类重放同样带「上游可能已处理该请求」日志标记 |
 | 工具参数损坏 | 兼容聚合校验按 `--tool-call-max-retry`（默认 3）额外生成，可能消耗更多额度；被丢弃的生成带用量记入尝试明细；耗尽后返回错误。实时模式绝不重生成，只在成功终端前报告协议错误 |
 | 上游空流或残流 | 没有有效输出、缺少结束标记或包含错误的流不伪装为成功 |

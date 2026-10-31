@@ -405,7 +405,7 @@ class WireLevelTests(unittest.TestCase):
             request["messages"] = messages
         response = self.fx.client.post("/v1/" + endpoint, json=request)
         self.assertEqual(response.status_code, 200, response.text)
-        return json.loads(self.fx.requests[-1].content)
+        return json.loads(fixtures.request_content(self.fx.requests[-1]))
 
     def test_generated_key_reaches_the_wire_with_the_selected_account_segment(self):
         self.fx.configure(profiles=("cn-cli",))

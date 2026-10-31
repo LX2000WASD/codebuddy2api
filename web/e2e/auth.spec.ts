@@ -99,7 +99,9 @@ test("bootstrap warning links to the account tab", async ({ page }) => {
     page.getByRole("status").filter({ hasText: "当前使用初始密码，请尽快修改。" }),
   ).toBeVisible();
   await page.getByRole("link", { name: "修改管理账户" }).click();
-  await expect(page).toHaveURL(/\/dashboard\/settings\?tab=account$/);
+  // Settings is a section of the system task area since the navigation was
+  // consolidated; the account tab is still addressed by ?tab=account.
+  await expect(page).toHaveURL(/\/dashboard\/system\?tab=account$/);
   await expect(page.getByRole("heading", { name: "管理账户", exact: true }).first()).toBeVisible();
 });
 

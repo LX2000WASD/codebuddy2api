@@ -107,7 +107,7 @@ class WebFetchTests(fixtures.RegionRoutingTests):
         profile = self.account_profiles[uid]
         self.assertEqual(request.url.host, fixtures.HOSTS[profile])
         self.assertEqual(request.headers["authorization"], f"Bearer synthetic-access-{uid}")
-        payload = json.loads(request.content)
+        payload = json.loads(fixtures.request_content(request))
         self.assertEqual(payload["format"], "markdown")
         self.assertEqual(payload["timeout"], 20)
         if self.fetch_reply is not None:

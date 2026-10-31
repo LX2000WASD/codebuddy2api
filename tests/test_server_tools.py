@@ -1574,16 +1574,19 @@ class ServerToolEndpointTests(fixtures.RegionRoutingTests):
                 calls = self.guard_calls()
                 response = self.client.post("/v1/" + endpoint, json=self.payload(endpoint=endpoint))
                 self.assertEqual(response.status_code, 200, response.text)
-                # Only the preparation pass, which already runs in the threadpool.
-                self.assertEqual(calls, ["worker"])
+                # Both passes (preparation, plus routing because this fork injects
+                # prompt_cache_key on every request and that rebinds the body) must run in the
+                # threadpool; a pass on the event loop is the real defect this guards against.
+                self.assertEqual(set(calls), {"worker"})
 
     def test_only_continuation_rounds_are_measured_again_and_off_the_event_loop(self):
         calls = self.guard_calls()
         self.chat_rounds = [tool_call_round("WebSearch", {"query": QUERY}), final_round()]
         response = self.client.post("/v1/messages", json=self.search_payload())
         self.assertEqual(response.status_code, 200, response.text)
-        # The preparation pass plus the single continuation round.
-        self.assertEqual(calls, ["worker", "worker"])
+        # Preparation, routing (prompt_cache_key rebinds the body in this fork) and the single
+        # continuation round — every one of them off the event loop.
+        self.assertEqual(calls, ["worker", "worker", "worker"])
 
 
 if __name__ == "__main__":

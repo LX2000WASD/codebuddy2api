@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -163,6 +164,76 @@ class ControlStoreTests(unittest.TestCase):
             raw = db.execute("SELECT payload FROM control").fetchone()[0]
         self.assertNotIn("secret", raw)
         self.assertEqual(self.store.snapshot()["revision"], 1)
+
+    # -- upstream restriction (403/11140) -------------------------------------
+
+    def test_restriction_disables_the_account_and_never_restacks(self):
+        self.assertTrue(self.store.set_restricted("fingerprint", reason="上游判定账号受限",
+                                                  evidence="HTTP 403 code=11140", at=1000))
+        record = self.store.snapshot()["credentials"]["fingerprint"]
+        self.assertEqual(record["enabled"], False)          # 停权与 enabled 同一次写入
+        self.assertTrue(record["restricted"])
+        self.assertEqual(record["restricted_at"], 1000)
+        revision = self.store.snapshot()["revision"]
+        # 同一账号的第二个判定是同一份证据：不重复写库，也不覆盖第一条原因。
+        self.assertFalse(self.store.set_restricted("fingerprint", reason="again", evidence="again"))
+        self.assertEqual(self.store.snapshot()["revision"], revision)
+        self.assertEqual(self.store.snapshot()["credentials"]["fingerprint"]["restricted_reason"],
+                         "上游判定账号受限")
+
+    def test_restriction_survives_a_reopen_and_releases_on_manual_reset(self):
+        self.store.set_restricted("fingerprint", reason="上游判定账号受限", evidence="HTTP 403 code=11140")
+        reopened = ControlStore(self.path)
+        self.addCleanup(reopened.close)
+        self.assertTrue(reopened.snapshot()["credentials"]["fingerprint"]["restricted"])
+        self.assertTrue(reopened.clear_restricted("fingerprint"))
+        self.assertEqual(reopened.snapshot()["credentials"]["fingerprint"],
+                         {"enabled": True, "restricted": False})
+        self.assertFalse(reopened.clear_restricted("fingerprint"))   # 幂等：不写库
+
+    def test_enabling_a_restricted_account_releases_it(self):
+        self.store.set_restricted("fingerprint", reason="上游判定账号受限", evidence="HTTP 403 code=11140")
+        self.store.set_credential("fingerprint", True)
+        self.assertEqual(self.store.snapshot()["credentials"]["fingerprint"],
+                         {"enabled": True, "restricted": False})
+        self.store.set_restricted("fingerprint", reason="上游判定账号受限")
+        self.store.set_credential("fingerprint", False)
+        self.assertTrue(self.store.snapshot()["credentials"]["fingerprint"]["restricted"])
+
+    def test_malformed_restriction_fields_are_rejected_on_load(self):
+        payload = {"settings": {}, "models": {}, "credentials": {
+            "fingerprint": {"enabled": True, "restricted": True, "restricted_reason": 5}}}
+        with sqlite3.connect(self.path) as db:
+            db.execute("UPDATE control SET payload=?", (json.dumps(payload),))
+        with self.assertRaises(ValueError):
+            ControlStore(self.path)
+
+    def test_legacy_daily_chats_table_gains_the_state_column(self):
+        """生产库早于 state 列：升级后必须补列，否则「当日终态」无处记录。"""
+        legacy = self.root / "legacy.sqlite3"
+        db = sqlite3.connect(legacy)
+        db.execute("CREATE TABLE control (id INTEGER PRIMARY KEY CHECK(id=1), "
+                   "revision INTEGER NOT NULL, payload TEXT NOT NULL)")
+        db.execute("INSERT INTO control VALUES (1,0,?)",
+                   (json.dumps({"settings": {}, "models": {}, "credentials": {}}),))
+        db.execute("CREATE TABLE daily_chats (account_key TEXT NOT NULL, day TEXT NOT NULL, "
+                   "attempt_id TEXT NOT NULL, phase TEXT NOT NULL, conversation_id TEXT, "
+                   "sandbox_status TEXT, usage_before REAL, usage_after REAL, acp_usage REAL, "
+                   "reserved_at REAL NOT NULL, confirmed_at REAL, updated_at REAL NOT NULL, "
+                   "PRIMARY KEY (account_key, day))")
+        db.execute("INSERT INTO daily_chats VALUES('fingerprint','2026-10-01','attempt','cancelled',"
+                   "NULL,NULL,NULL,NULL,NULL,1,NULL,1)")
+        db.execute("PRAGMA user_version=2")
+        db.commit()
+        db.close()
+        store = ControlStore(legacy)
+        self.addCleanup(store.close)
+        record = store.daily_chat_record("fingerprint", "2026-10-01")
+        self.assertEqual(record["phase"], "cancelled")
+        self.assertIsNone(record["state"])
+        self.assertFalse(store.daily_chat_settled("fingerprint", "2026-10-01"))
+        store.daily_chat_checkpoint("fingerprint", "2026-10-01", state="restricted")
+        self.assertTrue(store.daily_chat_settled("fingerprint", "2026-10-01"))
 
     def test_corrupt_and_unknown_database_are_not_reinitialized(self):
         bad = self.root / "bad.sqlite3"

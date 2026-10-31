@@ -426,6 +426,56 @@ function SettingsForm({
     : [];
   const filtered = current ? current.entries.filter((entry) => matches(entry.item, search)) : [];
   const restarting = pendingRestart(data.items);
+  /* Second-level control: it used to reuse .sectionNav, the exact class the task-area
+     switcher above it uses, so /dashboard/system showed two bars of identical colour,
+     height and radius and neither read as the deeper level. .tabs is the underline
+     treatment the app already uses for in-page navigation (Logs), which separates the
+     two levels without touching the DOM, the roles or the aria labels. */
+  const tabBar = (
+    <div className={s.tabs} role="tablist" aria-label="配置分组">
+      {buckets.map((bucket) => {
+        const title = GROUPS.find((g) => g.key === bucket.group)?.title ?? bucket.group;
+        const dirty = bucket.entries.filter((entry) => Object.hasOwn(values, entry.item.key));
+        return (
+          <button
+            key={bucket.group}
+            type="button"
+            role="tab"
+            aria-selected={current?.group === bucket.group}
+            className={current?.group === bucket.group ? s.selectedTab : ""}
+            onClick={() => {
+              setTab(bucket.group);
+              setQuery("");
+            }}
+          >
+            {title}（{bucket.entries.length}）
+            {dirty.length > 0 && <span className={s.chipOn}> · {dirty.length} 处改动</span>}
+          </button>
+        );
+      })}
+      <button
+        type="button"
+        role="tab"
+        aria-selected={account}
+        className={account ? s.selectedTab : ""}
+        onClick={() => {
+          setTab("account");
+          setQuery("");
+        }}
+      >
+        {t("account.title")}
+      </button>
+    </div>
+  );
+  // The account panel submits its own form, so it cannot live inside this one (a form
+  // never nests in HTML): the tab swaps the whole settings form for that panel.
+  if (account)
+    return (
+      <>
+        {tabBar}
+        <AccountPanel />
+      </>
+    );
   return (
     <form
       onSubmit={(e) => {
@@ -450,48 +500,8 @@ function SettingsForm({
           <CopyCommand command={RESTART_COMMAND} />
         </div>
       )}
-      {/* Second-level control: it used to reuse .sectionNav, the exact class the
-          task-area switcher above it uses, so /dashboard/system showed two bars of
-          identical colour, height and radius and neither read as the deeper level.
-          .tabs is the underline treatment the app already uses for in-page
-          navigation (Logs), which separates the two levels without touching the
-          DOM, the roles or the aria labels. */}
-      <div className={s.tabs} role="tablist" aria-label="配置分组">
-        {buckets.map((bucket) => {
-          const title = GROUPS.find((g) => g.key === bucket.group)?.title ?? bucket.group;
-          const dirty = bucket.entries.filter((entry) => Object.hasOwn(values, entry.item.key));
-          return (
-            <button
-              key={bucket.group}
-              type="button"
-              role="tab"
-              aria-selected={current?.group === bucket.group}
-              className={current?.group === bucket.group ? s.selectedTab : ""}
-              onClick={() => {
-                setTab(bucket.group);
-                setQuery("");
-              }}
-            >
-              {title}（{bucket.entries.length}）
-              {dirty.length > 0 && <span className={s.chipOn}> · {dirty.length} 处改动</span>}
-            </button>
-          );
-        })}
-        <button
-          type="button"
-          role="tab"
-          aria-selected={account}
-          className={account ? s.selectedTab : ""}
-          onClick={() => {
-            setTab("account");
-            setQuery("");
-          }}
-        >
-          {t("account.title")}
-        </button>
-      </div>
-      {account && <AccountPanel />}
-      {!account && current && (
+      {tabBar}
+      {current && (
         <Panel
           title={GROUPS.find((g) => g.key === current.group)?.title ?? current.group}
           hint={GROUPS.find((g) => g.key === current.group)?.description}
@@ -559,8 +569,7 @@ function SettingsForm({
               ))}
         </Panel>
       )}
-      {!account && (
-        <div className={s.saveBar}>
+      <div className={s.saveBar}>
           <span>
             {count
               ? `${count} 项待保存${risky.length ? `（其中 ${risky.length} 项高风险，保存前需确认）` : ""}`

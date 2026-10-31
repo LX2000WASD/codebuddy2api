@@ -86,7 +86,13 @@ export function CreditFilters({
 
 // Three cells rather than one row fragment: the log table renders its columns through
 // DataTable, which asks for one cell per column and owns the <tr> itself.
-export function CreditAction({ item, names }: { item: RecordValue; names: Record<string, string> }) {
+export function CreditAction({
+  item,
+  names,
+}: {
+  item: RecordValue;
+  names: Record<string, string>;
+}) {
   const t = useT();
   const details = object(item.details ?? {});
   const label = eventActionLabel(item.action);

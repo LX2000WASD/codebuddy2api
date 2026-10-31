@@ -17,6 +17,18 @@ from .audit_store import _secure_path, safe_label
 from .growth_tasks import KNOWN_TASK_CODES as GROWTH_TASK_CODES
 
 
+# One credential record is a small fixed set of operator-visible switches plus the
+# upstream-restriction evidence. Anything else in the document is invalid: the file is
+# hand-editable, so an unknown key must fail loudly instead of silently riding along.
+_CREDENTIAL_FIELDS = frozenset({"enabled", "label", "auto_checkin", "auto_travel", "auto_daily_chat",
+                                "auto_growth", "growth_auto",
+                                "restricted", "restricted_at", "restricted_reason", "restricted_evidence",
+                                "auto_disabled", "auto_reason", "auto_body", "auto_at"})
+_CREDENTIAL_FLAGS = ("auto_checkin", "auto_travel", "auto_daily_chat", "auto_growth", "restricted",
+                     "auto_disabled")
+_RESTRICTION_TEXT = ("restricted_reason", "restricted_evidence", "auto_reason", "auto_body")
+
+
 class ConflictError(ValueError):
     """The caller's revision no longer matches the persisted revision."""
 
@@ -42,6 +54,18 @@ def _day(value, label="日期"):
     except ValueError:
         raise ValueError(f"{label} 无效") from None
     return value
+
+
+def _released(record):
+    """Put one credential record into the released state: enabled, no restriction marks.
+
+    Both provenances are cleared together: the upstream-restriction verdict written by the
+    inference path and the automatic-disable label written by the revoked-token path.
+    """
+    record.update(enabled=True, restricted=False)
+    record.pop("auto_disabled", None)
+    for key in _RESTRICTION_TEXT + ("restricted_at", "auto_at"):
+        record.pop(key, None)
 
 
 def buddy_claim_reserved(record):
@@ -179,6 +203,7 @@ class ControlStore:
                              "phase TEXT NOT NULL, conversation_id TEXT, sandbox_status TEXT, "
                              "usage_before REAL, usage_after REAL, acp_usage REAL, "
                              "reserved_at REAL NOT NULL, confirmed_at REAL, updated_at REAL NOT NULL, "
+                             "state TEXT, "
                              "PRIMARY KEY (account_key, day))")
             # One row per manual rate probe: the charge upstream reported for a known-size request.
             self._db.execute("CREATE TABLE IF NOT EXISTS rate_probes ("
@@ -189,6 +214,11 @@ class ControlStore:
             # Additive: the calibrated rate of a charged probe, NULL when it could not be derived.
             if "rate" not in [row[1] for row in self._db.execute("PRAGMA table_info(rate_probes)")]:
                 self._db.execute("ALTER TABLE rate_probes ADD COLUMN rate REAL")
+            # A database created before this column existed must gain it: without the day's
+            # terminal state, a restriction would have to be recorded as another 'cancelled'
+            # row, which means "nothing was sent, retry today" — the opposite of what it is.
+            if "state" not in {row[1] for row in self._db.execute("PRAGMA table_info(daily_chats)")}:
+                self._db.execute("ALTER TABLE daily_chats ADD COLUMN state TEXT")
             self._db.execute("CREATE TABLE IF NOT EXISTS runtime_state (name TEXT PRIMARY KEY, payload TEXT NOT NULL)")
             self._db.execute("CREATE TABLE IF NOT EXISTS state_imports (name TEXT PRIMARY KEY, imported INTEGER NOT NULL, migrated_at REAL NOT NULL)")
             self._db.execute("CREATE TABLE IF NOT EXISTS gateway_secrets (name TEXT PRIMARY KEY, value TEXT NOT NULL, announced INTEGER NOT NULL DEFAULT 0 CHECK(announced IN (0,1)))")
@@ -241,20 +271,14 @@ class ControlStore:
             validate_model(source, rule, data["models"], legacy_scopes=True)  # Preserve legacy scope intersections.
         for identity, metadata in data["credentials"].items():
             _identifier(identity, "账号指纹")
-            growth = metadata.get("growth_auto")
-            growth = metadata.get("growth_auto")
-            if (not isinstance(metadata, dict)
-                    or set(metadata) - {"enabled", "label", "auto_checkin", "auto_travel",
-                                        "auto_daily_chat", "auto_growth", "growth_auto",
-                                        "auto_disabled", "auto_reason", "auto_body", "auto_at"}
+            growth = metadata.get("growth_auto") if isinstance(metadata, dict) else None
+            if (not isinstance(metadata, dict) or set(metadata) - _CREDENTIAL_FIELDS
                     or type(metadata.get("enabled")) is not bool
-                    or metadata.get("auto_disabled") is not None and type(metadata["auto_disabled"]) is not bool
-                    or metadata.get("auto_reason") is not None and not isinstance(metadata["auto_reason"], str)
-                    or metadata.get("auto_body") is not None and not isinstance(metadata["auto_body"], str)
-                    or metadata.get("auto_at") is not None and not isinstance(metadata["auto_at"], (int, float))
-                    or metadata.get("auto_growth") is not None and type(metadata["auto_growth"]) is not bool
-                    or any(key in metadata and type(metadata[key]) is not bool for key in
-                           ("auto_checkin", "auto_travel", "auto_daily_chat"))
+                    or any(key in metadata and type(metadata[key]) is not bool for key in _CREDENTIAL_FLAGS)
+                    or ("restricted_at" in metadata and type(metadata["restricted_at"]) not in (int, float))
+                    or ("auto_at" in metadata and type(metadata["auto_at"]) not in (int, float))
+                    or any(key in metadata and not isinstance(metadata[key], str)
+                           for key in _RESTRICTION_TEXT)
                     or growth is not None and (
                         not isinstance(growth, dict)
                         or set(growth) - set(GROWTH_TASK_CODES)
@@ -323,16 +347,22 @@ class ControlStore:
 
 
     def set_credential(self, account_key, enabled):
-        """Manual toggle: any operator action clears the automatic-disable provenance."""
+        """Switch one account on or off; enabling is also a manual release from restriction.
+
+        Enabling must clear the restriction marks, otherwise the switch would say "usable"
+        while the stored verdict still says the upstream refused it. Any manual action also
+        clears the automatic-disable provenance: its reason/body/time are evidence for a
+        disabled state and must not survive a release.
+        """
         _identifier(account_key, "账号指纹")
         if type(enabled) is not bool:
             raise ValueError("enabled 必须为布尔值")
-
         def change(state):
             record = state["credentials"].setdefault(account_key, {})
-            record["enabled"] = enabled
-            # Any manual toggle clears automatic restriction provenance. The reason/body/time
-            # fields are evidence for the disabled state and must not survive an appeal release.
+            if enabled:
+                _released(record)
+            else:
+                record.update(enabled=False)
             for key in ("auto_disabled", "auto_reason", "auto_body", "auto_at"):
                 record.pop(key, None)
         return self._update(None, change)
@@ -352,6 +382,41 @@ class ControlStore:
                 else:
                     record[key] = value
         return self._update(None, change)
+
+    # -- Upstream restriction (HTTP 403 / code 11140) ---------------------------
+    # A restricted account leaves the pool durably: enabled=False is written in the same
+    # transaction as the evidence, so routing, the four automation chains and the admin
+    # switch all read one state. Nothing here ever expires — only an operator (enabled=true
+    # or reset-cooldown) releases it. Parking it in credential_cooldowns instead would be
+    # wrong twice: that store caps every deadline at an hour on purpose, and it is rebuilt
+    # from a file that a stale or forged row could abuse.
+
+    def set_restricted(self, account_key, *, reason="", evidence="", at=None):
+        """Disable one account as upstream-restricted; returns False if already marked.
+
+        A repeat verdict from a request that was already in flight is the same evidence,
+        not new information, so it must not bump the revision or churn the document.
+        """
+        _identifier(account_key, "账号指纹")
+        if self.snapshot()["credentials"].get(account_key, {}).get("restricted") is True:
+            return False
+        stamp = time.time() if at is None else float(at)
+        def change(state):
+            state["credentials"].setdefault(account_key, {"enabled": True}).update(
+                enabled=False, restricted=True, restricted_at=stamp,
+                restricted_reason=str(reason or "")[:200], restricted_evidence=str(evidence or "")[:200])
+        self._update(None, change)
+        return True
+
+    def clear_restricted(self, account_key):
+        """Release one account from upstream restriction and re-enable it atomically."""
+        _identifier(account_key, "账号指纹")
+        if self.snapshot()["credentials"].get(account_key, {}).get("restricted") is not True:
+            return False
+        def change(state):
+            _released(state["credentials"].setdefault(account_key, {"enabled": True}))
+        self._update(None, change)
+        return True
 
     def unbind_credential(self, account_key):
         """Drop an account key from every rule, returning {source: old_ids} for rollback."""
@@ -663,7 +728,7 @@ class ControlStore:
                     "INSERT INTO daily_chats (account_key,day,attempt_id,phase,reserved_at,updated_at) "
                     "VALUES(?,?,?,'reserved',?,?) ON CONFLICT(account_key,day) DO UPDATE SET "
                     "attempt_id=excluded.attempt_id,phase='reserved',conversation_id=NULL,"
-                    "sandbox_status=NULL,usage_before=NULL,usage_after=NULL,acp_usage=NULL,"
+                    "sandbox_status=NULL,usage_before=NULL,usage_after=NULL,acp_usage=NULL,state=NULL,"
                     "reserved_at=excluded.reserved_at,confirmed_at=NULL,updated_at=excluded.updated_at",
                     (identity, day, attempt, time.time(), time.time()))
                 self._db.execute("COMMIT")
@@ -689,11 +754,13 @@ class ControlStore:
                 raise ValueError("打卡预留已变化")
 
     def daily_chat_checkpoint(self, identity, day, *, sandbox_status=None, usage_before=None,
-                              usage_after=None, acp_usage=None, conversation_id=None):
+                              usage_after=None, acp_usage=None, conversation_id=None, state=None):
         _identifier(identity, "账号指纹")
         _day(day)
         if sandbox_status is not None:
             _identifier(sandbox_status, "会话状态")
+        if state is not None:
+            _identifier(state, "打卡终态")
         if conversation_id is not None:
             _identifier(conversation_id, "会话 ID")
         for name, value in (("usage_before", usage_before), ("usage_after", usage_after),
@@ -704,14 +771,22 @@ class ControlStore:
             self._db.execute(
                 "UPDATE daily_chats SET sandbox_status=COALESCE(?,sandbox_status), "
                 "conversation_id=COALESCE(?,conversation_id), usage_before=COALESCE(?,usage_before), "
-                "usage_after=COALESCE(?,usage_after), acp_usage=COALESCE(?,acp_usage), updated_at=? "
+                "usage_after=COALESCE(?,usage_after), acp_usage=COALESCE(?,acp_usage), "
+                "state=COALESCE(?,state), updated_at=? "
                 "WHERE account_key=? AND day=?",
                 (sandbox_status, conversation_id, usage_before, usage_after, acp_usage,
-                 time.time(), identity, day))
+                 state, time.time(), identity, day))
 
-    def daily_chat_done(self, identity, day):
+    def daily_chat_settled(self, identity, day):
+        """The day is closed: the turn was confirmed, or upstream restricted the account.
+
+        A cancelled row that was never sent stays retryable on purpose: nothing was handed
+        to the agent, so a transient sandbox failure must not cost the day. That is exactly
+        why a restriction needs its own terminal state instead of reusing cancel.
+        """
         record = self.daily_chat_record(identity, day)
-        return bool(record and record["phase"] in {"confirmed", "reconciled"})
+        return bool(record and (record["phase"] in {"confirmed", "reconciled"}
+                                or record.get("state") == "restricted"))
 
     def prune_daily_chats(self, keep_days=30):
         """Drop old rows; records are diagnostic, never a source of truth for routing."""
