@@ -727,8 +727,22 @@ $white: var(--page);
   justify-content: space-between;
   gap: var(--space-2);
   width: 100%;
+  /* Four columns of "0 / 0 就绪" do not fit a phone: let the counters shrink instead of
+     pushing the page sideways (the grid column is minmax(0, 1fr), the flex item is not). */
+  min-width: 0;
   font-size: var(--fs-12);
   color: var(--text-muted);
+}
+.channelTrack button > * {
+  min-width: 0;
+}
+.channelTrack small {
+  text-align: end;
+}
+@media (max-width: 640px) {
+  .channelTrack {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 .channelHead span:last-child {
   font-size: var(--fs-11);
@@ -3718,7 +3732,9 @@ $white: var(--page);
     padding: var(--space-2);
   }
   .collapsed .sidebarHead,
-  .collapsed .sidebar nav {
+  .collapsed .sidebar nav,
+  /* The updates link lives outside the navigation landmark, so it stows with the panel. */
+  .collapsed .navExternal {
     display: none;
   }
   .collapsed .sidebarBar {
@@ -5109,6 +5125,14 @@ tr.selectedRow {
 /* Segmented bars: the local .tabs treatment is an underline, so the gliding thumb
    is only painted on the bars that really are segmented (channel / status / view
    switches). Display-only: the thumb is aria-hidden decoration. */
+/* A segmented bar hosts the absolutely positioned SegmentThumb, which is placed from the
+   bar's own offsets; without the positioned ancestor it lands on the page and widens it. */
+.channelTrack,
+.statusPills,
+.viewSwitch,
+.tabs {
+  position: relative;
+}
 .segmentThumb {
   position: absolute;
   top: 0;

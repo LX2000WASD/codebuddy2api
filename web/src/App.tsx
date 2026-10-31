@@ -151,7 +151,9 @@ function Shell() {
           }
           title={collapsed ? t("nav.updates") : undefined}
           data-label={t("nav.updates")}
-          className={({ isActive }) => `${s.navItem} ${isActive ? s.active : ""}`}
+          className={({ isActive }) =>
+            `${s.navItem} ${s.navExternal} ${isActive ? s.active : ""}`
+          }
         >
           <Icon name="up" />
           <span className={s.navText}>{t("nav.updates")}</span>

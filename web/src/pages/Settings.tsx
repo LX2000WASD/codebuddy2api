@@ -570,18 +570,17 @@ function SettingsForm({
         </Panel>
       )}
       <div className={s.saveBar}>
-          <span>
-            {count
-              ? `${count} 项待保存${risky.length ? `（其中 ${risky.length} 项高风险，保存前需确认）` : ""}`
-              : saved
-                ? "设置已保存"
-                : "没有待保存的更改"}
-          </span>
-          <button className={s.primary} disabled={!count || busy}>
-            {busy ? "正在保存…" : "保存更改"}
-          </button>
-        </div>
-      )}
+        <span>
+          {count
+            ? `${count} 项待保存${risky.length ? `（其中 ${risky.length} 项高风险，保存前需确认）` : ""}`
+            : saved
+              ? "设置已保存"
+              : "没有待保存的更改"}
+        </span>
+        <button className={s.primary} disabled={!count || busy}>
+          {busy ? "正在保存…" : "保存更改"}
+        </button>
+      </div>
       <ErrorNotice message={error} />
       {confirming && (
         <ConfirmDanger
