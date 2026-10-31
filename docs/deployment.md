@@ -26,14 +26,14 @@ Mount the entire data directory on writable local storage, not just one SQLite f
 
 ### Use published images
 
-Set `CODEBUDDY2API_IMAGE` in `.env` to `ghcr.io/maiphucgiang/codebuddy2api:<version>`, choosing an existing release, then run:
+Set `CODEBUDDY2API_IMAGE` in `.env`, choosing an existing release: `ghcr.io/maiphucgiang/codebuddy2api:<version>` for the upstream gateway, or `ghcr.io/lx2000wasd/codebuddy2api:local` / `:local-<sha>` for this fork. Then run:
 
 ```bash
 docker compose pull
 docker compose up -d --no-build
 ```
 
-Images support `linux/amd64` and `linux/arm64`. Version tags pin releases, `latest` follows stable releases and `edge` follows main. Features depend on the selected version; older images may not include the current source's WebUI.
+Images support `linux/amd64` and `linux/arm64`. Upstream version tags pin releases, `latest` follows stable releases and `edge` follows main; the fork's `:local` follows its newest build and `:local-<sha>` pins one build (built by `Dockerfile.local` on the upstream base, see [building the local image](../README.md#building-the-local-image)). Features depend on the selected version — upstream tags contain no local layer, and older images may not include the current source's WebUI.
 
 ### Build current source
 

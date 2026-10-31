@@ -7,7 +7,7 @@
 - 支持 Chat Completions、Responses 和 Anthropic Messages，包含工具调用与流式输出。
 - 内置 **WebUI**：浏览器登录添加账号，管理模型、凭证、日志与设置，无需桌面端。
 - 多账号自动选路，兼容国内／国际站，自动刷新凭证。
-- 按账号配置自动任务：国内个人账号默认签到后派 Buddy 旅行，可分别关闭；国际自动签到默认关闭。成长中心仅面向个人账号，企业账号不参与。
+- 按账号配置自动任务：国内个人账号默认签到后派 Buddy 旅行，可分别关闭；国际自动签到与每日活跃默认关闭。成长中心仅面向个人账号，企业账号不参与。
 - 在上游 v1.3.6 之上叠加**本地移植层**：账号×模型级**软**冷却、积分保底、临期积分加权、传输层连败降权、诊断与告警、趋势统计——见[本地移植层](#本地移植层)。
 
 ## 仓库来源（两个上游）
@@ -30,6 +30,7 @@
 
 - 模型级**软**冷却（上游已有固定的模型冷却）：429 窗口按「账号 × 模型」隔离，文案带重置时间时对齐墙钟，可整表开关，且软冷却期间的重复 429 不再叠加延长。
 - 认证类错误连续 N 次（默认 3）才禁用账号；refresh/chat 成功或手工复位即清零。
+- 上游 403 `request illegal`（11140）按「单账号风控判定」处理，不算凭证失能：该账号短冷却（`request_illegal_cooldown_s`，默认 60 秒）退出选路（设了 `--failover-max` 时当前请求就地换凭证重放），不计入连续认证失败——一轮风控不会把整池账号逐个禁掉。
 - 账号级 `paused`：只退出选号，签到／旅行／保号任务照常运行。
 - 积分保底：本地 EMA 扣费台账 + 上游目录倍率双判据，余额过低的账号不派发收费模型；全池触底返回 503 而不打穿上游。
 - 临期积分加权选号（168 小时窗口内软加权），不破坏账号粘性与零倍率优先。
@@ -141,7 +142,7 @@ docker build -f Dockerfile.local -t codebuddy2api:local .
 - **绑定域名后经 HTTPS 反代无法登录 WebUI？** 将对外来源加入 `admin_allowed_origins` 信任列表——见[管理 Origin 校验](docs/advanced.zh-CN.md#管理-origin--csrf-开关)。
 - **没有 Docker？** 准备依赖和 WebUI 后，直接 `uv run converter.py` 或 `python3 converter.py`，无需 `.env`；首次本地启动保存默认 key 并仅在终端显示一次——见[本地 Python 运行](docs/deployment.zh-CN.md#本地-python-运行)。
 - **数据在哪里？** 全部位于 `auth/`（Docker 中为 `/data/auth`）：凭证、设置与日志数据库——见[数据与备份](docs/webui.zh-CN.md#数据与备份)。
-- **镜像标签怎么选？** `local` 跟随本分支，`local-<sha>` 固定其中一次构建，上游 `latest`/`edge` 跟随上游发行版。本分支标签见 [GHCR: LX2000WASD/codebuddy2api](https://github.com/LX2000WASD/codebuddy2api/pkgs/container/codebuddy2api)；docs/deployment.zh-CN.md 只描述上游镜像。
+- **镜像标签怎么选？** `local` 跟随本分支，`local-<sha>` 固定其中一次构建，上游 `latest`/`edge` 跟随上游发行版。本分支标签见 [GHCR: LX2000WASD/codebuddy2api](https://github.com/LX2000WASD/codebuddy2api/pkgs/container/codebuddy2api)；[部署指南](docs/deployment.zh-CN.md#使用已发布镜像)同时覆盖上游与本分支镜像。
 - **本地移植层哪些开关默认打开？** 弹性项默认开（写超时重放、write 20s、TTFB 30s、传输连败 5 次/600s 出池）；保守项默认关（`CODEBUDDY2API_CREDIT_FLOOR=0`、`CODEBUDDY2API_ALERT_ENABLED=false`），`stats_tokens_rate_ttfb_ms` 为预留键、暂不生效。
 - **Responses 工具输出/参数被压缩或需要完全原样？** 设置 `responses_projection_mode`（默认 `balanced`，设 `passthrough` 可完全关闭投影）及 `responses_projection_max_bytes`（默认 `40000`，`0` 禁用单项裁剪）。balanced 裁剪保留头尾并显示原始 bytes、估算 tokens 与总行数，客户端地址不变——见 [Responses 投影](docs/clients.zh-CN.md#responses-投影)及[详细说明](docs/advanced.zh-CN.md#responses-投影)。
 

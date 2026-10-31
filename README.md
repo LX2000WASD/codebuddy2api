@@ -7,7 +7,7 @@ Use your **WorkBuddy / CodeBuddy (Tencent)** subscription as local **OpenAI- and
 - Chat Completions, Responses and Anthropic Messages, with tool calling and streaming.
 - Built-in **WebUI** for browser login, models, credentials, logs and settings — no desktop client required.
 - Automatic multi-account routing across domestic and international sites, with credential refresh.
-- Per-account automation: domestic personal accounts check in and dispatch Buddy travel by default, with independent switches; international check-in is opt-in. The growth center is personal-only, so enterprise accounts are excluded.
+- Per-account automation: domestic personal accounts check in and dispatch Buddy travel by default, with independent switches; international check-in and daily activity are opt-in. The growth center is personal-only, so enterprise accounts are excluded.
 - **Local port layer** on top of upstream v1.3.6: per-account×model soft cooldown, credit floor, expiry-aware routing, transport-failure demotion, diagnostics, alerting and trend analytics — see [Local port layer](#local-port-layer).
 
 ## Where this repository comes from
@@ -30,6 +30,7 @@ Added on top of upstream v1.3.6 (`local/main`), all of it optional and switchabl
 
 - Model-level **soft** cooldown (upstream already had a fixed per-model cooldown): the 429 window is isolated per account × model, aligned to the reset clock in the upstream message, switched by a single global toggle, with switching models bypassing a cooldown, and repeat 429s during a soft cooldown no longer stacking.
 - Credentials are disabled only after N consecutive auth failures (default 3); a successful refresh/chat or a manual reset clears the counter.
+- An upstream 403 `request illegal` (11140) is read as a per-account risk verdict, not a failed credential: a short cooldown (`request_illegal_cooldown_s`, default 60 s) keeps that account out of routing (with `--failover-max`, the in-flight request is replayed on another credential), and it never counts toward the auth-failure limit — one risk wave cannot disable the whole pool.
 - Account-level `paused`: leaves selection but keeps check-in / travel / maintenance running.
 - Credit floor: an EMA spend ledger plus upstream catalogue multipliers keep low-balance accounts off paid models; a fully drained pool returns 503 instead of hammering upstream.
 - Expiring credits are softly weighted in selection (168 h window), without breaking stickiness or zero-multiplier priority.
@@ -141,7 +142,7 @@ Building needs network access (Node image, vite-plus release, pnpm registry) and
 - **WebUI sign-in fails behind an HTTPS domain/reverse proxy?** Trust your public origin via `admin_allowed_origins` — see [Management Origin checks](docs/advanced.md#management-origin--csrf-switch).
 - **No Docker?** After installing dependencies and the WebUI, run `uv run converter.py` or `python3 converter.py` without `.env`. First local startup saves a default key and displays it once — see [Local Python setup](docs/deployment.md#local-python-setup).
 - **Where is my data?** Everything lives in `auth/` (or `/data/auth` in Docker): credentials, settings and log databases — see [Data and backups](docs/webui.md#data-and-backups).
-- **Which image tag should I use?** `local` follows this fork, `local-<sha>` pins one build of it, upstream `latest`/`edge` follow upstream releases. Tags are listed at [GHCR: LX2000WASD/codebuddy2api](https://github.com/LX2000WASD/codebuddy2api/pkgs/container/codebuddy2api); docs/deployment.md describes the upstream images only.
+- **Which image tag should I use?** `local` follows this fork, `local-<sha>` pins one build of it, upstream `latest`/`edge` follow upstream releases. Tags are listed at [GHCR: LX2000WASD/codebuddy2api](https://github.com/LX2000WASD/codebuddy2api/pkgs/container/codebuddy2api); the [deployment guide](docs/deployment.md#use-published-images) covers both upstream and fork images.
 - **Which local-layer switches are on by default?** Resilience options are on (write-timeout replay, write 20 s, TTFB 30 s, transport demotion 5 failures / 600 s); the conservative ones are off (`CODEBUDDY2API_CREDIT_FLOOR=0`, `CODEBUDDY2API_ALERT_ENABLED=false`, and `stats_tokens_rate_ttfb_ms` is a reserved key that is not in effect yet).
 - **Responses tool output/arguments compressed or need verbatim passthrough?** Set `responses_projection_mode` (default `balanced`, or `passthrough` to disable projection) and `responses_projection_max_bytes` (default `40000`, `0` disables per-item trimming). Balanced trimming keeps the head/tail and reports original bytes, estimated tokens and total lines; client addresses stay unchanged — see [Responses projection](docs/clients.md#responses-projection) and [details](docs/advanced.md#responses-projection).
 

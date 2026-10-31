@@ -231,8 +231,9 @@
   这是**口径差异而非缺陷**：近似值在明细被清理后仍可用，精确值在明细完整时更准。
   前端必须如实标注来源，不要把它们当作同一个数。统一算法属产品决策，尚未实施。
 - **tokens/s**（生成速率）：`sum(output_tokens) / sum(effective_seconds)`，其中单请求
-  `effective_seconds = (duration_ms - first_token_ms) / 1000`（流式且 first_token_ms ≥ 阈值
-  `stats_tokens_rate_ttfb_ms`，默认 200ms），否则回退为 `duration_ms / 1000`（端到端口径）。
+  `effective_seconds = (duration_ms - first_token_ms) / 1000`（流式且 first_token_ms ≥ 200ms 固定阈值），
+  否则回退为 `duration_ms / 1000`（端到端口径）。阈值**当前硬编码为 200ms**：设置键
+  `stats_tokens_rate_ttfb_ms` 可读写但不参与计算（预留键，见第 8 节）。
   仅统计 duration_ms 与 output_tokens 均已知的请求（`tokens_per_s_known`）。
   该口径扣除了 TTFB（首字节等待），更接近真实生成速率；TTFB 过小（如上游本地缓存命中）时自动回退，避免除数过小导致虚高。
 - **`p95_coverage`**（仅 `/admin/dashboard` 的 `summary`）：参与计算的明细行数占聚合计数的比例。
@@ -474,7 +475,7 @@ FEFO（先到期先出）明细 + 日均需耗，供首页提醒卡片。
 | `alert_evaluator_interval_seconds` | integer | 60 | `CODEBUDDY2API_ALERT_EVALUATOR_INTERVAL_SECONDS` | 是 | 评估周期秒（0 关闭周期评估） |
 | `alert_timeout_seconds` | number | 10 | `CODEBUDDY2API_ALERT_TIMEOUT_SECONDS` | 是 | 单次投递超时 |
 | `alert_retry_count` | integer | 2 | `CODEBUDDY2API_ALERT_RETRY_COUNT` | 是 | 投递重试次数（0..5） |
-| `stats_tokens_rate_ttfb_ms` | number | 200 | `CODEBUDDY2API_STATS_TOKENS_RATE_TTFB_MS` | 是 | tokens/s 扣除 TTFB 的阈值（低于此值回退端到端） |
+| `stats_tokens_rate_ttfb_ms` | number | 200 | `CODEBUDDY2API_STATS_TOKENS_RATE_TTFB_MS` | 是 | 预留键：可读写但暂不生效，tokens/s 固定按 200ms 阈值扣除 TTFB |
 | `health_service_name` | string | `codebuddy2api` | `CODEBUDDY2API_HEALTH_SERVICE_NAME` | 是 | 服务身份（/healthz 与 webhook 头） |
 
 - 均为非敏感键，可在 `/admin/settings` 中读写；`.env.example` 同步增补注释。

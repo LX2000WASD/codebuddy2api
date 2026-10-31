@@ -41,7 +41,7 @@ Compose 会显式传入部分环境变量及 CLI 参数，删除 `.env` 中的�
 | `--upstream-keepalive [true/false]` | `false` | 启用按官方入口隔离的有界连接复用；重启生效 |
 | `--request-context-mode` | `legacy` | `scoped` 启用显式会话与逐尝试追踪；变更只影响新请求 |
 | `--failover-max` | `0` | 请求在「一个字节都还没发给下游」之前失败时，最多再换几个凭证就地重放；`0` 表示如实把失败回给下游 |
-| `--retry-write-timeout` | `false` | 让「写请求体超时」也参与重放（换新连接与 `--failover-max` 换凭证），代价是已发出的那半截正文可能已被上游处理 |
+| `--retry-write-timeout` | `true` | 让「写请求体超时」参与重放（换新连接与 `--failover-max` 换凭证）；已发出的半截正文可能已被上游处理，传 `false` 可关闭 |
 | `--max-request-bytes` | `33554432` | 处理后的上游 JSON 字节上限，不含网关内部元数据，须为正整数 |
 | `--log-body-limit` | `65536` | 旧文本预览兼容项；文本输出已停用，SQLite 诊断使用独立预算 |
 
@@ -147,6 +147,8 @@ scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` 
 
 体验积分仅供符合资格的 `intl-work` 账号通过凭证抽屉或 `POST /admin/credentials/{id}/trial` 手动领取，启动和维护不领取。安全结果、成功历史与请求预留保存在 `control.sqlite3`，失败保留 24 小时退避。响应正文上限 64 KiB，且不返回浏览器；升级时保留数据库。
 
+每日活跃是独立的按账号开关（`auto_daily_chat`，默认关闭，仅国际 WorkBuddy）。官方每日奖励要求一次「已完成」的智能体会话，而非普通补全调用，因此保号任务为每个符合条件的账号每本地自然日创建一次 console 会话、经 ACP 连上其沙箱并驱动一轮对话；仅在该账号开启签到时执行，不重试，且可能消耗积分。
+
 `CODEBUDDY2API_AUTO_TRIAL` 和 `--auto-trial` 已停用：旧启动选项仅提示、不触发任务；控制库中的旧布尔 `auto_trial` 设置在加载时忽略。请从部署配置中移除；回滚旧代码前也须核对这些旧设置，避免重新启用自动领取。
 
 ## API 与鉴权
@@ -169,7 +171,7 @@ scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` 
 | `GET /admin/credentials` | 凭证列表与运行状态 |
 | `POST /admin/credentials` | 从服务端受控目录导入 `.info` |
 | `DELETE /admin/credentials/{name}` | 按文件名删除凭证文件；仍被模型绑定引用时返回 409 |
-| `PATCH /admin/credentials/{id}` | 按账号设置单个布尔字段：`enabled`、`auto_checkin` 或 `auto_travel`；保存自动任务开关不立即领取 |
+| `PATCH /admin/credentials/{id}` | 单次请求只接受一个布尔字段：`enabled`、`paused`、`auto_checkin`、`auto_travel` 或 `auto_daily_chat`；`paused` 只退出选号，签到、旅行与保号任务继续运行——详见[融合层 API §5/§10](fusion-api.md)；保存自动任务开关不立即领取 |
 | `POST /admin/oauth/start` · `GET /admin/oauth/poll` | 发起与轮询登录；`site=cn`（默认）、`intl`（国际 WorkBuddy）或 `intl-codebuddy`（国际 CodeBuddy） |
 | `GET /admin/credits` · `POST /admin/checkin` | 查询额度；按日幂等签到，国内按开关继续旅行 |
 | `POST /admin/sync` | 同步全部启用账号的余额、目录和用量，不签到、不领取试用 |
@@ -285,7 +287,8 @@ Messages 的 `enabled` / `adaptive` 启用 Chat 推理，`output_config.effort` 
 |------|------------|
 | WebUI 无法登录 | 确认设置了 API key；更换 key 后重新登录并重新发起未完成的 OAuth。HTTPS 反代后经域名登录失败时，用 `admin_allowed_origins` 信任对外来源（见上文） |
 | 本地 401 | 客户端密钥与网关不一致 |
-| 上游 401 / 403 | 凭证级认证熔断；在 WebUI 检查并重新登录 |
+| 上游 401 / 403 | 凭证级认证熔断；在 WebUI 检查并重新登录。响应体是上游「request illegal」判定的 403 不算认证失败，见下一行 |
+| 上游 403 `request illegal`（11140） | 按「单账号风控判定」处理，而不是凭证失能：该账号进入短冷却（`request_illegal_cooldown_s`，默认 60 秒）并退出选路，后续请求落到别的账号；设了 `--failover-max` 时当前请求也会换凭证重放。不计入连续认证失败次数，也不写模型冷却，避免一轮风控把整池账号逐个禁掉。所有候选都答 11140 时把上游 403 原样回给客户端 |
 | 429 | 对该凭证的上游模型冷却，后续请求自动换绑；全部候选都在冷却时仍返回 429。设了 `--failover-max` 时，当前请求就地换凭证重放 |
 | 上游 `service info not found`（11102） | 明确的 400/404 模型拒绝：国内按（后端、模型）退避，国际按（账号、产品、模型）隔离；无可用候选时返回 404。6 小时后半开，反复命中最长 24 小时，成功即解除。旧国际入口级记录不再拦截账号；用 `GET /admin/model-blocks` 查看 |
 | 建连失败 | `ConnectError` / `ConnectTimeout` 换新连接重放一次：两者都发生在写下第一个正文字节之前，上游手里什么都没有，重放不会重复计费 |
@@ -293,7 +296,7 @@ Messages 的 `enabled` / `adaptive` 启用 Chat 推理，`output_config.effort` 
 | 非流式响应还没成形，客户端就挂断 | 立刻取消这次上游调用并归还并发名额，审计记为 `cancelled`，不会被记成一次已完成的回答；流式本来就是这一行为 |
 | 流式在第一个字节之前失败 | 按真实状态码返回，与 `stream=false` 同口径。只带一个流内 `error` 事件的 200 会被客户端读成「模型答了个空」，会话静默结束，审计里还记成一次成功 |
 | 换凭证重放（`--failover-max`） | 默认关闭。开启后，失败发生在「一个字节都没发给下游」之前时换一个凭证重放，最多 N 次，审计记为 `success` 并留下 `failover_recovered` 尝试标记。可重放的失败：上游 HTTP 401/403/429/502/503/504 拒绝，与确定没开始收正文的传输失败（建连失败/超时）；内容审核拒绝、上游已回 200 后合成的 502、读超时与协议错误一律不重放；换不出其他凭证时如实回第一次的状态码。计费口径：401/403/429/503 与建连类失败发生在受理阶段，不会扣费；502/504 可能已被上游处理并计费，但结果到不了下游，不重放也退不回额度——只是把一次已付费请求变成断掉的会话。这类重放在日志里标注「上游可能已处理该请求」，便于对账 |
-| 写超时重放（`--retry-write-timeout`） | 默认关闭。写超时只能证明正文没发完，不能证明上游忽略了已收到的部分，因此默认既不参与连接重试也不参与换凭证重放；跨境长会话比握手更容易遇到写超时，确认上游不按半截正文计费后再开启。这类重放同样带「上游可能已处理该请求」日志标记 |
+| 写超时重放（`--retry-write-timeout`） | 默认开启，与写 20 秒、首字节 30 秒配套。写超时只能证明正文没发完，不能证明上游忽略了已收到的部分；跨境长会话比握手更容易遇到写超时，若出现重复计费迹象就传 `false` 关闭。这类重放同样带「上游可能已处理该请求」日志标记 |
 | 工具参数损坏 | 兼容聚合校验按 `--tool-call-max-retry`（默认 3）额外生成，可能消耗更多额度；被丢弃的生成带用量记入尝试明细；耗尽后返回错误。实时模式绝不重生成，只在成功终端前报告协议错误 |
 | 上游空流或残流 | 没有有效输出、缺少结束标记或包含错误的流不伪装为成功 |
 | 内容审核拒绝 | 脱敏 + `--no-compact` 下，仅完整非流式纯拒绝且模板确实缩短时，最多同账号兜底一次；流式不做审核重试，也不因此熔断或切号 |

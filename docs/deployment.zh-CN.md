@@ -27,14 +27,14 @@ Compose 从 `.env` 读取已声明变量，shell 变量优先。默认宿主机�
 
 ### 使用已发布镜像
 
-在 `.env` 中将 `CODEBUDDY2API_IMAGE` 设为 `ghcr.io/maiphucgiang/codebuddy2api:<版本>`（选择已发布的版本），然后运行：
+在 `.env` 中选择一个已发布的 `CODEBUDDY2API_IMAGE`：上游网关用 `ghcr.io/maiphucgiang/codebuddy2api:<版本>`，本仓库分支用 `ghcr.io/lx2000wasd/codebuddy2api:local` / `:local-<sha>`。然后运行：
 
 ```bash
 docker compose pull
 docker compose up -d --no-build
 ```
 
-镜像支持 `linux/amd64` 与 `linux/arm64`。版本标签固定发行版，`latest` 跟随稳定版，`edge` 跟随 main。功能以所选版本为准；旧镜像可能不包含当前源码的 WebUI。
+镜像支持 `linux/amd64` 与 `linux/arm64`。上游版本标签固定发行版，`latest` 跟随稳定版，`edge` 跟随 main；本分支的 `:local` 跟随最新构建，`:local-<sha>` 固定某一次构建（由 `Dockerfile.local` 在上游基座之上构建，见[构建本地镜像](../README.zh-CN.md#构建本地镜像)）。功能以所选版本为准——上游标签不含本地融合层，旧镜像也可能不包含当前源码的 WebUI。
 
 ### 构建当前源码
 

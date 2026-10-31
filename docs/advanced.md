@@ -41,7 +41,7 @@ Compose explicitly passes some environment variables and CLI flags, so deleting 
 | `--upstream-keepalive [true/false]` | `false` | Bounded connection reuse isolated by official origin; requires restart |
 | `--request-context-mode` | `legacy` | `scoped` enables explicit sessions and per-attempt tracing; changes apply to new requests |
 | `--failover-max` | `0` | Extra credentials tried when a request fails before the first response byte reaches the client; `0` keeps the upstream behaviour of surfacing the failure directly |
-| `--retry-write-timeout` | `false` | Opt a request-body write timeout into replay (fresh connection and `--failover-max`), accepting that bytes already sent may have been processed |
+| `--retry-write-timeout` | `true` | Replay a request-body write timeout on a fresh connection and, with `--failover-max`, on another credential; bytes already sent may have been processed, so pass `false` to disable |
 | `--max-request-bytes` | `33554432` | Positive byte limit for processed upstream JSON, excluding gateway-only metadata |
 | `--log-body-limit` | `65536` | Legacy text-preview option; text output is retired and SQLite diagnostics use their own budget |
 
@@ -147,6 +147,8 @@ Travel claims and departures share an account-scoped write reservation. Uncertai
 
 Trial credits are manual-only for eligible `intl-work` accounts through the credential drawer or `POST /admin/credentials/{id}/trial`; startup and maintenance never claim. Safe results, successful claims and reservations persist in `control.sqlite3`; failed attempts retain the 24-hour backoff. Response bodies are capped at 64 KiB and never returned to the browser. Preserve the database when upgrading.
 
+Daily activity is a separate per-account switch (`auto_daily_chat`, default off, international WorkBuddy only). The official daily reward requires a completed agent session rather than a completion call, so the maintenance sweep opens one console conversation per eligible account per local day, attaches to its sandbox over ACP and drives a single turn. It runs only while check-in is enabled for that account, is never retried, and can consume credits.
+
 `CODEBUDDY2API_AUTO_TRIAL` and `--auto-trial` are retired: old startup options warn and do nothing; saved Boolean `auto_trial` settings are ignored on load. Remove them from deployment configuration. Before reverting to older code, check these old settings to avoid re-enabling automatic claims.
 
 ## APIs and authentication
@@ -169,7 +171,7 @@ Trial credits are manual-only for eligible `intl-work` accounts through the cred
 | `GET /admin/credentials` | Credential inventory and runtime state |
 | `POST /admin/credentials` | Import an `.info` file from the server's controlled directory |
 | `DELETE /admin/credentials/{name}` | Delete the credential file by filename; returns 409 while referenced by model bindings |
-| `PATCH /admin/credentials/{id}` | One Boolean field per account: `enabled`, `auto_checkin`, or `auto_travel`; automation preference saves do not claim immediately |
+| `PATCH /admin/credentials/{id}` | Exactly one Boolean field per request: `enabled`, `paused`, `auto_checkin`, `auto_travel` or `auto_daily_chat`; `paused` leaves selection while check-in, travel and maintenance keep running — see [fusion API §5/§10](fusion-api.md); automation preference saves do not claim immediately |
 | `POST /admin/oauth/start` · `GET /admin/oauth/poll` | Start/poll login; `site=cn` (default), `intl` (international WorkBuddy) or `intl-codebuddy` (international CodeBuddy) |
 | `GET /admin/credits` · `POST /admin/checkin` | Inspect credits; daily-idempotent check-in followed by domestic travel when enabled |
 | `POST /admin/sync` | Synchronize all enabled accounts' balances, catalogs and usage; no check-in or trial claims |
@@ -285,7 +287,8 @@ Readable history is kept in `reasoning_content`, never ordinary answer text. Res
 |---------|-------------------|
 | Cannot sign in to WebUI | Configure an API key; sign in and restart unfinished OAuth after changing it. Behind an HTTPS reverse proxy, trust the public origin via `admin_allowed_origins` (see above) |
 | Local 401 | Client key differs from the gateway key |
-| Upstream 401 / 403 | Credential-level authentication circuit opens; inspect and log in again in the WebUI |
+| Upstream 401 / 403 | Credential-level authentication circuit opens; inspect and log in again in the WebUI. A 403 carrying the upstream "request illegal" verdict is not an authentication failure — see the next row |
+| Upstream 403 `request illegal` (11140) | Read as a per-account risk verdict, not a dead credential: that account takes a short cooldown (`request_illegal_cooldown_s`, default 60 s) and leaves routing, so the next request binds elsewhere; with `--failover-max` the in-flight request is replayed on another credential too. Neither the consecutive-auth-failure counter nor the model cooldown is touched, so a risk wave cannot disable the whole pool one request at a time; when every candidate answers 11140 the upstream 403 is surfaced unchanged |
 | 429 | Cool down that upstream model on the credential; later requests rebind automatically. All candidates cooling down still returns 429; with `--failover-max` the in-flight request is replayed on another credential instead |
 | Upstream `service info not found` (11102) | Confirmed 400/404 model rejection backs off by `(backend, model)` domestically and `(account, product, model)` internationally. Return 404 when no candidate remains; half-open after 6 h, up to 24 h on repeats, cleared on success. Old international endpoint-wide entries no longer block accounts; inspect via `GET /admin/model-blocks` |
 | Connection setup failure | Retry once on a fresh connection: `ConnectError` and `ConnectTimeout` fail before the first body byte, so the upstream holds nothing and replaying cannot double-bill |
@@ -293,7 +296,7 @@ Readable history is kept in `reasoning_content`, never ordinary answer text. Res
 | Client hangs up before a non-streaming response is ready | The upstream call is cancelled and its concurrency slot returned at once; the request is audited as `cancelled`, never as a completed answer. Streaming already behaves this way |
 | Streaming request fails before the first byte | Reported with the real HTTP status, exactly like `stream=false`. A 200 carrying only an in-band `error` event is read by clients as an empty answer, so the session ends silently while the audit log records a success |
 | Credential failover (`--failover-max`) | Off by default. When enabled, a failure before any byte reached the client is retried on another credential up to N times and audited as `success` with a `failover_recovered` marker. Qualifying failures: upstream HTTP 401/403/429/502/503/504 rejections and bodies the upstream provably never received (`ConnectError`/`ConnectTimeout`). Content-filter rejections, 502s from an already-open stream, read timeouts and protocol errors are never replayed; without another credential the original status surfaces. Billing note: 401/403/429/503 and transport failures happen at admission and cannot be billed; a 502/504 may already have been billed upstream, but its result never reached the client, so refusing to replay recovers no credit — it only turns a paid-for attempt into a broken session. Such replays are tagged `上游可能已处理该请求` in the log for reconciliation |
-| Write-timeout replay (`--retry-write-timeout`) | Off by default. A write timeout proves the body was not fully sent, not that the upstream ignored the bytes it received, so it stays excluded from connect retry and failover until enabled. Long cross-border sessions fail here more often than in the handshake; enable only when the upstream is confirmed not to bill partial bodies. These replays carry the same `上游可能已处理该请求` log tag |
+| Write-timeout replay (`--retry-write-timeout`) | On by default, together with write 20 s and TTFB 30 s. A write timeout proves the body was not fully sent, not that the upstream ignored the bytes it received; long cross-border sessions fail here more often than in the handshake, so pass `false` if duplicate-billing symptoms appear. These replays carry the same `上游可能已处理该请求` log tag |
 | Malformed tool calls | Compatible aggregate validation permits up to `--tool-call-max-retry` (default 3) additional generations, each consuming credits and recorded with its usage in the attempt details; exhaustion returns an error. Realtime mode never regenerates: it reports a protocol error before a success terminal |
 | Empty or truncated upstream stream | No valid output, a missing end marker or an error is not reported as success |
 | Content-filter rejection | With desensitization and `--no-compact`, a complete non-streaming filter-only rejection may receive one shorter-template retry on the same account. No streaming filter retry, circuit opening or account rotation |

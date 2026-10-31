@@ -8,6 +8,20 @@ Start the gateway using the [deployment guide](deployment.md), then open `http:/
 
 The first unconfigured local startup generates and saves a default key, shown once in the terminal and reused afterward. An explicitly empty key locks management. After changing the effective key, sign in again and restart unfinished OAuth logins.
 
+## Navigation
+
+Ten pages are grouped into five task areas under two sidebar headings. Pre-consolidation URLs (`/dashboard/logs`, `/dashboard/models`, …) redirect to the matching area and section instead of 404ing.
+
+| Group | Area | Sections |
+|-------|------|----------|
+| Run | Overview (`/dashboard`) | — |
+| Run | Requests (`/dashboard/requests`) | — |
+| Run | Usage (`/dashboard/usage`) | Trends, Credits |
+| Configure | Routing & accounts (`/dashboard/routing`) | Model routing, Credentials |
+| Configure | System (`/dashboard/system`) | Settings, Storage, Alerts, Diagnostics |
+
+Areas holding several pages show them as in-page sections, and the breadcrumb names both. The command palette (Ctrl/⌘+K) jumps to any area or section. Each section below describes one of these pages.
+
 ## Overview
 
 Select 1/7/30/90 days and automatic/hourly/daily granularity. Automatic uses hours for one day and days otherwise; ranges follow UTC calendar days. Missing hourly history is marked, never reconstructed from daily totals, and detail cleanup preserves hourly aggregates. Official balances may include usage from other clients.
@@ -29,6 +43,7 @@ Automatic check-in and travel are persisted per account and apply live: on by de
 - **Domestic travel** follows its own switch, including when check-in is already complete or disabled. "Travel status" only queries; "Claim / dispatch" claims arrivals, rechecks idle state and the daily limit, then chooses a current upstream location. Invalid location configuration stops dispatch.
 - **First-Buddy onboarding:** one agreement checkbox completes `first_buddy` through one real WorkBuddy conversation if needed, then adopts and dispatches. No separate task acceptance is required. The conversation requests at most 32 output tokens and may use credits; an eligible zero-rate model is preferred, and official completion is checked before adoption. `CODEBUDDY2API_AUTO_ACCEPT_BUDDY=true` preauthorizes enabled domestic accounts, including future imports, after restart; default is false, automatic follow-up respects the travel switch, and no other reward tasks, paid boxes or trial claims run.
 - **International WorkBuddy trial credits** require manual confirmation in the credential row's drawer. "Refresh claim status" only reads the local ledger and never claims. On network or persistence failure, verify status before another attempt; environment-driven automatic claims are retired.
+- **International WorkBuddy daily activity** (`auto_daily_chat`, off by default): the official daily reward requires a completed agent session rather than a plain completion call, so the maintenance sweep opens one console conversation, attaches to its sandbox and drives a single turn — once per account per local day, and only while check-in is enabled for that account. The turn is not retried and can consume credits; its state and outcome appear in the credential row.
 
 Reward claims and departures are durably reserved before sending. Stale or failed readbacks block repeat writes across restarts, without time-based expiry; only a reconciled state or definite pre-send cancellation/rejection releases them, and unconfirmed first-claim sends only reconcile through reads, even after 24 hours or a restart. Definitely unsent conversations may resume after settings or models recover; uncertain conversations are not repeated. Consent and outcomes are audited, and blocked automatic travel adds at most one warning per account per local day without failing check-in or balance sync. Keep `control.sqlite3` when upgrading.
 
