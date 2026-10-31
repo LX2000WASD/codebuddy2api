@@ -41,8 +41,11 @@ converter.log*
 # IDE
 .idea/
 
-# 本地私人工作文档（不入库）
-私人工作文档/
+# 私人工作目录（工作日志、参考资料、临时脚本，不入库）
+.local/
+
+# DSH agent worktrees（本地工作树容器，不入库）
+.agents/
 
 # cpa-plugin 是独立项目,不属于本网关仓库
 cpa-plugin/
