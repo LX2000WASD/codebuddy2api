@@ -1,8 +1,9 @@
 # Fusion 管理面 API 契约（codebuddy2api 融合层）
 
-> 适用范围：codebuddy2api local/main（v1.3.2 + 本地融合层）。
+> 适用范围：codebuddy2api local/main（上游 v1.3.6 基座 + 本地融合层）。
 > 本文件是**前后端对接的唯一契约**，由 Fusion-B（可观测性与告警体系）维护。
 > 前端（Fusion-C）按本文档实现；后端字段新增保持向后兼容，破坏性变更须先改本文档。
+> 本地层契约：**中文单源，暂无英文版**（其余用户文档中英成对）；端点行为概览见 [advanced.md](advanced.md#apis-and-authentication)，字段级定义以本文为准。
 
 ## 0. 通用约定
 

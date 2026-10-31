@@ -153,6 +153,8 @@ Daily activity is a separate per-account switch (`auto_daily_chat`, default off,
 
 ## APIs and authentication
 
+Field-level definitions for the local-layer endpoints (health, status, diagnostics, stats, alerts, credits expiry, settings keys) live in the [fusion API contract](fusion-api.md), which is Chinese-only and authoritative; this section only summarises behaviour.
+
 | Client endpoint | Description |
 |-----------------|-------------|
 | `POST /v1/chat/completions` | OpenAI Chat Completions |

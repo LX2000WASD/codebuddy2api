@@ -153,6 +153,8 @@ scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` 
 
 ## API 与鉴权
 
+本地层端点（健康、状态、诊断、统计、告警、积分到期、设置键）的字段级定义以[融合层契约](fusion-api.md)为准（中文单源）；本节只做行为概览。
+
 | 客户端接口 | 说明 |
 |------------|------|
 | `POST /v1/chat/completions` | OpenAI Chat Completions |
