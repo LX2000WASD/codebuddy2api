@@ -1,7 +1,7 @@
 """Derive a shared international catalog without changing account-owned source caches."""
 from copy import deepcopy
 
-from .model_rates import multiplier_value
+from .rate_grammar import multiplier_value
 
 
 INTERNATIONAL = frozenset(("intl-cli", "intl-work"))

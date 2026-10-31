@@ -71,7 +71,7 @@ from app import buddy, daily_chat, growth_chains, growth_tasks, checkin as check
 from app.credential_cooldowns import CredentialCooldowns, AccountPauses
 from app.credit_floor import CostLedger, catalog_paid, floor_admit
 from app.model_blocks import ModelBlocks
-from app.model_rates import is_free_multiplier, multiplier_value
+from app.rate_grammar import is_free_multiplier, multiplier_value
 # Pure request/response and catalog-view helpers now live in app/catalog_view.py.
 # They are re-exported here because the module's own call sites (and several tests)
 # address them as converter.<name>; the definitions themselves are no longer in

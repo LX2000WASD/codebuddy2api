@@ -22,7 +22,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from .model_rates import is_free_multiplier
+from .rate_grammar import is_free_multiplier
 from .request_context import SessionIdentifierError, current_context
 from .site_routing import profile_region
 

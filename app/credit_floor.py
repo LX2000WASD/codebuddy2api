@@ -31,7 +31,7 @@ import tempfile
 import threading
 import time
 
-from .model_rates import multiplier_value as _multiplier_value
+from .rate_grammar import multiplier_value as _multiplier_value
 from .state_store import serialize_bounded
 
 VERSION = 1

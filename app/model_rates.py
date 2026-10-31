@@ -1,21 +1,15 @@
-"""Model rates: the official rate grammar and the gateway glue for effective rates.
+"""Gateway glue for effective model rates: sample refresh, manual overrides and probes.
 
-The rate string is the upstream catalog's `credits` field, shaped like
-"x1" / "x0.5" / "x 2 credits". Two modules used to carry their own copy of this parser —
-converter._multiplier_value (inline regex) and app.credit_floor.multiplier_value
-(module-level _RATE) — with identical docstrings and semantics, and three further modules
-reached the converter's private copy through gateway._multiplier_value. Keeping one
-implementation here means a change to the accepted grammar cannot silently apply to only
-half the callers.
-
-The second half is gateway glue for effective model rates: sample refresh, manual
-overrides and probes (upstream v1.5.0). It reads the grammar above through the same
-module, so a measured rate and a declared rate are always parsed the same way.
+The rate grammar itself lives in `app.rate_grammar`, a leaf module with no
+intra-package imports. It used to be defined here, next to code that imports
+`model_policy`: that made `credit_floor -> model_rates -> model_policy ->
+model_capabilities -> model_catalog_view -> model_rates` import a half-initialised module
+(ImportError on a cold `python -B tests/...` start, invisible under pytest because of
+a different import order). The names are re-exported below so existing call sites and tests
+that reach for `app.model_rates.multiplier_value` keep working.
 """
 from __future__ import annotations
 
-import math
-import re
 import time
 import uuid
 
@@ -24,39 +18,10 @@ from fastapi import HTTPException
 from . import model_policy, rate_measurement
 from .background_jobs import JobBoard
 from .client_profiles import chat_headers
+from .rate_grammar import FREE_RATE, RATE, is_free_multiplier, multiplier_value
 
-
-# ---------------------------------------------------------------------------
-# Official rate grammar
-# ---------------------------------------------------------------------------
-
-# The leading "x" is required; a bare number is not a rate. Trailing "credit(s)"
-# is optional and the whitespace around the number is free-form.
-RATE = re.compile(r"x\s*([0-9]+(?:\.[0-9]+)?)\s*(?:credits?)?", re.IGNORECASE)
-# A rate that is explicitly zero, used to classify a model as free.
-FREE_RATE = re.compile(r"x\s*0(?:\.0+)?\s*(?:credits?)?", re.IGNORECASE)
-
-
-def multiplier_value(credits):
-    """Parse an official model rate, returning None for missing or unknown formats."""
-    if not isinstance(credits, str):
-        return None
-    match = RATE.fullmatch(credits.strip())
-    if match is None:
-        return None
-    try:
-        value = float(match.group(1))
-    except ValueError:
-        return None
-    # An absurdly long digit run parses to inf; that is not a usable rate.
-    return value if math.isfinite(value) else None
-
-
-def is_free_multiplier(credits):
-    """Report whether a rate string is an explicit zero rate."""
-    if not isinstance(credits, str):
-        return False
-    return FREE_RATE.fullmatch(credits.strip()) is not None
+__all__ = ["FREE_RATE", "RATE", "is_free_multiplier", "multiplier_value",
+           "manual_rates", "refresh", "targets", "probe", "job_view", "start_probe", "details"]
 
 
 # ---------------------------------------------------------------------------
