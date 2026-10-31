@@ -181,30 +181,38 @@ class AutomationTests(unittest.TestCase):
             trial.assert_not_called()
 
 
-    def test_checkin_restriction_disables_account_and_stops_followup(self):
+    def test_checkin_restriction_stops_the_sweep_without_disabling_the_account(self):
         entry = self.entry
         self.status_query.return_value = {"state": "available"}
         with patch.object(credits, "daily_checkin", return_value={"ok": False, "code": 11140}),              patch.object(growth_tasks, "sweep_account") as growth,              patch.object(credits, "fetch_credits") as balance:
             result = converter._sync_credits(self.pool, self.ledger, entry, checkin=True, failed=set())
+        # B1: an automation chain never parks the account. It closes today's task, stops the
+        # rest of the sweep and leaves routing to the inference path.
         self.assertIsNone(result)
-        self.assertTrue(self.pool._index_cm[entry["cm"]]["auto_disabled"])
-        self.assertFalse(model_policy.credential_enabled(converter.CONFIG, entry))
+        internal = self.pool._index_cm[entry["cm"]]
+        self.assertIsNone(internal.get("auto_disabled"))
+        self.assertTrue(model_policy.credential_enabled(converter.CONFIG, entry))
+        self.assertIn("11140", self.ledger.entry(entry["id"]).get("error") or "")
         self.travel_mock.assert_not_called()
         growth.assert_not_called()
         balance.assert_not_called()
 
-    def test_daily_chat_restriction_disables_account_and_skips_balance(self):
+    def test_daily_chat_restriction_closes_the_day_without_disabling_the_account(self):
         entry = self.entries["intl-work"]
         self.preference(entry, "auto_daily_chat", True)
         with patch.object(daily_chat, "is_due", return_value=True),              patch.object(daily_chat, "perform", return_value={
                  "ok": False, "state": "rejected", "http_status": 403, "code": 11140}),              patch.object(credits, "fetch_credits") as balance:
             result = converter._sync_credits(self.pool, self.ledger, entry, checkin=True, failed=set())
         self.assertIsNone(result)
-        self.assertTrue(self.pool._index_cm[entry["cm"]]["auto_disabled"])
-        self.assertFalse(model_policy.credential_enabled(converter.CONFIG, entry))
+        internal = self.pool._index_cm[entry["cm"]]
+        self.assertIsNone(internal.get("auto_disabled"))
+        self.assertTrue(model_policy.credential_enabled(converter.CONFIG, entry))
+        # The sweep stops for the day and never reaches the balance refresh. Recording the
+        # day-terminal state is daily_chat.perform's own contract (tests/test_daily_chat.py).
+        balance.assert_not_called()
         balance.assert_not_called()
 
-    def test_growth_exception_restriction_disables_account_and_skips_balance(self):
+    def test_growth_exception_restriction_stops_the_sweep_without_disabling(self):
         entry = self.entry
         self.preference(entry, "auto_checkin", False)
         self.preference(entry, "auto_travel", False)
@@ -212,9 +220,13 @@ class AutomationTests(unittest.TestCase):
         with patch.object(growth_tasks, "sweep_account",
                           side_effect=growth_tasks.Failure("business", 403, 11140)) as growth,              patch.object(credits, "fetch_credits") as balance:
             result = converter._sync_credits(self.pool, self.ledger, entry, checkin=True, failed=set())
+        # B1: the chain closes today for this account and stops the sweep, but leaves the
+        # account routable, so nothing is disabled.
         self.assertIsNone(result)
-        self.assertTrue(self.pool._index_cm[entry["cm"]]["auto_disabled"])
-        self.assertFalse(model_policy.credential_enabled(converter.CONFIG, entry))
+        internal = self.pool._index_cm[entry["cm"]]
+        self.assertIsNone(internal.get("auto_disabled"))
+        self.assertTrue(model_policy.credential_enabled(converter.CONFIG, entry))
+        self.assertIn("11140", self.ledger.entry(entry["id"]).get("error") or "")
         growth.assert_called_once()
         balance.assert_not_called()
 

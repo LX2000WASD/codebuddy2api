@@ -533,8 +533,11 @@ class StreamFailoverTests(fixtures.RegionRoutingTests):
                 self.assertEqual(self.failover_lines(), [])
 
     def test_model_scoped_error_codes_are_not_replayed(self):
+        # 11158 is deliberately absent: it is a per-account plan verdict ("this account may not
+        # use the model"), so another account may well be allowed. test_model_site_blocks pins
+        # that replay and the 400 model_unavailable it produces once every account refused.
         cases = ((500, 11134), (503, 11134), (400, 11102), (503, 11102),
-                 (400, 11129), (400, 11150), (400, 11158))
+                 (400, 11129), (400, 11150))
         for status, code in cases:
             for wrapped in (False, True):
                 with self.subTest(status=status, code=code, wrapped=wrapped):
@@ -557,7 +560,13 @@ class StreamFailoverTests(fixtures.RegionRoutingTests):
         for request in sent:
             body = fixtures.request_json(request)
             systems = [m for m in body["messages"] if m.get("role") == "system"]
-            self.assertTrue(systems[0]["content"].startswith("You are CodeBuddy Code.\n"))
+            # The prepended prompt is profile-specific (CodeBuddy Code on cn-cli, WorkBuddy on
+            # cn-work), so the invariant is exactly one prepend per attempt with no duplicate,
+            # not the identity of the account failover happened to pick.
+            prepends = sum(text.count("You are CodeBuddy Code.")
+                           + text.count("You are WorkBuddy, a powerful AI assistant.")
+                           for text in (m["content"] for m in systems))
+            self.assertEqual(prepends, 1, systems)
             self.assertEqual(sum(m["content"] == systems[0]["content"] for m in systems), 1)
 
     def test_transport_before_request_body_fails_over(self):

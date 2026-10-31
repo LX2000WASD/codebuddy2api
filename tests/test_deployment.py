@@ -187,7 +187,9 @@ class DeploymentTests(unittest.TestCase):
         # The whole .env reaches the container and a missing file stays valid.
         self.assertIn("env_file:", text)
         self.assertIn("required: false", text)
-        self.assertIn("ghcr.io/maiphucgiang/codebuddy2api:latest", text)
+        # This fork defaults to its own image: the local port layer only exists there.
+        self.assertIn("ghcr.io/lx2000wasd/codebuddy2api:local", text)
+        self.assertNotIn("ghcr.io/maiphucgiang/codebuddy2api:latest", text)
         # Optional knobs come from .env instead of per-variable fallbacks in the service.
         for name in ("MAX_IMAGES", "IMAGE_POLICY", "MAX_REQUEST_BYTES", "LOG_BODY_LIMIT", "ADMIN_CSRF"):
             self.assertNotIn("${CODEBUDDY2API_" + name, text)

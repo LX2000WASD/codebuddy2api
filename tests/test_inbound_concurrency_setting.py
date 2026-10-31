@@ -16,7 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow direct exe
 import converter as gateway
 from app import runtime_management
 from app.inbound_limits import ConcurrencyLimitMiddleware
+from app import admin_account
 from app.settings import SCHEMA, apply_persisted_settings, resolve_settings, validate_settings
+
+from tests import admin_session
 
 
 ROUTES = ("/v1/chat/completions", "/v1/responses", "/v1/messages")
@@ -487,6 +490,9 @@ class ManagementEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.audit.storage.return_value = {"db_bytes": 0}
         self.audit.list_records.return_value = {"items": [], "next_cursor": None, "has_more": False}
         self.audit.dashboard.return_value = {"summary": {}, "series": [], "models": [], "profiles": []}
+        # v1.5.0 keeps the admin account in the control store; the API key is only its
+        # initial password, so the test must bootstrap the account like startup does.
+        admin_account.save(self.store, admin_account.new("admin", "synthetic-key", "external"))
         self.config = {"api_key": "synthetic-key", "control_store": self.store, "max_images": 16,
                        "session_path": self.root / "admin-sessions.json", "settings_sources": {},
                        "max_concurrent": 64, "audit_store": self.audit}
@@ -500,7 +506,9 @@ class ManagementEndpointTests(unittest.IsolatedAsyncioTestCase):
         app = FastAPI()
         install_admin(app, self.config, self.gateway)
         self.client = TestClient(app)
-        self.headers = {"Authorization": "Bearer synthetic-key"}
+        # v1.5.0: management calls authenticate with the admin session (username/password)
+        # and carry the CSRF token; the API key no longer authorizes /admin/*.
+        self.headers = admin_session.login(self.client, password="synthetic-key")
 
     def settings(self):
         return self.client.get("/admin/settings", headers=self.headers).json()
@@ -607,7 +615,9 @@ class StartupWiringTests(unittest.TestCase):
             stack.enter_context(patch.object(gateway, "seed_credentials"))
             stack.enter_context(patch.object(gateway, "preflight", return_value=True))
             stack.enter_context(patch.object(runtime_management, "install"))
-            stack.enter_context(patch.object(gateway.uvicorn, "run",
+            # app.startup.run_server owns the uvicorn call in v1.5.0; patching uvicorn.run no
+            # longer intercepts it, and a real bind on the fixed 8787 port is not a test.
+            stack.enter_context(patch.object(gateway, "run_server",
                                              side_effect=lambda *a, **k: observed.update(
                                                  max_concurrent=gateway.CONFIG.get("max_concurrent"),
                                                  sources=dict(gateway.CONFIG.get("settings_sources", {})))))

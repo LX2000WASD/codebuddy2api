@@ -1154,18 +1154,27 @@ class MediaRoutingTests(fixtures.RegionRoutingTests):
         self.media_requests.clear()
 
     def assert_health(self, restricted=None):
-        """Only the restricted account is cooled and disabled; the other stays healthy."""
+        """The restricted account leaves routing durably; the other stays healthy.
+
+        B1 semantics: a 11140 on any inference surface (media included) parks the account in
+        the control store (enabled=false + restricted evidence) and never releases it on a
+        timer, so the assertions are about routability and the stored verdict rather than the
+        retired in-memory two-hour cooldown.
+        """
         for uid in ("cn-cli", "cn2"):
             state = self.entry_state(uid)
             enabled = converter.model_policy.credential_enabled(converter.CONFIG, state)
+            record = converter.CONFIG["control_store"].snapshot()["credentials"].get(
+                state.get("account_key")) or {}
             if uid == restricted:
-                self.assertGreater(state["fail_until"], time.time(), uid)
-                self.assertTrue(state["auto_disabled"], uid)
                 self.assertFalse(enabled, uid)
+                self.assertFalse(self.pool._healthy(state), uid)
+                self.assertTrue(record.get("restricted"), uid)
+                self.assertIn("11140", str(record.get("restricted_evidence") or ""), uid)
             else:
-                self.assertLess(state["fail_until"], time.time(), uid)
-                self.assertFalse(state.get("auto_disabled"), uid)
                 self.assertTrue(enabled, uid)
+                self.assertTrue(self.pool._healthy(state), uid)
+                self.assertFalse(record.get("restricted"), uid)
 
     def test_http_restriction_code_disables_the_account_without_replay(self):
         flat = {"code": 11140, "msg": "request illegal"}

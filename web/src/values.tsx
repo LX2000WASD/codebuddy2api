@@ -291,6 +291,9 @@ const eventActions: Record<string, MessageKey> = {
   "credential.trial": "logs.action.credential_trial",
   "credential.enabled": "logs.action.credential_enabled",
   "credential.reset-cooldown": "logs.action.credential_reset_cooldown",
+  // Runtime log components are emitted as their own action codes (converter._log).
+  travel: "logs.action.travel",
+  "credential.paused": "logs.action.credential_paused",
   "oauth.saved": "logs.action.oauth_saved",
   "settings.updated": "logs.action.settings_updated",
   "model.created": "logs.action.model_created",

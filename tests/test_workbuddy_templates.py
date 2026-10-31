@@ -56,7 +56,15 @@ class WorkBuddyTextTests(unittest.TestCase):
         source = "You are an AI agent powered by DeepSeek Harness."
         expected = WORKBUDDY + "."
         self.assertEqual(desensitize_module.desensitize_channel_text(source), expected)
-        self.assertEqual(desensitize_text(source), expected)
+        # The identity sentence belongs to the identity switch (identity_normalize), not to the
+        # term pass: with the switch at "off" the sentence must survive verbatim, which is what
+        # keeps an operator able to leave the prompt untouched at all.
+        self.assertEqual(desensitize_text(source).replace("​", ""), source)
+        self.assertEqual(desensitize_module.normalize_identity_prefix(source, "codebuddy"),
+                         desensitize_module._DSH_IDENTITY_CODEBUDDY)
+        self.assertEqual(desensitize_module.normalize_identity_prefix(source, "running_on"),
+                         "You are an AI agent running on DeepSeek Harness.")
+        self.assertEqual(desensitize_module.normalize_identity_prefix(source, "off"), source)
         self.assertEqual(desensitize_module.desensitize_channel_text(source + "\nNext instruction."),
                          expected + "\nNext instruction.")
         self.assertEqual(desensitize_module.desensitize_channel_text(expected), expected)

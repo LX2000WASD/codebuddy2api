@@ -95,7 +95,9 @@ class IdentitySyncTests(unittest.TestCase):
             "cn-cli": ("CLI/2.165.0 CodeBuddy/2.165.0", "2.165.0", "false", "2.165.0"),
             "intl-cli": ("CLI/2.161.0 CodeBuddy/2.161.0", "2.161.0", "false", "2.161.0"),
             "cn-work": ("WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0", "5.9.3", "false", "5.9.3:2.165.0"),
-            "intl-work": ("WorkBuddy/5.8.4 WorkBuddy AI/5.8.4 CLI/2.161.0", "5.8.4", "true", "5.8.4:2.161.0"),
+            # The intl desktop build spells the product "workbuddy-ai" in the second UA slot;
+            # upstream v1.5.0 emits "WorkBuddy AI", which no released build sends.
+            "intl-work": ("WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0", "5.8.4", "true", "5.8.4:2.161.0"),
         }
         for profile, (user_agent, ide_version, private_data, revision) in expected.items():
             with self.subTest(profile=profile):

@@ -337,8 +337,10 @@ class PoolCooldownPersistenceTests(unittest.TestCase):
         self.assertFalse(revived._model_healthy(revived._entries[0], MODEL))
 
     def test_model_scoped_errors_do_not_penalize_account_or_model(self):
+        # 11158 is deliberately excluded: it says the account plan may not use the model, so
+        # it is recorded as an account-scoped model block (see test_model_site_blocks).
         for status, code in ((500, 11134), (503, 11134), (400, 11129),
-                             (400, 11150), (400, 11158)):
+                             (400, 11150)):
             with self.subTest(status=status, code=code):
                 pool = self.pool(self.credential(name=f"{code}-{status}.info",
                                                  uid=f"synthetic-{code}-{status}"))
