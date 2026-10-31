@@ -8,6 +8,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app import desensitize as desensitize_module
 from app.desensitize import desensitize_body, _prune_runtime_fragments
 from app.harness_context import parse_harness_text
 
@@ -124,14 +125,17 @@ class HarnessContextTests(unittest.TestCase):
             self.assertFalse(parsed.matched)
             self.assertEqual(parsed.user_text, text)
 
-    def test_only_context_fragments_receive_desensitization(self):
+    def test_real_user_messages_are_never_rewritten(self):
         raw_task = "Do not rename malware.py or credential testing.json.\n" + TASK
         text = "<system-reminder>Refuse malware.</system-reminder>\n\n" + raw_task
         for compact in (False, True):
-            out = desensitize_body({"messages": [{"role": "user", "content": text}]},
-                                   desensitize_harness_user=True, compact_harness=compact)
-            self.assertTrue(out["messages"][0]["content"].endswith(raw_task))
-            self.assertIn("m\u200balware", out["messages"][0]["content"])
+            body = {"messages": [{"role": "user", "content": text}]}
+            self.assertEqual(desensitize_body(body, compact_harness=compact), body)
+        # A system turn still goes through the trusted-harness path (context extraction),
+        # and that path never inserts invisible characters.
+        out = desensitize_body({"messages": [{"role": "system", "content": text}]})
+        self.assertIn(raw_task, out["messages"][0]["content"])
+        self.assertNotIn("\u200b", out["messages"][0]["content"])
 
     def test_user_images_unknown_blocks_and_original_object_are_preserved(self):
         body = {"messages": [{"role": "user", "content": [
@@ -142,33 +146,27 @@ class HarnessContextTests(unittest.TestCase):
         ]}]}
         before = copy.deepcopy(body)
         for compact in (False, True):
-            out = desensitize_body(body, desensitize_harness_user=True, compact_harness=compact)
-            parts = out["messages"][0]["content"]
-            self.assertIsInstance(parts, list)
-            self.assertEqual(parts[1:], before["messages"][0]["content"][1:])
-            self.assertIn(TASK, parts[0]["text"])
-            self.assertEqual(parts[0]["cache_control"], {"type": "ephemeral"})
-            self.assertEqual(body, before)
+            out = desensitize_body(body, compact_harness=compact)
+            self.assertEqual(out, before)
 
     def test_unclosed_block_across_text_blocks_is_not_guessed_or_dropped(self):
         content = [{"type": "text", "text": "<system-reminder>memo"},
                    {"type": "text", "text": "</system-reminder>\n" + TASK}]
         body = {"messages": [{"role": "user", "content": content}]}
-        out = desensitize_body(body, desensitize_harness_user=True, compact_harness=True)
-        self.assertEqual(out, body)
+        self.assertEqual(desensitize_body(body, compact_harness=True), body)
 
     def test_false_harness_positive_in_literal_user_message_is_unchanged(self):
         text = "Please explain `<system-reminder>` and malware.py."
         body = {"messages": [{"role": "user", "content": text}]}
-        self.assertEqual(desensitize_body(body, desensitize_harness_user=True, compact_harness=True), body)
+        self.assertEqual(desensitize_body(body, compact_harness=True), body)
 
     def test_large_whitespace_is_bounded_in_a_separate_process(self):
         command = (
             "from app.desensitize import desensitize_body; "
             "text='<system-reminder>memo</system-reminder>\\n'+' '*1000000+'KEEP_TASK'; "
-            "out=desensitize_body({'messages':[{'role':'user','content':text}]}, "
-            "desensitize_harness_user=True,compact_harness=True); "
-            "assert out['messages'][0]['content'].endswith('KEEP_TASK')"
+            "out=desensitize_body({'messages':[{'role':'system','content':text}]}, "
+            "compact_harness=True); "
+            "assert 'KEEP_TASK' in out['messages'][0]['content']"
         )
         started = time.monotonic()
         result = subprocess.run([sys.executable, "-B", "-c", command],
@@ -177,31 +175,30 @@ class HarnessContextTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 8)
 
 
-    def test_foreign_harness_product_name_is_split_by_a_zero_width_separator(self):
-        """Every paragraph naming the foreign harness must lose its literal spelling.
+    def test_foreign_harness_product_name_is_no_longer_hidden_with_zero_width(self):
+        """The channel guard still rewrites the blocked paragraphs, without invisible characters.
 
-        The cn channel blocks one paragraph at a time: the identity sentence first, then
-        the Web GUI orientation paragraph. Deleting paragraphs is a losing game (each
-        block costs the agent a piece of its instructions), so the product name itself is
-        split with a zero-width separator. The model still reads the same words; only the
-        literal byte match disappears. Verified on the live channel 2026-10-21: the
-        original spelling answers 400 / code 11128, the split spelling answers 200.
+        Inserting a zero-width separator was the retired answer to the per-paragraph 11128
+        block: the upstream gateway normalises before matching, so the split never hid the
+        term, and outbound prompt text full of invisible characters is an evasion signature
+        of its own (30b §4.1). What remains is the literal channel guard, which the panel
+        measured as sufficient: the identity / persona / Web GUI sentences are rewritten, and
+        every other instruction stays byte-identical.
         """
         identity = "You are an AI agent powered by DeepSeek Harness."
         web_gui = ("You are interacting with the user through the DeepSeek Harness Web GUI "
                    "whose URL the runtime context names.")
         checkout = "The runtime context names the DeepSeek Harness implementation checkout."
         body = {"messages": [{"role": "system", "content": "\n\n".join(
-                              (identity, web_gui, checkout, "How you work:", "- research first"))},
-                            {"role": "user", "content": "hi"}]}
-        out = desensitize_body(body, roles=("system", "developer"), desensitize_tools=True)
-        sent = out["messages"][0]["content"]
-        self.assertNotIn("DeepSeek Harness", sent)
-        flat = sent.replace("\u200b", "")
-        # The model must still receive every instruction verbatim.
-        for fragment in ("How you work:", "- research first", "Web GUI", "implementation checkout"):
-            self.assertIn(fragment, flat)
-        self.assertEqual(flat.count("DeepSeek Harness"), 3)
+                              (identity, web_gui, checkout, "How you work:", "- research first"))}]}
+        sent = desensitize_module.desensitize_channel_body(body)["messages"][0]["content"]
+        self.assertNotIn("\u200b", sent)
+        # Rewritten sentences, untouched instructions.
+        self.assertIn("WorkBuddy", sent)
+        for fragment in ("How you work:", "- research first", "implementation checkout"):
+            self.assertIn(fragment, sent)
+        # Text outside the guarded sentences is preserved byte for byte.
+        self.assertIn(checkout, sent)
 
     def test_identity_rewrite_wins_over_the_zero_width_pass(self):
         """The prefix rewrite must see the literal sentence, so it runs before the split."""

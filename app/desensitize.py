@@ -8,119 +8,10 @@ from typing import Any, Iterable
 
 from app.harness_context import parse_harness_text
 
-# Insert a zero-width separator within matched template terms.
-_ZWSP = "\u200b"
-
-# Case-insensitive terms found in known client compliance templates.
-SENSITIVE_TERMS: list[str] = [
-    # Shared template terms
-    "DoS",
-    "DDoS",
-    "exploit",
-    "credential testing",
-    "credential stuffing",
-    "supply chain compromise",
-    "supply-chain compromise",
-    "detection evasion",
-    "C2 frameworks",
-    "C2 framework",
-    "command and control",
-    "malicious purposes",
-    "malicious intent",
-    "mass targeting",
-    "brute force",
-    "brute-force",
-    "privilege escalation",
-    "reverse shell",
-    "remote code execution",
-    "SQL injection",
-    "XSS",
-    "CSRF",
-    "phishing",
-    "malware",
-    "ransomware",
-    "keylogger",
-    "rootkit",
-    "backdoor",
-    "botnet",
-    "zero-day",
-    "0day",
-    # Codex template terms
-    "vulnerability",
-    "vulnerabilities",
-    "red teaming",
-    "red-teaming",
-    "sandbox",
-    "sandboxing",
-    "sandboxed",
-    "unsandboxed",
-    "escalated privileges",
-    "escalated",
-    "escalation",
-    "destructive action",
-    "destructive command",
-    "destructive",
-    "attack",
-    "attacks",
-    "cybersecurity",
-    "security review",
-    "exploit development",
-    "hacking",
-    "penetration testing",
-    "penetration test",
-    "injection",
-    "weaponize",
-    "weaponized",
-    "harmful",
-    "dangerous",
-    "abuse",
-    "abusive",
-    "illegal",
-    "terrorist",
-    "terrorism",
-    "bomb",
-    "weapon",
-    "weapons",
-    "drug",
-    "drugs",
-    "narcotic",
-    "suicide",
-    "self-harm",
-    "murder",
-    "kill",
-    "violence",
-    "violent",
-    # Product names of other agent harnesses. The codebuddy.cn channel blocks a system
-    # message that names one, one paragraph at a time: first the identity sentence, then
-    # the Web GUI orientation paragraph. Blocking is per paragraph and the list keeps
-    # growing, so deleting the offending paragraphs is a losing game — every new block
-    # costs the agent a piece of its instructions. A zero-width separator inside the
-    # product name defeats the literal match while the model still reads the same words
-    # (measured 2026-10-21: both this and a rename return 200 on the cn channel).
-    "DeepSeek Harness",
-    # Claude Code template terms
-    "Claude Code",
-    "Claude Opus",
-    "Claude Sonnet",
-    "Claude Haiku",
-    "Claude Fable",
-    "Anthropic",
-    "Co-Authored-By",
-    "noreply@anthropic.com",
-]
-
-# Match longer terms first and preserve identifier boundaries.
-_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_])(?:"
-    + "|".join(re.escape(t) for t in sorted(SENSITIVE_TERMS, key=len, reverse=True))
-    + r")(?![A-Za-z0-9_])",
-    re.IGNORECASE,
-)
-
 # Limit substitutions to known templates without globally stripping whitespace.
 def _template_source(text: str) -> str:
-    words = [(_ZWSP + "*").join(re.escape(char) for char in word) for word in text.split(" ")]
-    return r"[\s\u200b]+".join(words) + _ZWSP + r"*"
+    words = [re.escape(char) for char in text.split(" ")]
+    return r"[\s]+".join(words)
 
 
 def _template_pattern(text: str) -> re.Pattern:
@@ -138,10 +29,9 @@ _TEMPLATE_REPLACEMENTS = tuple(
         ("Main branch (you will usually use this for PRs)",
          "Main branch (you will usually use this for PR)"),
         # The DeepSeek Harness identity sentence is deliberately NOT replaced here: the
-        # identity switch (identity_normalize: off / running_on / codebuddy) owns it through
+        # identity switch (identity_normalize: off / running_on) owns it through
         # normalize_identity_prefix, so a template pass must not overwrite the operator's
-        # choice — least of all with "off", where the sentence has to stay verbatim (only the
-        # zero-width split below touches it).
+        # choice — least of all with "off", where the sentence has to stay verbatim.
     )
 )
 _WORKBUDDY_IDENTITY_PATTERN = _template_pattern(_WORKBUDDY_IDENTITY)
@@ -161,12 +51,12 @@ _DSH_IDENTITY = "You are an AI agent powered by DeepSeek Harness."
 _DSH_IDENTITY_PATTERN = re.compile(r"^You are an AI agent powered by DeepSeek Harness.")
 
 # Same sentence, different connective: the product name stays visible so an agent
-# working *on* DeepSeek Harness still knows what it is running on.
+# working *on* DeepSeek Harness still knows what it is running on. Rewriting the prefix is
+# the only identity transformation left: the retired modes replaced the sentence with the
+# WorkBuddy persona, which is template impersonation rather than normalisation.
 _DSH_IDENTITY_RUNNING_ON = "You are an AI agent running on DeepSeek Harness."
-# Stronger disguise for when the channel rejects anything that mentions the product.
-_DSH_IDENTITY_CODEBUDDY = _WORKBUDDY_IDENTITY + "."
 
-IDENTITY_MODES = ("off", "running_on", "codebuddy")
+IDENTITY_MODES = ("off", "running_on")
 
 
 def normalize_identity_prefix(text, mode: str = "off"):
@@ -178,14 +68,13 @@ def normalize_identity_prefix(text, mode: str = "off"):
     """
     if not isinstance(text, str) or not text or mode not in IDENTITY_MODES or mode == "off":
         return text
-    replacement = _DSH_IDENTITY_RUNNING_ON if mode == "running_on" else _DSH_IDENTITY_CODEBUDDY
-    return _DSH_IDENTITY_PATTERN.sub(lambda _m: replacement, text, count=1)
+    return _DSH_IDENTITY_PATTERN.sub(lambda _m: _DSH_IDENTITY_RUNNING_ON, text, count=1)
 
 
 _CHANNEL_IDENTITY_PATTERN = _template_pattern("You are an AI agent powered by DeepSeek Harness")
 _DSH_CODING_PATTERN = re.compile(
     r"(?<!\w)" + _template_source("You are a coding agent powered by the")
-    + r"[\s\u200b]+(?P<model>[^\r\n]{1,200}?)[\s\u200b]+"
+    + r"[\s]+(?P<model>[^\r\n]{1,200}?)[\s]+"
     + _template_source("model") + r"(?!\w)",
     re.IGNORECASE,
 )
@@ -236,6 +125,7 @@ def _replace_git_status_text(text: str, protected: bool = False) -> tuple[str, b
 
 
 def _replace_git_status_content(content):
+    """Apply the template substitutions to a gitStatus message without pruning its data."""
     if isinstance(content, str):
         return _replace_git_status_text(content)[0]
     blocks, protected = [], False
@@ -245,7 +135,6 @@ def _replace_git_status_content(content):
             block = {**block, "text": text}
         blocks.append(block)
     return blocks
-
 
 
 def _replace_workbuddy_templates(text: str) -> str:
@@ -259,17 +148,6 @@ def _is_claude_system(text: str) -> bool:
             or bool(_WORKBUDDY_IDENTITY_PATTERN.search(text))
             or "You are Claude Code" in text)
 
-
-# Trusted harness wrappers distinguish runtime context from real user requests.
-_HARNESS_USER_MARKERS = (
-    "# AGENTS.md instructions",
-    "<environment_context>",
-    "<permissions instructions>",
-    "<collaboration_mode>",
-    "<skills_instructions>",
-    "<system-reminder>",           # Claude Code runtime context
-    "# claudeMd",                  # Injected CLAUDE.md context
-)
 
 _CODEX_SYSTEM_MARKERS = (
     "You are a coding agent running in the Codex CLI",
@@ -291,23 +169,20 @@ _SKILLS_MARKERS = (
 )
 
 
-def _zero_width_split(term: str) -> str:
-    """Insert a zero-width separator inside a matched term."""
-    if len(term) <= 1:
-        return term
-    # One separator after the first character is sufficient.
-    return term[0] + _ZWSP + term[1:]
-
-
 def desensitize_text(text: str) -> str:
-    """Apply known template substitutions and word-level zero-width separators."""
+    """Apply the known client-template substitutions, byte for byte otherwise.
+
+    The word-level zero-width pass that used to run here is gone: the upstream gateway
+    normalises before matching, so it never hid a term, and inserting invisible characters
+    into outbound prompt text is itself an evasion signature (30b §4.1). Only literal
+    template phrases from other agent harnesses are still replaced.
+    """
     if not text:
         return text
     context = _GIT_STATUS_CONTEXT.search(text)
     if context:
         return desensitize_text(text[:context.start()]) + _replace_git_status_text(text[context.start():])[0]
-    text = _replace_workbuddy_templates(text)
-    return _PATTERN.sub(lambda m: _zero_width_split(m.group(0)), text)
+    return _replace_workbuddy_templates(text)
 
 
 def _replace_dsh_coding_persona(match: re.Match) -> str:
@@ -352,12 +227,6 @@ def _content_to_text(content) -> str:
     return text
 
 
-def _looks_like_harness_user_message(content) -> bool:
-    """Identify trusted harness context rather than natural user input."""
-    text = _content_to_text(content)
-    return any(marker in text for marker in _HARNESS_USER_MARKERS)
-
-
 def _prune_runtime_fragments(role: str, text: str) -> str:
     """Compact only context with trusted boundaries, preserving unknown text and trailing instructions."""
     return parse_harness_text(text).render() if text else text
@@ -394,35 +263,6 @@ def _compact_harness_message(role: str, content) -> str | None:
     return None
 
 
-def _desensitize_tool_value(value: Any, strip_metadata: bool = False):
-    """Recursively adapt tool metadata and remove optional descriptions when configured."""
-    if isinstance(value, dict):
-        new_value = {}
-        for key, item in value.items():
-            if key in ("description", "title") and isinstance(item, str):
-                if strip_metadata:
-                    continue
-                new_value[key] = desensitize_text(item)
-            else:
-                new_value[key] = _desensitize_tool_value(item, strip_metadata=strip_metadata)
-        return new_value
-    if isinstance(value, list):
-        return [_desensitize_tool_value(item, strip_metadata=strip_metadata) for item in value]
-    return value
-
-
-def _desensitize_harness_content(content):
-    if isinstance(content, str):
-        return parse_harness_text(content).render(desensitize_text)
-    if isinstance(content, list):
-        return [
-            {**block, "text": parse_harness_text(block["text"]).render(desensitize_text)}
-            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
-            else block for block in content
-        ]
-    return content
-
-
 def _normalize_identity_content(content, mode: str):
     """Apply the identity-prefix rewrite to the opening text of one message."""
     if not isinstance(content, str) and not isinstance(content, list):
@@ -444,10 +284,14 @@ def _normalize_identity_content(content, mode: str):
 
 def desensitize_messages(messages: Iterable[dict],
                          roles: tuple[str, ...] = ("system",),
-                         desensitize_harness_user: bool = False,
                          compact_harness: bool = False,
                          identity_mode: str = "off") -> list[dict]:
-    """Copy and adapt selected roles or trusted harness text without altering real user input."""
+    """Copy and adapt the selected roles without altering real user input.
+
+    Only roles named in the roles tuple are touched. Rewriting user-role harness context
+    cost 63.7% of the prompt in the 10-27 measurement, which deletes the instructions the
+    agent needs to call its tools, so that path is gone rather than merely switched off.
+    """
     out: list[dict] = []
     for m in messages:
         if not isinstance(m, dict):
@@ -455,27 +299,18 @@ def desensitize_messages(messages: Iterable[dict],
             continue
         role = m.get("role")
         should_desensitize = role in roles
-        if role == "user" and desensitize_harness_user:
-            should_desensitize = _looks_like_harness_user_message(m.get("content"))
-
         nm = dict(m)  # Preserve caller-owned message objects.
-        content = m.get("content")
-        text = _content_to_text(content) if role == "user" and desensitize_harness_user else ""
-        if _GIT_STATUS_CONTEXT.match(text) and re.search(r"(?m)^Current branch:", text):
-            # Preserve official gitStatus context without rewriting branches or status text.
-            nm["content"] = _replace_git_status_content(content)
-            out.append(nm)
-            continue
-        if should_desensitize and role == "user":
-            nm["content"] = _desensitize_harness_content(m.get("content"))
-            out.append(nm)
-            continue
         if should_desensitize:
             content = m.get("content")
-            # The identity rewrite runs FIRST: it matches the literal sentence at offset 0,
-            # and the zero-width pass below would otherwise split the product name and make
-            # the prefix unmatchable. Everything the prefix rewrite leaves behind is then
-            # caught by the term pass, so both layers stay independent.
+            text = _content_to_text(content)
+            if _GIT_STATUS_CONTEXT.match(text) and re.search(r"(?m)^Current branch:", text):
+                # An official gitStatus block is data, not prompt text: substitute the known
+                # templates and leave every branch name, file name and blank line alone.
+                nm["content"] = _replace_git_status_content(content)
+                out.append(nm)
+                continue
+            # The identity rewrite runs FIRST: it matches the literal sentence at offset 0
+            # and must see the byte-for-byte prefix the channel inspects.
             if role in ("system", "developer"):
                 content = _normalize_identity_content(content, identity_mode)
             compacted = _compact_harness_message(role, content) if compact_harness else None
@@ -509,27 +344,24 @@ def desensitize_messages(messages: Iterable[dict],
 
 
 def desensitize_body(body: dict, roles: tuple[str, ...] = ("system",),
-                     desensitize_harness_user: bool = False,
-                     desensitize_tools: bool = False,
                      compact_harness: bool = False,
-                     strip_tool_metadata: bool = False,
                      identity_mode: str = "off") -> dict:
-    """Return a shallow request copy with adapted messages and tool metadata."""
-    changed = False
+    """Return a shallow request copy with the selected roles adapted.
+
+    Tool definitions are left alone on purpose: a rewritten tool description changes the
+    schema the model follows, and dropping one removes the tool's instructions entirely.
+    Neither hides a client fingerprint, and the upstream never asked for either.
+    """
+    if not body.get("messages"):
+        return body
     nb = dict(body)
-    if body.get("messages"):
-        nb["messages"] = desensitize_messages(
-            body["messages"],
-            roles=roles,
-            desensitize_harness_user=desensitize_harness_user,
-            compact_harness=compact_harness,
-            identity_mode=identity_mode,
-        )
-        changed = True
-    if desensitize_tools and body.get("tools"):
-        nb["tools"] = _desensitize_tool_value(body["tools"], strip_metadata=strip_tool_metadata)
-        changed = True
-    return nb if changed else body
+    nb["messages"] = desensitize_messages(
+        body["messages"],
+        roles=roles,
+        compact_harness=compact_harness,
+        identity_mode=identity_mode,
+    )
+    return nb
 
 
 def desensitize_channel_body(body: dict) -> dict:
@@ -647,31 +479,26 @@ def apply_system_prompt_mode(body: dict, profile: str, mode: str) -> dict:
 
 if __name__ == "__main__":
     samples = [
+        "You are Claude Code, Anthropic's official CLI for Claude",
         "Refuse requests for DoS attacks and exploit development.",
-        "Dual-use security tools (C2 frameworks, credential testing) require authorization.",
-        "这是一段正常的中文，不含任何触发词。",
-        "Prevent privilege escalation and brute force attacks.",
-        "No sensitive words here at all.",
+        "这是一段正常的中文。",
     ]
-    print("=== 脱敏前后对比 ===")
+    print("=== 模板替换前后对比 ===")
     for s in samples:
         d = desensitize_text(s)
-        changed = "✓改" if d != s else "  不"
-        print(f"{changed} | 原文: {s}")
+        print(("✓改" if d != s else "  不") + f" | 原文: {s}")
         if d != s:
-            print(f"     | 脱敏: {d}")
-            print(f"     | 可见字符相同，差异为零宽空格 U+200B")
+            print(f"     | 替换: {d}")
     print()
     print("=== messages 脱敏（只处理 system）===")
     msgs = [
-        {"role": "system", "content": "Refuse DoS attacks and exploit development."},
+        {"role": "system", "content": "You are Claude Code, Anthropic's official CLI for Claude"},
         {"role": "user", "content": "explain DoS attacks"},  # Preserve real user text.
     ]
     out = desensitize_messages(msgs)
     for m in out:
         print(f"  [{m['role']}] {m['content']!r}")
     print()
-    # Only system templates may change.
-    assert "\u200b" in out[0]["content"], "system 应被脱敏"
-    assert "\u200b" not in out[1]["content"], "user 不应被脱敏"
-    print("✓ 自测通过：system 被脱敏，user 保持原样")
+    assert out[0]["content"] == "You are CodeBuddy, Tencent's official CLI", "system 模板应被替换"
+    assert out[1]["content"] == msgs[1]["content"], "user 应保持原样"
+    print("✓ 自测通过：system 模板被替换，user 保持原样，正文无零宽字符")

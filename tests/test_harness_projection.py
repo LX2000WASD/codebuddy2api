@@ -82,11 +82,12 @@ class ProjectionTests(unittest.TestCase):
         self.assertIn(task, result["messages"][1]["content"])
         for compact in (False, True):
             processed = desensitize_body(
-                result, roles=("system", "developer"), desensitize_harness_user=True,
-                compact_harness=compact,
+                result, roles=("system", "developer"), compact_harness=compact,
             )
-            self.assertEqual(processed["messages"][0]["content"].replace("\u200b", ""), system)
-            self.assertIn(task, processed["messages"][1]["content"].replace("\u200b", ""))
+            # The template pass only touches named client templates; real text is byte-equal.
+            self.assertEqual(processed["messages"][0]["content"], system)
+            self.assertEqual(processed["messages"][1]["content"], result["messages"][1]["content"])
+            self.assertIn(task, processed["messages"][1]["content"])
 
     def test_unclosed_harness_markup_stays_literal(self):
         task = "- Inspect only\nDo not modify files."

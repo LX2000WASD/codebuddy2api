@@ -436,25 +436,25 @@ class AdminApiTests(unittest.TestCase):
         self.gateway._save_oauth_credential.assert_called_once()
 
 
-    def test_tool_metadata_setting_is_hot_persisted_and_respects_locks(self):
-        key = "keep_tool_metadata"
+    def test_a_hot_boolean_setting_is_persisted_and_respects_locks(self):
+        key = "account_pause"
         current = self.client.get("/admin/settings", headers=self.headers).json()
         item = next(item for item in current["items"] if item["key"] == key)
-        self.assertEqual((item["value"], item["locked"], item["mode"]), (False, False, "hot"))
+        self.assertEqual((item["value"], item["locked"], item["mode"]), (True, False, "hot"))
         response = self.client.patch("/admin/settings", headers=self.headers, json={
-            "revision": current["revision"], "values": {key: True}})
+            "revision": current["revision"], "values": {key: False}})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertIs(self.config[key], True)
-        self.assertIs(self.store.snapshot()["settings"][key], True)
-        self.gateway.admin_apply_settings.assert_called_once_with({key: True})
+        self.assertIs(self.config[key], False)
+        self.assertIs(self.store.snapshot()["settings"][key], False)
+        self.gateway.admin_apply_settings.assert_called_once_with({key: False})
         item = next(item for item in response.json()["items"] if item["key"] == key)
-        self.assertEqual((item["value"], item["source"], item["locked"]), (True, "management", False))
+        self.assertEqual((item["value"], item["source"], item["locked"]), (False, "management", False))
         self.config["settings_sources"][key] = "environment"
         response = self.client.patch("/admin/settings", headers=self.headers, json={
-            "revision": response.json()["revision"], "values": {key: False}})
+            "revision": response.json()["revision"], "values": {key: True}})
         self.assertEqual(response.status_code, 400)
-        self.assertIs(self.config[key], True)
-        self.assertIs(self.store.snapshot()["settings"][key], True)
+        self.assertIs(self.config[key], False)
+        self.assertIs(self.store.snapshot()["settings"][key], False)
 
     def test_failover_settings_are_hot_and_persisted(self):
         """Apply failover and write-timeout settings without restarting the process."""

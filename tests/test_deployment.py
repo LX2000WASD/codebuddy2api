@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_DEFAULTS = {
     "max_images": 16, "image_policy": "truncate",
     "max_request_bytes": 33554432, "log_body_limit": 65536,
-    "admin_csrf": True, "keep_tool_metadata": False,
+    "admin_csrf": True,
     "responses_projection_mode": "balanced", "responses_projection_max_bytes": 40000,
 }
 API_ENDPOINTS = {
@@ -85,15 +85,14 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotIn("CODEBUDDY2API_AUTO_TRIAL", (ROOT / "docker-compose.yml").read_text())
         self.assertEqual(values["CODEBUDDY2API_ADMIN_CSRF"], str(RUNTIME_DEFAULTS["admin_csrf"]).lower())
         self.assertNotIn("CODEBUDDY2API_ADMIN_ORIGINS", values)
-        self.assertNotIn("CODEBUDDY2API_KEEP_TOOL_METADATA", values)
         self.assertNotIn("CODEBUDDY2API_RESPONSES_PROJECTION_MODE", values)
         self.assertNotIn("CODEBUDDY2API_RESPONSES_PROJECTION_MAX_BYTES", values)
 
-    def test_tool_metadata_and_origins_stay_optional_through_dotenv(self):
+    def test_admin_origins_stay_optional_through_dotenv(self):
         compose = (ROOT / "docker-compose.yml").read_text()
         example = (ROOT / ".env.example").read_text()
         self.assertIn("env_file:", compose)
-        for key in ("CODEBUDDY2API_KEEP_TOOL_METADATA", "CODEBUDDY2API_ADMIN_ORIGINS"):
+        for key in ("CODEBUDDY2API_ADMIN_ORIGINS",):
             with self.subTest(key=key):
                 # .env decides these; leaving them out keeps the WebUI authoritative.
                 self.assertNotIn(key + ":", compose)

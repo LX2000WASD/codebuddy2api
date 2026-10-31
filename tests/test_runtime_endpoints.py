@@ -255,15 +255,16 @@ class EndpointTests(unittest.TestCase):
         self.assertGreaterEqual(len(pooled), 3)
         self.assertRegex(src, r"await run_in_threadpool\(\s*project_responses_chat_body")
 
-    def test_tool_metadata_policy_reaches_all_protocols(self):
+    def test_tool_metadata_reaches_all_protocols_byte_for_byte(self):
+        """Tool schemas are never rewritten: no description is dropped and no term is split."""
         description = "Read sandbox data without destructive changes."
         schema = {"type": "object", "title": "Lookup inputs", "properties": {
             "path": {"type": "string", "title": "Data path", "description": description, "enum": ["sandbox", "local"]}},
             "required": ["path"]}
         function = {"name": "lookup_data", "description": description, "parameters": schema}
-        for route, keep, desensitize, no_compact, stream in product(ROUTES, (False, True), (False, True), (False, True), (False, True)):
-            with self.subTest(route=route, keep=keep, desensitize=desensitize, no_compact=no_compact, stream=stream):
-                converter.CONFIG.update(keep_tool_metadata=keep, desensitize=desensitize, no_compact=no_compact)
+        for route, desensitize, no_compact, stream in product(ROUTES, (False, True), (False, True), (False, True)):
+            with self.subTest(route=route, desensitize=desensitize, no_compact=no_compact, stream=stream):
+                converter.CONFIG.update(desensitize=desensitize, no_compact=no_compact)
                 payload = payload_for(route, 0, stream)
                 if route == "/v1/messages":
                     payload["tools"] = [{"name": function["name"], "description": description, "input_schema": schema}]
@@ -276,21 +277,18 @@ class EndpointTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200, response.text)
                 self.assertEqual(len(self.requests), 1)
                 sent = json.loads(self.requests[0].content)["tools"][0]["function"]
-                retained = keep or not desensitize
-                self.assertEqual("description" in sent, retained)
-                self.assertEqual("title" in sent["parameters"], retained)
+                self.assertEqual(sent["description"], description)
+                self.assertEqual(sent["parameters"]["title"], "Lookup inputs")
                 prop = sent["parameters"]["properties"]["path"]
-                self.assertEqual("description" in prop, retained)
-                self.assertEqual("title" in prop, retained)
+                self.assertEqual(prop["description"], description)
+                self.assertEqual(prop["title"], "Data path")
                 self.assertEqual(sent["name"], function["name"])
                 self.assertEqual(sent["parameters"]["required"], ["path"])
                 self.assertEqual(prop["enum"], ["sandbox", "local"])
-                if retained:
-                    self.assertEqual(sent["description"].replace("\u200b", ""), description)
-                    self.assertEqual("\u200b" in sent["description"], desensitize)
+                self.assertNotIn("\u200b", sent["description"])
 
     def test_kept_tool_descriptions_still_obey_request_size_budget(self):
-        converter.CONFIG.update(keep_tool_metadata=True, desensitize=True, max_request_bytes=2048)
+        converter.CONFIG.update(desensitize=True, max_request_bytes=2048)
         for route in ROUTES:
             with self.subTest(route=route):
                 payload = payload_for(route, 0, False)
@@ -948,13 +946,13 @@ class ConfigurationTests(unittest.TestCase):
                 self.assertEqual(server.call_args.kwargs["host"], expected_host)
             return {key: converter.CONFIG[key] for key in (
                 "max_images", "image_policy", "max_request_bytes", "log_body_limit", "admin_csrf",
-                "keep_tool_metadata", "admin_allowed_origins", "responses_projection_mode",
+                "account_pause", "admin_allowed_origins", "responses_projection_mode",
                 "responses_projection_max_bytes")}
 
     def test_defaults(self):
         self.assertEqual(self.configure(), {
             "max_images": 16, "image_policy": "truncate", "max_request_bytes": 33554432,
-            "log_body_limit": 65536, "admin_csrf": True, "keep_tool_metadata": False,
+            "log_body_limit": 65536, "admin_csrf": True, "account_pause": True,
             "admin_allowed_origins": "", "responses_projection_mode": "balanced",
             "responses_projection_max_bytes": 40000})
 
@@ -982,7 +980,7 @@ class ConfigurationTests(unittest.TestCase):
                "CODEBUDDY2API_MAX_REQUEST_BYTES": "100000", "CODEBUDDY2API_LOG_BODY_LIMIT": "0"}
         self.assertEqual(self.configure(env), {
             "max_images": 8, "image_policy": "error", "max_request_bytes": 100000,
-            "log_body_limit": 0, "admin_csrf": True, "keep_tool_metadata": False,
+            "log_body_limit": 0, "admin_csrf": True, "account_pause": True,
             "admin_allowed_origins": "", "responses_projection_mode": "balanced",
             "responses_projection_max_bytes": 40000})
         env["CODEBUDDY2API_IMAGE_POLICY"] = "invalid-overridden"
@@ -1002,23 +1000,23 @@ class ConfigurationTests(unittest.TestCase):
             with self.subTest(env=env, flags=flags):
                 self.assertIs(self.configure(env, flags)["admin_csrf"], expected)
 
-    def test_tool_metadata_flag_and_environment_precedence(self):
-        key = "CODEBUDDY2API_KEEP_TOOL_METADATA"
+    def test_boolean_flag_and_environment_precedence(self):
+        key = "CODEBUDDY2API_ACCOUNT_PAUSE"
         cases = [
-            ({}, ("--keep-tool-metadata",), True),
-            ({}, ("--keep-tool-metadata", "false"), False),
+            ({}, ("--account-pause",), True),
+            ({}, ("--account-pause", "false"), False),
             ({key: "true"}, (), True),
             ({key: "false"}, (), False),
-            ({key: "true"}, ("--keep-tool-metadata", "false"), False),
-            ({key: "false"}, ("--keep-tool-metadata", "true"), True),
-            ({key: "invalid-overridden"}, ("--keep-tool-metadata",), True),
+            ({key: "true"}, ("--account-pause", "false"), False),
+            ({key: "false"}, ("--account-pause", "true"), True),
+            ({key: "invalid-overridden"}, ("--account-pause",), True),
         ]
         for env, flags, expected in cases:
             with self.subTest(env=env, flags=flags):
-                self.assertIs(self.configure(env, flags)["keep_tool_metadata"], expected)
+                self.assertIs(self.configure(env, flags)["account_pause"], expected)
         self.configure({key: "invalid"}, invalid=True)
         self.configure({key: ""}, invalid=True)
-        self.configure(flags=("--keep-tool-metadata", "invalid"), invalid=True)
+        self.configure(flags=("--account-pause", "invalid"), invalid=True)
 
     def test_admin_allowed_origins_flag_and_environment_precedence(self):
         key = "CODEBUDDY2API_ADMIN_ORIGINS"

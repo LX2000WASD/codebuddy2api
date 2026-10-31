@@ -124,7 +124,6 @@ SCHEMA = {
     "prompt_mode": _item("empty", "string", "系统提示词模式",
                          env="CODEBUDDY2API_PROMPT_MODE", choices=["empty", "prepend"]),
     "no_compact": _item(False, "boolean", "保留提示词全文"),
-    "keep_tool_metadata": _item(False, "boolean", "保留工具描述", env="CODEBUDDY2API_KEEP_TOOL_METADATA"),
     "skip_check": _item(False, "boolean", "跳过启动预检", mode="restart"),
     "credit_price_cny": _item(0.014, "number", "国内积分单价", minimum=0),
     "usd_rate": _item(7.15, "number", "美元人民币折算率", minimum=0.000001),
@@ -155,6 +154,14 @@ SCHEMA = {
                                   env="CODEBUDDY2API_AUTH_DISABLE_SECONDS", minimum=60, maximum=2592000),
     "request_illegal_cooldown_s": _item(60, "integer", "上游 request illegal（403/11140）的账号短冷却秒数",
                                         env="CODEBUDDY2API_REQUEST_ILLEGAL_COOLDOWN_S", minimum=1, maximum=3600),
+    # Restricted-account probing (app/restricted_probe.py). A restricted account is disabled
+    # in the control store with no expiry, so without a probe it can only come back by hand.
+    # The probe is one real chat request per account, serial, with a floor between attempts.
+    "restricted_probe": _item(True, "boolean", "受限号自动探活",
+                              env="CODEBUDDY2API_RESTRICTED_PROBE"),
+    "restricted_probe_interval_s": _item(21600, "integer", "同一受限号两次探活的最小间隔（秒）",
+                                         env="CODEBUDDY2API_RESTRICTED_PROBE_INTERVAL",
+                                         minimum=600, maximum=604800),
     "account_pause": _item(True, "boolean", "账号级暂停（只退出选号，签到/旅行/保号照跑）",
                            env="CODEBUDDY2API_ACCOUNT_PAUSE"),
     "maintenance_account_gap_s": _item(0.8, "number", "保号任务跨账号循环间休眠秒数（0 关闭）",

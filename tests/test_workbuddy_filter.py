@@ -208,7 +208,7 @@ class EndpointFilterTests(unittest.TestCase):
                 for stream in (False, True):
                     with self.subTest(route=route, no_compact=no_compact, stream=stream):
                         self.reset()
-                        converter.CONFIG.update(keep_tool_metadata=True, no_compact=no_compact)
+                        converter.CONFIG.update(no_compact=no_compact)
                         self.respond = lambda req: reply() if len(self.requests) == 1 else httpx.Response(
                             200, content=sse(event({"tool_calls": [TOOL]}, "tool_calls")))
                         body = payload(route, stream=stream, tools=True)
@@ -221,8 +221,10 @@ class EndpointFilterTests(unittest.TestCase):
                         self.assertEqual(len(self.requests), 2 if no_compact and not stream else 1)
                         for request in self.requests:
                             sent = json.loads(gzip.decompress(request.content) if request.headers.get("Content-Encoding") == "gzip" else request.content)["tools"][0]["function"]
-                            self.assertEqual(sent["description"].replace("\u200b", ""), description)
-                            self.assertIn("\u200b", sent["description"])
+                            # Tool definitions are passed through verbatim: no rewriting, no
+                            # invisible separators, no removed descriptions.
+                            self.assertEqual(sent["description"], description)
+                            self.assertNotIn("\u200b", sent["description"])
                             self.assertEqual(sent["parameters"]["title"], "Inspection inputs")
                         self.credentials.assert_called_once()
                         self.credential_status.assert_not_called()
@@ -442,7 +444,7 @@ class EndpointFilterTests(unittest.TestCase):
         source = "You are an AI agent powered by DeepSeek Harness."
         for enabled in (False, True):
             with self.subTest(enabled=enabled), patch.dict(converter.CONFIG, {
-                "desensitize": enabled, "no_compact": True, "keep_tool_metadata": False,
+                "desensitize": enabled, "no_compact": True,
                 "identity_normalize": "running_on",
             }):
                 body = {"model": "auto", "messages": [

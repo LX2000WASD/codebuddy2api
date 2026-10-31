@@ -441,8 +441,7 @@ class ResponsesMultiAgentInterfaceTests(unittest.TestCase):
         self.mock_response_generator = respond
         body = {"input": [{"role": "user", "content": "Use the tool"}],
                 **deepcopy(payload), "model": "auto", "stream": stream}
-        with patch.dict(converter.CONFIG, {"stream_mode": mode, "responses_projection_mode": projection,
-                                           "keep_tool_metadata": True}):
+        with patch.dict(converter.CONFIG, {"stream_mode": mode, "responses_projection_mode": projection}):
             response = self.client.post("/v1/responses", json=body)
         sent = json.loads(self.upstream_requests[-1].content) if self.upstream_requests else None
         return response, sent

@@ -59,9 +59,9 @@ class WorkBuddyTextTests(unittest.TestCase):
         # The identity sentence belongs to the identity switch (identity_normalize), not to the
         # term pass: with the switch at "off" the sentence must survive verbatim, which is what
         # keeps an operator able to leave the prompt untouched at all.
-        self.assertEqual(desensitize_text(source).replace("​", ""), source)
-        self.assertEqual(desensitize_module.normalize_identity_prefix(source, "codebuddy"),
-                         desensitize_module._DSH_IDENTITY_CODEBUDDY)
+        self.assertEqual(desensitize_text(source), source)
+        # The impersonating "codebuddy" mode is retired: an unknown mode leaves the text alone.
+        self.assertEqual(desensitize_module.normalize_identity_prefix(source, "codebuddy"), source)
         self.assertEqual(desensitize_module.normalize_identity_prefix(source, "running_on"),
                          "You are an AI agent running on DeepSeek Harness.")
         self.assertEqual(desensitize_module.normalize_identity_prefix(source, "off"), source)
@@ -72,7 +72,7 @@ class WorkBuddyTextTests(unittest.TestCase):
         self.assertEqual(desensitize_module.desensitize_channel_text(variant), WORKBUDDY
                          + ". This conversation is powered by the deepseek-v4.1-flash model.")
 
-    def test_case_whitespace_and_existing_zero_width_spaces(self):
+    def test_template_matching_ignores_case_and_whitespace(self):
         for source, expected in (
             *((identity, CODEBUDDY) for identity in IDENTITIES),
             (MAIN_BRANCH, MAIN_BRANCH_FIXED),
@@ -81,12 +81,23 @@ class WorkBuddyTextTests(unittest.TestCase):
                 source.upper(),
                 source.lower(),
                 re.sub(r" +", "\t \n", source),
-                re.sub(r"([A-Za-z])([A-Za-z]+)", rf"\1{ZWSP}\2", source),
-                re.sub(r" +", f" {ZWSP}\t", source.upper()),
             )
             for variant in variants:
                 with self.subTest(source=source, variant=variant):
                     self.assertEqual(desensitize_text(variant), expected)
+
+    def test_text_that_already_contains_zero_width_characters_is_left_alone(self):
+        # Nothing inserts zero-width separators any more, so a phrase that already carries
+        # them is not our client's text and must not be rewritten into shape.
+        for source, expected in (
+            *((identity, CODEBUDDY) for identity in IDENTITIES),
+            (MAIN_BRANCH, MAIN_BRANCH_FIXED),
+        ):
+            variant = re.sub(r"([A-Za-z])([A-Za-z]+)", rf"\1{ZWSP}\2", source)
+            with self.subTest(source=source):
+                self.assertEqual(desensitize_text(variant), variant)
+                self.assertEqual(desensitize_text(re.sub(r" +", f" {ZWSP}\t", source.upper())),
+                                 re.sub(r" +", f" {ZWSP}\t", source.upper()))
 
     def test_surrounding_whitespace_is_not_globally_normalized(self):
         prefix = " \tHeader  with   spaces\n\n\n"
@@ -95,10 +106,11 @@ class WorkBuddyTextTests(unittest.TestCase):
         expected = prefix + CODEBUDDY + ".\n\t" + MAIN_BRANCH_FIXED + ": main" + suffix
         self.assertEqual(desensitize_text(source), expected)
 
-    def test_template_replacement_precedes_existing_sensitive_word_pass(self):
+    def test_sensitive_words_are_never_split_with_zero_width_separators(self):
         source = CLAUDE_CLI + ". Refuse malware.\n" + MAIN_BRANCH + ": main"
-        expected = CODEBUDDY + ". Refuse m\u200balware.\n" + MAIN_BRANCH_FIXED + ": main"
+        expected = CODEBUDDY + ". Refuse malware.\n" + MAIN_BRANCH_FIXED + ": main"
         self.assertEqual(desensitize_text(source), expected)
+        self.assertNotIn(ZWSP, desensitize_text(source))
 
     def test_near_matches_and_unrelated_brand_references_are_not_rewritten(self):
         samples = (
@@ -112,7 +124,7 @@ class WorkBuddyTextTests(unittest.TestCase):
         )
         for source in samples:
             with self.subTest(source=source):
-                self.assertEqual(desensitize_text(source).replace(ZWSP, ""), source)
+                self.assertEqual(desensitize_text(source), source)
 
     def test_text_repeated_execution_is_idempotent(self):
         source = "\n\n".join(IDENTITIES) + "\n" + MAIN_BRANCH + ": main. Refuse malware."
@@ -158,7 +170,6 @@ class WorkBuddyBodyTests(unittest.TestCase):
             source,
             source.upper(),
             re.sub(r" +", "\t \n", source),
-            re.sub(r"([A-Za-z])([A-Za-z]+)", rf"\1{ZWSP}\2", source),
         )
         for role in ("system", "developer", "assistant"):
             for blocks in (False, True):
@@ -369,8 +380,8 @@ class WorkBuddyBodyTests(unittest.TestCase):
     def test_real_conversation_tool_outputs_and_tool_schema_values_are_unchanged(self):
         quoted = CLAUDE_CLI + ".\n" + MAIN_BRANCH + ": main. Refuse malware."
         for compact in (False, True):
-            for strip_metadata in (False, True):
-                with self.subTest(compact=compact, strip_metadata=strip_metadata):
+            for _unused in (False, True):
+                with self.subTest(compact=compact):
                     body = {
                         "model": "Claude Code",
                         "messages": [
@@ -401,12 +412,12 @@ class WorkBuddyBodyTests(unittest.TestCase):
                     }
                     before = copy.deepcopy(body)
                     out = desensitize_body(
-                        body, roles=("system", "developer"),
-                        desensitize_harness_user=True, desensitize_tools=True,
-                        compact_harness=compact, strip_tool_metadata=strip_metadata,
+                        body, roles=("system", "developer"), compact_harness=compact,
                     )
                     self.assertEqual(out["messages"][1:], before["messages"][1:])
                     self.assertEqual(out["model"], before["model"])
+                    # Tool definitions are never rewritten: the model keeps the schema it was given.
+                    self.assertEqual(out["tools"], before["tools"])
                     function = out["tools"][0]["function"]
                     self.assertEqual(function["name"], "Claude Code")
                     self.assertEqual(function["parameters"], before["tools"][0]["function"]["parameters"])
@@ -419,26 +430,26 @@ class WorkBuddyGitStatusTests(unittest.TestCase):
         for header in headers:
             for identity in IDENTITIES:
                 for blocks in (False, True):
-                    for compact in (False, True):
-                        with self.subTest(header=header, identity=identity, blocks=blocks, compact=compact):
-                            # Sentinel terms, markers and whitespace must remain unchanged in gitStatus.
-                            tail = (
-                                "\nCurrent branch: feature/Claude-Code-malware\n\n\n"
-                                "Status:\n M Anthropic.txt\n?? malware-notes.md\n"
-                                "User note: keep  these\twords and PRs.\n"
-                                "<environment_context>keep raw context</environment_context>\n"
-                                "The following deferred tools are now available via ToolSearch.\n"
-                                "keep raw inventory  \n"
-                            )
-                            source = header + "\n" + identity + ".\n" + MAIN_BRANCH + ": main" + tail
-                            expected = header + "\n" + CODEBUDDY + ".\n" + MAIN_BRANCH_FIXED + ": main" + tail
-                            body = {"messages": [{"role": "user", "content": text_content(source, blocks)}]}
-                            before = copy.deepcopy(body)
-                            options = {"desensitize_harness_user": True, "compact_harness": compact}
-                            out = desensitize_body(body, **options)
-                            self.assertEqual(out["messages"][0]["content"], text_content(expected, blocks))
-                            self.assertEqual(body, before)
-                            self.assertEqual(desensitize_body(out, **options), out)
+                    with self.subTest(header=header, identity=identity, blocks=blocks):
+                        # Sentinel terms, markers and whitespace must remain unchanged in gitStatus.
+                        tail = (
+                            "\nCurrent branch: feature/Claude-Code-malware\n\n\n"
+                            "Status:\n M Anthropic.txt\n?? malware-notes.md\n"
+                            "User note: keep  these\twords and PRs.\n"
+                            "<environment_context>keep raw context</environment_context>\n"
+                            "The following deferred tools are now available via ToolSearch.\n"
+                            "keep raw inventory  \n"
+                        )
+                        source = header + "\n" + identity + ".\n" + MAIN_BRANCH + ": main" + tail
+                        expected = header + "\n" + CODEBUDDY + ".\n" + MAIN_BRANCH_FIXED + ": main" + tail
+                        # User turns are never rewritten any more, so the trusted-harness case
+                        # is a system turn. Compaction is a separate retry path and is off here.
+                        body = {"messages": [{"role": "system", "content": text_content(source, blocks)}]}
+                        before = copy.deepcopy(body)
+                        out = desensitize_body(body)
+                        self.assertEqual(out["messages"][0]["content"], text_content(expected, blocks))
+                        self.assertEqual(body, before)
+                        self.assertEqual(desensitize_body(out), out)
 
     def test_git_data_and_field_values_are_not_treated_as_templates(self):
         header = ("gitStatus: " + GIT_STATUS_INTRO + "\nCurrent branch: main\n"
@@ -448,17 +459,16 @@ class WorkBuddyGitStatusTests(unittest.TestCase):
                 + MAIN_BRANCH + ": a quoted commit message\n" + CLAUDE_AGENT_SDK + ".\n")
         expected_header = header.replace(MAIN_BRANCH + ": main", MAIN_BRANCH_FIXED + ": main")
         for blocks in (False, True):
-            for compact in (False, True):
-                with self.subTest(blocks=blocks, compact=compact):
-                    content = ([{"type": "text", "text": header}, {"type": "text", "text": data}]
-                               if blocks else header + data)
-                    expected = ([{"type": "text", "text": expected_header}, {"type": "text", "text": data}]
-                                if blocks else expected_header + data)
-                    body = {"messages": [{"role": "user", "content": content}]}
-                    before = copy.deepcopy(body)
-                    out = desensitize_body(body, desensitize_harness_user=True, compact_harness=compact)
-                    self.assertEqual(out["messages"][0]["content"], expected)
-                    self.assertEqual(body, before)
+            with self.subTest(blocks=blocks):
+                content = ([{"type": "text", "text": header}, {"type": "text", "text": data}]
+                           if blocks else header + data)
+                expected = ([{"type": "text", "text": expected_header}, {"type": "text", "text": data}]
+                            if blocks else expected_header + data)
+                body = {"messages": [{"role": "system", "content": content}]}
+                before = copy.deepcopy(body)
+                out = desensitize_body(body)
+                self.assertEqual(out["messages"][0]["content"], expected)
+                self.assertEqual(body, before)
         system = CLAUDE_CLI + ".\n" + header + data
         self.assertEqual(desensitize_text(system), CODEBUDDY + ".\n" + expected_header + data)
         body = {"messages": [{"role": "system", "content": [
@@ -482,10 +492,7 @@ class WorkBuddyGitStatusTests(unittest.TestCase):
                 with self.subTest(blocks=blocks, compact=compact):
                     body = {"messages": [{"role": "user", "content": text_content(source, blocks)}]}
                     before = copy.deepcopy(body)
-                    self.assertEqual(
-                        desensitize_body(body, desensitize_harness_user=False, compact_harness=compact),
-                        before,
-                    )
+                    self.assertEqual(desensitize_body(body, compact_harness=compact), before)
                     self.assertEqual(body, before)
 
     def test_real_user_quotes_and_incomplete_harness_markers_are_unchanged(self):
@@ -507,25 +514,26 @@ class WorkBuddyGitStatusTests(unittest.TestCase):
                     with self.subTest(source=source, blocks=blocks, compact=compact):
                         body = {"messages": [{"role": "user", "content": text_content(source, blocks)}]}
                         before = copy.deepcopy(body)
-                        out = desensitize_body(
-                            body, desensitize_harness_user=True, compact_harness=compact
-                        )
+                        out = desensitize_body(body, compact_harness=compact)
                         self.assertEqual(out, before)
                         self.assertEqual(body, before)
 
 
 class WordBoundaryTests(unittest.TestCase):
-    """Match complete template terms without changing keyword-containing identifiers or paths."""
+    """Match complete template terms without touching identifiers, paths or ordinary prose."""
     def test_identifiers_and_paths_containing_terms_are_untouched(self):
         for text in ("~/.agents/skills/x", "skillset", "mysandbox", "attacksurface",
                      "data_exfiltration", "killall5", "weaponsmith"):  # Terms embedded in identifiers
             with self.subTest(text=text):
                 self.assertEqual(desensitize_text(text), text)
-    def test_standalone_terms_still_split(self):
-        self.assertEqual(desensitize_text("kill the process"), "kill".replace("k", "k" + ZWSP, 1) + " the process")
-        self.assertNotEqual(desensitize_text("Sandbox mode"), "Sandbox mode")
-        self.assertNotEqual(desensitize_text("a kill-switch"), "a kill-switch")  # Hyphens form word boundaries.
-        self.assertEqual(desensitize_text("skills."), "skills.")
+    def test_ordinary_prose_is_left_byte_identical(self):
+        # No word list is applied any more: the only edits left are named client templates.
+        for text in ("kill the process", "Sandbox mode", "a kill-switch", "skills.",
+                     "Refuse requests for DoS attacks and exploit development.",
+                     "Dual-use security tools (C2 frameworks, credential testing) require authorization."):
+            with self.subTest(text=text):
+                self.assertEqual(desensitize_text(text), text)
+                self.assertNotIn(ZWSP, desensitize_text(text))
 
 
 if __name__ == "__main__":

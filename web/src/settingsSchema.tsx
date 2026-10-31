@@ -214,6 +214,17 @@ export const SETTINGS_META: Record<string, SettingMeta> = {
     unit: "seconds",
     aliases: ["保号", "维护", "maintenance"],
   }),
+  restricted_probe: meta(
+    "accounts",
+    "p1",
+    "受限号（403 / 11140）停权后没有期限，关闭后只能人工放行；开启则按间隔发一次真实请求试探。",
+    { section: "受限号探活", aliases: ["11140", "受限", "探活", "probe", "restricted"] },
+  ),
+  restricted_probe_interval_s: meta("accounts", "p1", "同一受限号两次探活之间的最小间隔。", {
+    section: "受限号探活",
+    unit: "seconds",
+    aliases: ["11140", "受限", "探活", "间隔", "probe"],
+  }),
   credit_floor: meta("accounts", "p1", "低于保底余额的账号不再派发收费模型；0 表示关闭。", {
     section: "账号调度",
     aliases: ["积分", "余额", "保底", "credit"],
@@ -273,10 +284,6 @@ export const SETTINGS_META: Record<string, SettingMeta> = {
   no_compact: meta("request", "p0", "开启后保留提示词全文，token 与费用上升。", {
     section: "内容处理",
     aliases: ["压缩", "compact", "token", "费用"],
-  }),
-  keep_tool_metadata: meta("request", "p2", "保留工具描述原文；关闭时按脱敏规则精简。", {
-    section: "内容处理",
-    aliases: ["工具", "tool"],
   }),
   max_images: meta("request", "p2", "单个请求携带的图片上限，超出部分按策略处理。", {
     section: "内容处理",

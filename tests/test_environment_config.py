@@ -331,7 +331,7 @@ class EnvironmentConfigTests(unittest.TestCase):
                   'CODEBUDDY2API_STREAM_MODE': 'realtime',
                   'CODEBUDDY2API_MODEL_CAPABILITY_GUARD': 'false',
                   'CODEBUDDY2API_ADMIN_ORIGINS': 'https://chat.example.com',
-                  'CODEBUDDY2API_KEEP_TOOL_METADATA': 'false', 'CODEBUDDY_IMPORT_DIR': '/data/auth/incoming'}
+                  'CODEBUDDY2API_ACCOUNT_PAUSE': 'false', 'CODEBUDDY_IMPORT_DIR': '/data/auth/incoming'}
         service = self.compose(values)
         port = service['ports'][0]
         self.assertEqual((port['host_ip'], str(port['published']), port['target']), ('127.0.0.2', '9087', 8787))
@@ -344,7 +344,7 @@ class EnvironmentConfigTests(unittest.TestCase):
 
     def test_compose_unset_optional_settings_do_not_override_webui(self):
         service = self.compose({})
-        for name in ('CODEBUDDY2API_KEEP_TOOL_METADATA', 'CODEBUDDY2API_FAILOVER_MAX', 'CODEBUDDY2API_RETRY_WRITE_TIMEOUT',
+        for name in ('CODEBUDDY2API_FAILOVER_MAX', 'CODEBUDDY2API_RETRY_WRITE_TIMEOUT',
                      'CODEBUDDY2API_UPSTREAM_KEEPALIVE', 'CODEBUDDY2API_MAX_INFLIGHT_PER_ACCOUNT',
                      'CODEBUDDY2API_REQUEST_CONTEXT_MODE',
                      'CODEBUDDY2API_RESPONSES_PROJECTION_MODE',

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Test Responses request and response adaptation."""
 
+import copy
 import json
 import sys
 from pathlib import Path
@@ -125,8 +126,8 @@ def test_typed_developer_message_request():
     print("✅ test_typed_developer_message_request")
 
 
-def test_desensitize_harness_user_and_tools():
-    """Compact trusted harness input and tool metadata while preserving real user text."""
+def test_user_turns_and_tool_metadata_are_never_rewritten():
+    """Only named client templates change; user text and tool schemas pass through verbatim."""
     body = {
         "messages": [
             {"role": "system", "content": "Refuse exploit development."},
@@ -137,23 +138,19 @@ def test_desensitize_harness_user_and_tools():
             {"type": "function", "function": {"name": "exec_command", "description": "Run dangerous exploit development checks."}}
         ],
     }
-    out = desensitize_body(
-        body,
-        roles=("system", "developer"),
-        desensitize_harness_user=True,
-        desensitize_tools=True,
-    )
-    assert "​" in out["messages"][0]["content"]
-    assert "Repository instructions and durable user context are provided." in out["messages"][1]["content"]
-    assert "Environment context is provided by the harness." in out["messages"][1]["content"]
-    assert "​" not in out["messages"][2]["content"]
-    assert out["messages"][2]["content"] == "please explain dos attacks"
-    assert "​" in out["tools"][0]["function"]["description"]
-    print("✅ test_desensitize_harness_user_and_tools")
+    before = copy.deepcopy(body)
+    out = desensitize_body(body, roles=("system", "developer"))
+    # A system message with no named template is byte-identical: no word list, no separators.
+    assert out["messages"][0]["content"] == "Refuse exploit development."
+    assert out["messages"][1:] == before["messages"][1:]
+    assert out["tools"] == before["tools"]
+    assert "​" not in out["messages"][0]["content"]
+    assert "​" not in out["tools"][0]["function"]["description"]
+    print("✅ test_user_turns_and_tool_metadata_are_never_rewritten")
 
 
-def test_compact_harness_messages_and_strip_tool_metadata():
-    """Compact long Codex templates without replacing the user's actual request."""
+def test_compact_harness_repairs_only_named_system_templates():
+    """The channel-repair retry compacts rejected system templates and nothing else."""
     body = {
         "messages": [
             {"role": "system", "content": "You are a coding agent running in the Codex CLI. # How you work\nUse sandbox and escalation."},
@@ -164,22 +161,16 @@ def test_compact_harness_messages_and_strip_tool_metadata():
             {"type": "function", "function": {"name": "exec_command", "description": "Run dangerous exploit development checks.", "parameters": {"type": "object", "properties": {"cmd": {"type": "string", "description": "Shell command to execute."}}}}}
         ],
     }
-    out = desensitize_body(
-        body,
-        roles=("system", "developer"),
-        desensitize_harness_user=True,
-        desensitize_tools=True,
-        compact_harness=True,
-        strip_tool_metadata=True,
-    )
+    before = copy.deepcopy(body)
+    out = desensitize_body(body, roles=("system", "developer"), compact_harness=True)
     assert len(out["messages"][0]["content"]) < 220
     assert "Codex CLI" in out["messages"][0]["content"]
     assert "sandboxing defines" not in out["messages"][1]["content"]
-    assert "Repository instructions and durable user context are provided." in out["messages"][2]["content"]
-    assert "Environment context is provided by the harness." in out["messages"][2]["content"]
-    assert "description" not in out["tools"][0]["function"]
-    assert "description" not in out["tools"][0]["function"]["parameters"]["properties"]["cmd"]
-    print("✅ test_compact_harness_messages_and_strip_tool_metadata")
+    # The user's own turn is not context to summarise.
+    assert out["messages"][2] == before["messages"][2]
+    # Tool schemas keep their descriptions: the model is asked to follow them.
+    assert out["tools"] == before["tools"]
+    print("✅ test_compact_harness_repairs_only_named_system_templates")
 
 
 def test_no_compact_still_prunes_codex_runtime_metadata():
@@ -208,12 +199,7 @@ def test_no_compact_still_prunes_codex_runtime_metadata():
             {"role": "user", "content": "test"},
         ],
     }
-    out = desensitize_body(
-        body,
-        roles=("system", "developer"),
-        desensitize_harness_user=True,
-        compact_harness=False,
-    )
+    out = desensitize_body(body, roles=("system", "developer"), compact_harness=False)
     system_text = out["messages"][0]["content"]
     harness_text = out["messages"][1]["content"]
     assert "You are a coding agent running in the Codex CLI" in system_text
@@ -226,14 +212,11 @@ def test_no_compact_still_prunes_codex_runtime_metadata():
     assert "The following deferred tools are now available via ToolSearch.\n..." in system_text
     assert "Runtime permissions apply" in system_text
     assert "Runtime tool, agent, sk" not in system_text
-    assert "very long runtime context" not in harness_text
-    assert "very long skills metadata" not in harness_text
-    assert "# AGENTS.md instructions" not in harness_text
-    assert "Repository instructions and durable user context are provided." in harness_text
-    assert "Environment context is provided by the harness." in harness_text
-    # Remove inserted separators to isolate harness compaction from term adaptation.
-    assert "Runtime skill metadata is available" in harness_text.replace("​", "")
-    assert harness_text.strip().replace("​", "").endswith("test")
+    # User turns are no longer rewritten at all, so the harness text arrives verbatim.
+    assert harness_text == "# AGENTS.md instructions\n<INSTRUCTIONS>\nproject guidance\n</INSTRUCTIONS>" \
+        "<environment_context>\nvery long runtime context\n</environment_context>\n" \
+        "<skills_instructions>\nvery long skills metadata\n</skills_instructions>\n" \
+        "test"
     assert out["messages"][2]["content"] == "test"
     print("✅ test_no_compact_still_prunes_codex_runtime_metadata")
 
@@ -817,8 +800,8 @@ if __name__ == "__main__":
     test_max_output_tokens()
     test_developer_role()
     test_typed_developer_message_request()
-    test_desensitize_harness_user_and_tools()
-    test_compact_harness_messages_and_strip_tool_metadata()
+    test_user_turns_and_tool_metadata_are_never_rewritten()
+    test_compact_harness_repairs_only_named_system_templates()
     test_no_compact_still_prunes_codex_runtime_metadata()
     test_responses_projection_balanced_preserves_real_text_tools_and_structure()
     test_responses_projection_preserves_history_and_tool_chain()

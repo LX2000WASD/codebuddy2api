@@ -268,31 +268,31 @@ class ControlStoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_settings(invalid)
 
-    def test_tool_metadata_persistence_precedence_and_locking(self):
-        key = "keep_tool_metadata"
-        env_key = "CODEBUDDY2API_KEEP_TOOL_METADATA"
+    def test_hot_boolean_persistence_precedence_and_locking(self):
+        key = "account_pause"
+        env_key = "CODEBUDDY2API_ACCOUNT_PAUSE"
         defaults = {"control_store": self.store}
         apply_persisted_settings(defaults, environ={})
-        self.assertIs(defaults[key], False)
+        self.assertIs(defaults[key], True)
         initial = next(item for item in resolve_settings(defaults) if item["key"] == key)
         self.assertFalse(initial["locked"])
         self.assertEqual(initial["mode"], "hot")
-        self.store.update_settings({key: True}, 0)
+        self.store.update_settings({key: False}, 0)
         reopened = ControlStore(self.path)
         self.addCleanup(reopened.close)
         for env, explicit, expected, source in (
-            ({}, (), True, "management"),
-            ({env_key: "false"}, (), False, "environment"),
-            ({env_key: "true"}, (key,), False, "cli"),
+            ({}, (), False, "management"),
+            ({env_key: "true"}, (), True, "environment"),
+            ({env_key: "false"}, (key,), True, "cli"),
         ):
             with self.subTest(env=env, explicit=explicit):
-                config = {"control_store": reopened, key: False}
+                config = {"control_store": reopened, key: True}
                 apply_persisted_settings(config, explicit=explicit, environ=env)
                 self.assertIs(config[key], expected)
                 item = next(item for item in resolve_settings(config) if item["key"] == key)
                 self.assertEqual(item["source"], source)
                 self.assertEqual(item["locked"], source != "management")
-                self.assertIs(item["stored"], True)
+                self.assertIs(item["stored"], False)
         for invalid in ("true", 1, None):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 validate_settings({key: invalid})
