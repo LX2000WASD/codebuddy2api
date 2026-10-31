@@ -927,17 +927,14 @@ class ResponsesStreamConverter:
         return index
 
     def _claim_output(self, kind: str, index: int | None = None) -> int:
-        # realtime 模式额外记录发射顺序，供 finish/_response_obj 按序回放。
+        # Every item takes the next index in first-emission order (the local interleave fix);
+        # the seeded web_search_call items already took 0.._seed_count-1 through _seed_events,
+        # so a slot-based formula here would hand out their indices a second time.
         output_index = self._alloc_output_index()
         if self._realtime:
+            # realtime 模式额外记录发射顺序，供 finish/_response_obj 按序回放。
             self._output_order.append((kind, index))
-            return output_index
-        if kind == "reasoning":
-            return self._seed_count
-        if kind == "message":
-            return self._seed_count + (1 if self._emitted_reasoning_item else 0)
-        return (self._seed_count + (1 if self._emitted_reasoning_item else 0)
-                + (1 if self._emitted_msg_item else 0) + len(self._tool_calls))
+        return output_index
 
     def _sync_tool_state(self, index: int, tool: dict) -> dict:
         state = ((self._tool_states or {}).get(index)

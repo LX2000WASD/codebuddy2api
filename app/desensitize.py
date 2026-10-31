@@ -137,7 +137,11 @@ _TEMPLATE_REPLACEMENTS = tuple(
         ("You are a Claude agent, built on Anthropic's Claude Agent SDK", _WORKBUDDY_IDENTITY),
         ("Main branch (you will usually use this for PRs)",
          "Main branch (you will usually use this for PR)"),
-        ("You are an AI agent powered by DeepSeek Harness.", _DSH_WORKBUDDY_IDENTITY + "."),
+        # The DeepSeek Harness identity sentence is deliberately NOT replaced here: the
+        # identity switch (identity_normalize: off / running_on / codebuddy) owns it through
+        # normalize_identity_prefix, so a template pass must not overwrite the operator's
+        # choice — least of all with "off", where the sentence has to stay verbatim (only the
+        # zero-width split below touches it).
     )
 )
 _WORKBUDDY_IDENTITY_PATTERN = _template_pattern(_WORKBUDDY_IDENTITY)

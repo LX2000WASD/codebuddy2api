@@ -794,7 +794,6 @@ class CredentialPool:
         self._sync_event = threading.Event()
         self._sync_retry: dict[str, float] = {}
         self._sync_attempts: dict[str, int] = {}
-        self._rescan_dir_key: tuple | None = None  # 上次重扫时的目录发现键
         # 选路静态资格（哪些 profile 在池内、是否启用）的缓存：条目集合或条目 profile
         # 一变就由 _bump_revision（池版本号 self.revision）置空。仅凭内容比较会漏掉
         # 「换号但 profile 相同」这类变化，所以按事件计数而不是按内容哈希。
@@ -809,9 +808,14 @@ class CredentialPool:
             self._rescan()             # Discover credentials at startup.
 
     def _bump_revision(self):
-        """Invalidate cached static routing facts after the entry set or a profile changes."""
-        self.revision += 1
+        """Invalidate cached static routing facts after the entry set or a profile changes.
+
+        The pool revision itself is published by _rebuild_index() when the entry signature
+        moves; bumping it here too would invalidate the routing shards on a token rotation
+        that changes nothing about eligibility.
+        """
         self._configured_cache.clear()
+        self._configured_revision = -1
         self._shared_cache.clear()
 
     @staticmethod
@@ -1422,24 +1426,11 @@ class CredentialPool:
         return (st.st_mtime_ns, st.st_ino)
 
     def _rescan(self):
-        key = self._dir_scan_key() if self._scan else None
         self.prune()
         # Explicit mode retries configured paths, including rejected or evicted ones.
         paths = find_auth_files() if self._scan else [Path(cid) for cid in self._configured]
         self.reload(paths, reset=False)
         self.expire_restrictions()
-        # 记录扫描开始前的目录键:扫描期间若有写入,键已过旧,下一次 pick 会再扫
-        # (宁可多扫一次,不可漏发现新增/删除的凭证)。
-        self._rescan_dir_key = key
-
-    def _maybe_rescan(self):
-        """选路热路径的重扫门控:目录 mtime 未变则跳过全量扫描。
-
-        显式 _rescan()(管理操作、guard)不受影响;scan=False 模式没有目录发现
-        语义且成本低,维持全量。文件增删必然改变目录 mtime,导入后立即可路由。
-        """
-        if not self._scan or self._dir_scan_key() != self._rescan_dir_key:
-            self._rescan()
 
     def fingerprint(self):
         """Return a cheap directory fingerprint so reconcile only runs after a real change."""
@@ -1517,6 +1508,17 @@ class CredentialPool:
         configured = _configured_profiles(region, policy)
         if profile not in _model_profiles(model, region, configured, policy=policy):
             return False
+        # Identity safety (local layer): a file rewritten behind the pool's back can now name
+        # another account. A moved generation proves the cached identity is stale, so re-read
+        # it once and refuse the entry when it no longer matches. A matching generation proves
+        # the entry was built from the current file, which keeps the hot path stat-free.
+        if entry.get("generation") != entry["cm"]._generation:
+            try:
+                fresh = entry["cm"].summary().get("account_key")
+            except Exception:
+                return False
+            if fresh != entry.get("account_key"):
+                return False
         if CONFIG.get("account_catalogs") is not None or CONFIG.get("model_cache") is not None:
             account = (CONFIG.get("account_catalogs") or {}).get(entry.get("account_key")) or {}
             models = _effective_account_scope(account, "serves", model_id=_upstream_model(model, profile))
@@ -1761,8 +1763,8 @@ class CredentialPool:
     def pick(self, skey: str | None, model: str | None = None, *, region=None,
              tried=(), with_capacity=False, requirements=None, policy=None) -> CredentialManager | None:
         """Select a healthy sticky or round-robin credential, preferring eligible zero-rate accounts."""
-        self._maybe_rescan()  # Reload and prune acquire their own locks.
-        # The candidate list comes from the indexes; the rescan above applies file changes first.
+        # The candidate list comes from the indexes; file changes are applied by the background
+        # reconcile (admin imports call _rescan() explicitly), never on the request path.
         policy = policy or model_policy.view(CONFIG)  # One policy revision for the whole decision.
         started = time.perf_counter()
         waiting = time.perf_counter()
@@ -2053,8 +2055,13 @@ class CredentialPool:
         if cm is None:
             return
         code, _, body = _upstream_diagnostic(raw or b"")
-        if code in MODEL_SCOPED_ERROR_CODES and code not in MODEL_NOT_SERVABLE_CODES:
+        # Model-scoped codes say nothing about the account, so they must not penalize it: only
+        # the per-account plan verdict (11158) is recorded, as a model block for that account.
+        if (code in MODEL_SCOPED_ERROR_CODES
+                and code not in MODEL_NOT_SERVABLE_CODES
+                and code not in MODEL_FORBIDDEN_CODES):
             return
+
         not_servable = _parse_not_servable(raw, status) if model else None
         if not_servable:
             if channel_fallback:
@@ -2596,11 +2603,18 @@ def _sync_restriction(pool, ledger, entry, generation, phase, value) -> bool:
 
 
 def _sync_error(pool, ledger, entry, generation, phase, error):
+    """Record one automation failure; True when a restriction closed the sweep for today.
+
+    B1 raised the meaning of an upstream restriction from "disable the account" to "close the
+    day": nothing parks the account any more, so the sweep has to stop on the return value
+    instead of relying on the next enabled-check.
+    """
     if _sync_restriction(pool, ledger, entry, generation, phase, error):
-        return
+        return True
     message = f"{phase}: {_network_error_text(error)}"
     pool.apply_if_current(entry["cm"], generation, lambda: ledger.note_error(entry["id"], message))
     _log(f"[{phase}] {Path(entry['id']).name} 同步失败（保留旧数据）: {message}")
+    return False
 
 
 def _daily_chat_settled(entry, day):
@@ -2697,7 +2711,8 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
                     return None
                 _log(f"[checkin] {Path(cid).name}: ok={result['ok']} already={result.get('already')} code={result.get('code')}")
             except Exception as error:
-                _sync_error(pool, ledger, entry, generation, "checkin", error)
+                if _sync_error(pool, ledger, entry, generation, "checkin", error):
+                    return None
         if not model_policy.credential_enabled(CONFIG, entry):
             return None
         if not travel.supported(entry.get("profile"), entry.get("enterprise") is True):
@@ -2727,7 +2742,8 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
                     return None
                 buddy.daily_warning(CONFIG, entry.get("account_key"), entry.get("profile"), trip)
             except Exception as error:
-                _sync_error(pool, ledger, entry, generation, "travel", error)
+                if _sync_error(pool, ledger, entry, generation, "travel", error):
+                    return None
         if not model_policy.credential_enabled(CONFIG, entry):
             return None
         # A-layer growth sweep: pure accept/claim, no behavior chains, so it rides the
@@ -2743,7 +2759,8 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
                          f"accepted={len(summary.get('accepted') or [])} +{summary.get('credit', 0)}c "
                          f"+{summary.get('energy', 0)}e errors={summary.get('errors', 0)}")
             except Exception as error:
-                _sync_error(pool, ledger, entry, generation, "growth", error)
+                if _sync_error(pool, ledger, entry, generation, "growth", error):
+                    return None
             enabled = model_policy.growth_auto_tasks(CONFIG, entry) & set(growth_chains.RUNNERS)
             chain_base = PROFILE_ENDPOINTS[profile_for_headers(headers)]
             for code in sorted(enabled):
@@ -2757,6 +2774,10 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
                     if outcome.get("skipped") or outcome.get("claimed"):
                         _log(f"[growth] {Path(cid).name} {code}: {outcome.get('message', '')}")
                 except Exception as error:
+                    # A chain that reports an upstream restriction closes today for this
+                    # account: stop the sweep instead of spending more chain requests.
+                    if _sync_restriction(pool, ledger, entry, generation, f"growth:{code}", error):
+                        return None
                     _sync_error(pool, ledger, entry, generation, f"growth:{code}", error)
         if not model_policy.credential_enabled(CONFIG, entry):
             return None
@@ -2777,7 +2798,8 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
                     return None
                 _log(f"[dailychat] {Path(cid).name}: state={turn.get('state')} ok={turn.get('ok')}")
             except Exception as error:
-                _sync_error(pool, ledger, entry, generation, "dailychat", error)
+                if _sync_error(pool, ledger, entry, generation, "dailychat", error):
+                    return None
         if not model_policy.credential_enabled(CONFIG, entry):
             return None
         # An enterprise account always bills through the enterprise endpoint, so an
@@ -3461,13 +3483,21 @@ def _housekeep_once(pool: CredentialPool, ledger, *, pending_only=False):
         processed = 0
         try:
             refs = {}
-            for entry in pool.entries():
-                if entry["id"] not in ids:
-                    continue
-                if processed and gap:
+            targets = [entry for entry in pool.entries() if entry["id"] in ids]
+
+            def sync_one(entry):
+                nonlocal processed
+                if gap and processed:
+                    # Cross-account pacing lives inside the worker, so a bounded worker pool
+                    # still shortens the cycle while each account keeps its own gap.
                     time.sleep(gap)
                 processed += 1
-                result = _sync_account(pool, ledger, entry, checkin=not pending_only, failed=failed)
+                return _sync_account(pool, ledger, entry, checkin=not pending_only, failed=failed)
+
+            results = _bounded_map(sync_one, targets, _housekeep_concurrency())
+            for entry, result in zip(targets, results):
+                if result is not None:
+                    refs[entry["id"]] = result
                 if result is not None:
                     refs[entry["id"]] = result
             _sync_model_catalogs(pool, ledger, refs, failed)
@@ -5749,7 +5779,8 @@ def _note_dsml_observation(rid, repairer):
 
 
 @asynccontextmanager
-async def _backend_stream(url, headers, body, *, timeout=300, rid="", model_name="?", cred=None):
+async def _backend_stream(url, headers, body, *, timeout=300, rid="", model_name="?", cred=None,
+                          spend_budget=True):
     started, opened = time.monotonic(), False
     context = current_context()
     if context is not None:
@@ -5769,7 +5800,10 @@ async def _backend_stream(url, headers, body, *, timeout=300, rid="", model_name
 
     # One request-wide dial budget, spent across every credential this request touches.
     # None keeps the legacy single retry for callers that never installed a budget.
-    dial_budget = _current_attempt_budget()
+    # spend_budget=False marks a same-account fallback (channel guard, role downgrade): it is
+    # part of proving the current attempt, bounded by the caller's own loop, not failover —
+    # charging it would starve the allowance and turn a real 400 into a bogus 502.
+    dial_budget = _current_attempt_budget() if spend_budget else None
     dial_attempts = {"index": 0}
     grant = LEGACY_MAX_ATTEMPTS
     if dial_budget is not None:
@@ -5881,8 +5915,13 @@ async def _checked_chat_stream(url, headers, body, *, rid, model_name, cred,
     fallback_url = channel_fallback_url(url)
     from_channel_fallback = False
     channel_body_retried = False
+    first_dial = True
     while True:
-        async with _backend_stream(url, headers, body, rid=rid, model_name=model_name) as response:
+        # Only the first dial belongs to the attempt itself; the console and role fallbacks are
+        # same-account repairs and must not spend the request's failover allowance.
+        async with _backend_stream(url, headers, body, rid=rid, model_name=model_name,
+                                   spend_budget=first_dial) as response:
+            first_dial = False
             if response.status_code == 200:
                 _note_cred_model_ok(cred, body.get("model"))
                 _note_cred_transport_ok(cred)   # Fusion: 传输层连败清零
@@ -6413,6 +6452,13 @@ def _failover_safe(error, raw=b"") -> bool:
     if is_filter_error(raw):
         return False
     code, _, _ = _upstream_diagnostic(raw)
+    if (code in MODEL_FORBIDDEN_CODES and isinstance(error, UpstreamHTTPError)
+            and error.status in (400, 404)):
+        # A plan-permission rejection is per account, not per request: another account in the
+        # pool may hold a plan that allows the model, so it stays replayable even though every
+        # other model-scoped code is not. model_forbidden() reports the 400 only after every
+        # candidate refused.
+        return True
     if code == "11102":
         return (isinstance(error, UpstreamHTTPError) and error.from_channel_fallback
                 and _parse_not_servable(raw, error.status) is not None)
@@ -6806,6 +6852,22 @@ async def _agenttool_call(tool: _AgentTool, body: dict, rid: str, *, borrowed=No
     label = tool.name.replace("-", " ").upper()
     tried = []
     recovered = None
+    # A gateway tool call is its own upstream sequence. When it runs inside a chat request it
+    # would otherwise share that request's dial budget, which the chat attempt has already
+    # spent: a search refused on the borrowed account could then never fail over and would
+    # surface a bogus attempt-budget 502. Calls that stand alone (REST /v1/search, /v1/fetch)
+    # keep the legacy unbudgeted retry.
+    if _current_attempt_budget() is None:
+        return await _agenttool_attempts(tool, body, rid, borrowed, label, tried, recovered)
+    budget = AttemptBudget(max(2, 1 + _failover_limit()))
+    token = _attempt_budget.set(budget)
+    try:
+        return await _agenttool_attempts(tool, body, rid, borrowed, label, tried, recovered)
+    finally:
+        _attempt_budget.reset(token)
+
+
+async def _agenttool_attempts(tool: _AgentTool, body: dict, rid: str, borrowed, label, tried, recovered):
     while True:
         owned = borrowed is None or bool(tried)
         if owned:
@@ -6837,6 +6899,7 @@ async def _agenttool_call(tool: _AgentTool, body: dict, rid: str, *, borrowed=No
             limit = _failover_limit()
             if limit <= 0 or len(tried) > limit or not _failover_safe(error, raw):
                 raise _wrap_agenttool_error(status, raw, error) from None
+            _release_failover_reservation()
             _log(f"[{rid}] ↻ 换凭证重放 {len(tried)}/{limit} | {tool.name} | 上游 HTTP {status}"
                  f"{_replay_cost_note(error)}")
             continue
@@ -7124,6 +7187,10 @@ def _media_note_restriction(cred, code, body=None) -> bool:
     """
     pool = CONFIG.get("cred_pool")
     if pool is None:
+        return False
+    if str(code or "") not in RESTRICTED_CODES:
+        # Only the account-restriction code parks an account. Model-scoped refusals (11129,
+        # 11148, 11158) stay with the model/route, exactly as on the chat path.
         return False
     cm, generation = cred if isinstance(cred, tuple) else (cred, None)
     evidence = f"code={code}" if code else sanitize_log_text(str(body or ""), 200)
