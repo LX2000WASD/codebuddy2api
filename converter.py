@@ -439,21 +439,50 @@ _QUEUE_FULL_MSG = re.compile(r"queue[\s._-]*full", re.I)
 _QUEUE_FULL_BYTES = re.compile(rb"queue[\s._-]*full", re.I)
 QUEUE_FULL_HEAD = 512          # 识别只读响应体前 512 字节（超出部分不解析、不扫描）
 # 国际站 2026-10-23 实测：同一请求体在 A 账号 403 + code 11140（"request illegal"），换 B 账号
-# 同秒 200（运维档案 28 篇）。这是上游对「请求/账号」的风控判定，不是凭证失能：若按认证失败
-# 计数，一次风控波会让整池账号在 3 连击后各禁 1 小时。故只做短冷却并继续换号。
+# 同秒 200（运维档案 28 篇）。这是上游对账号的风控判定，不是凭证失能：若按认证失败计数，一次
+# 风控波会让整池账号在 3 连击后各禁 1 小时。处置分三层：① 短冷却（避免同一秒反复挑到它）；
+# ② 推理链路命中即持久停权（note_restriction，只能人工/探活释放）；③ 该判定不换号重放——
+# 换号只是把同一个判定摊到更多账号上，还会掩盖停权是否生效。
 REQUEST_ILLEGAL_CODES = frozenset({"11140"})
 _REQUEST_ILLEGAL_MSG = re.compile(r"request\s+illegal", re.I)
+# 同一判定的另一套口径：部分 403 只在 displayMsg 里写「账号存在异常行为 / restricted due to
+# unusual activity」。它同样指向账号而非请求，所以并进这一条判据；只扫响应体开头（同
+# QUEUE_FULL_HEAD 的成本约束），也不采信 actions 之类的可执行动作字段。
+_RESTRICTED_BYTES = re.compile(
+    "账号存在异常行为|restricted\\s+due\\s+to\\s+unusual\\s+activity".encode("utf-8"), re.I)
+# 写进控制库的原因串：管理面据此把「上游限制」与「人工停用」分开显示。
+UPSTREAM_RESTRICTED_REASON = "上游判定账号受限（HTTP 403 / code 11140）"
 
 
 def _is_request_illegal(raw: bytes, status: int) -> bool:
-    """Whether a 403 body is the upstream "request illegal" verdict rather than a bad credential."""
+    """Whether a 403 body is the upstream "request illegal / account restricted" verdict.
+
+    The verdict is about the account, not about the credential being broken, so it is read
+    from the business code and the wording only: a 403 that carries neither stays a plain
+    authentication failure.
+    """
     if status != 403 or not raw:
         return False
     fields = _error_fields(raw)
-    if not fields:
-        return False
-    code, msg = fields
-    return code in REQUEST_ILLEGAL_CODES or bool(_REQUEST_ILLEGAL_MSG.search(msg))
+    if fields:
+        code, msg = fields
+        if code in REQUEST_ILLEGAL_CODES or bool(_REQUEST_ILLEGAL_MSG.search(msg)):
+            return True
+    return bool(_RESTRICTED_BYTES.search(raw[:QUEUE_FULL_HEAD]))
+
+
+def _restriction_evidence(raw: bytes, status: int) -> str:
+    """Log-safe evidence for a restriction verdict: status, business code and wording only.
+
+    Stored next to the restriction so an operator can tell a genuine 11140 from a body that
+    merely looked like one. Request bodies, headers and tokens never enter it.
+    """
+    fields = _error_fields(raw)
+    code, msg = fields if fields else ("", "")
+    parts = [f"HTTP {status}"] + ([f"code={code}"] if code else []) + ([msg[:120]] if msg else [])
+    return sanitize_log_text(" ".join(parts), 200)
+
+
 QUEUE_FULL_STATUS = frozenset({429, 503})   # 上游表达「排队满」的两种传输形态
 QUEUE_FULL_STATUS_CODE = 503   # 对客户端暴露的语义：服务端容量不足，而不是本账号限流
 QUEUE_FULL_RETRY_AFTER = 5     # 客户端退避：足够短，不放大上游压力
@@ -1077,6 +1106,11 @@ class CredentialPool:
 
         This is a local state change. It never refreshes a token, contacts upstream, or queues
         synchronization, so a subsequent genuine failure is free to arm the cooldown again.
+
+        It also lifts an upstream restriction (403/11140), which is the other thing an operator
+        needs one entry point for: a restricted account is disabled in the control store, and
+        leaving that behind would make "clear cooldown" look like it worked while the account
+        stayed out of the pool.
         """
         with self._lock:
             entry = next((e for e in self._entries if e.get("account_key") == identity), None)
@@ -1099,7 +1133,17 @@ class CredentialPool:
             if not durable:
                 durable = self._cooldowns.forget(entry["account_key"])["durable"]
             self._warn_storage("cooldown", durable)
-            return {"changed_in_memory": changed, "durable": durable}
+            released = False
+            store = CONFIG.get("control_store")
+            if store is not None:
+                try:
+                    released = store.clear_restricted(entry["account_key"])
+                except Exception as error:
+                    # 与控制库写入的既有口径一致：写失败只记日志，不把重置报成成功。
+                    _log(f"[cred] 解除停权写入失败 @ {Path(entry['id']).name}: {type(error).__name__}")
+        if released:
+            _log(f"[cred] 解除停权（人工重置）: {identity[:12]}…")
+        return {"changed_in_memory": changed, "durable": durable, "restricted_released": released}
 
     def entries(self) -> list[dict]:
         """Return credential snapshots for account maintenance."""
@@ -1622,17 +1666,28 @@ class CredentialPool:
         return until is not None and until > time.time()
 
     def note_status(self, cm: CredentialManager | None, status: int,
-                    model: str | None = None, raw: bytes = b"", *, generation=None, retry_after=None):
-        """Apply credential-wide auth cooldowns, per-model 429 cooldowns and backend/model backoff."""
+                    model: str | None = None, raw: bytes = b"", *, generation=None, retry_after=None,
+                    source: str = "inference"):
+        """Apply credential-wide auth cooldowns, per-model 429 cooldowns and backend/model backoff.
+
+        source names the chain that saw the failure. Only the inference path may park an
+        account for an upstream restriction: the same account can be refused by an automation
+        chain while its inference endpoint still works (hub#661: chat 200, checkin 403/11140),
+        so a chain-specific verdict must never shut routing down.
+        """
         if cm is None:
             return
         if status in (401, 403):
             if _is_request_illegal(raw, status):
-                # 上游判「请求非法」：同请求换号即可成功，账号本身还能认证（credits 16:22 仍成功）。
-                # 只短冷却、继续换号，不累加 auth_fails —— 否则一次风控波就禁用整池 1 小时。
+                # 上游判「request illegal / 账号受限」：凭证本身还能认证（credits 刷新仍成功），
+                # 但推理端点已拒绝它。短冷却保留（避免同一秒反复挑到它），推理链路上再升级为
+                # 持久停权；不累加 auth_fails —— 否则一次风控波就禁用整池 1 小时。
                 self.cooldown(cm, reason="upstream request illegal (HTTP 403)",
                               generation=generation,
                               duration=CONFIG.get("request_illegal_cooldown_s", 60))
+                if source == "inference":
+                    self.note_restriction(cm, evidence=_restriction_evidence(raw, status),
+                                          generation=generation)
                 return
             # Fusion: 认证类错误连续 N 次才禁用（默认 3）——单次 401/403 可能只是抖动，
             # 连续失败才是账号失能的证据；refresh/chat 成功或手工清零计数。
@@ -1704,6 +1759,38 @@ class CredentialPool:
             return
         _log(f"[cred] 模型冷却 {model} @ {Path(cm.path).name} 至 "
              f"{time.strftime('%m-%d %H:%M:%S', time.localtime(until))} (HTTP 429)")
+
+    def note_restriction(self, cm: CredentialManager | None, *, evidence: str = "",
+                         generation=None):
+        """上游判定账号受限（HTTP 403 / 11140）：持久停权。
+
+        与控制库的 enabled=false 是同一件事：路由、四条自动化链和管理面都读这一个状态，
+        进程重启、token 刷新、阵容重载都不会把它放回池子。释放只有两条路径——人工
+        （reset_cooldowns_for / 管理面重新启用）与探活成功——没有任何时间自动释放。
+        写失败只记日志、不掩盖上游错误（与控制库写入的既有口径一致）。
+        """
+        if cm is None:
+            return
+        store = CONFIG.get("control_store")
+        with self._lock, (cm._lock if generation is not None else nullcontext()):
+            if not self._lease_matches(cm, generation):
+                return
+            entry = next((e for e in self._entries if e["cm"] is cm), None)
+            identity = entry.get("account_key") if entry else None
+            name = Path(cm.path).name
+        if not identity:
+            _log(f"[cred] 上游 403/11140 无法停权：账号指纹缺失 @ {name}")
+            return
+        if store is None:
+            _log(f"[cred] 上游 403/11140 无法停权：控制库未就绪 @ {name}")
+            return
+        try:
+            changed = store.set_restricted(identity, reason=UPSTREAM_RESTRICTED_REASON, evidence=evidence)
+        except Exception as error:
+            _log(f"[cred] 上游 403/11140 停权写入失败 @ {name}: {type(error).__name__}")
+            return
+        if changed:
+            _log(f"[cred] 账号停权（上游 403/11140，需人工或探活释放）: {identity[:12]}… | {evidence}")
 
     def model_cooldown_until(self, model: str | None, *, region=None) -> float | None:
         """Return the earliest reset only when all healthy credentials are cooling down."""
@@ -2012,15 +2099,19 @@ def _sync_error(pool, ledger, entry, generation, phase, error):
     _log(f"[{phase}] {Path(entry['id']).name} 同步失败（保留旧数据）: {message}")
 
 
-def _daily_chat_done(entry, day):
-    """Today's turn already confirmed, so the sweep must not spend another one."""
+def _daily_chat_settled(entry, day):
+    """Today's turn is closed — confirmed, or refused because the account is restricted.
+
+    A restriction closes the day exactly like a confirmed turn: the sweep must not spend
+    another request on a verdict the console already gave today.
+    """
     store = CONFIG.get("control_store")
     if store is None or not entry.get("account_key"):
         return True
     try:
-        return store.daily_chat_done(entry["account_key"], day)
+        return store.daily_chat_settled(entry["account_key"], day)
     except Exception:
-        # An unreadable record is treated as done: never guess a turn was free to send.
+        # An unreadable record is treated as closed: never guess a turn was free to send.
         return True
 
 
@@ -2135,7 +2226,7 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
         # before the balance refresh reads back whatever it cost. Each account waits for
         # its own slot inside the day so the accounts never go out together.
         if (checkin and model_policy.credential_auto_daily_chat(CONFIG, entry)
-                and not _daily_chat_done(entry, day)
+                and not _daily_chat_settled(entry, day)
                 and daily_chat.is_due(entry.get("account_key"), day)):
             try:
                 def can_chat():
@@ -4760,6 +4851,12 @@ def _failover_safe(error, raw=b"") -> bool:
     if is_filter_error(raw):
         return False
     if isinstance(error, UpstreamHTTPError):
+        # 403 + 11140 is an account-level restriction: replaying it would move the same verdict
+        # onto more accounts, spend their requests on a refusal, and hide whether stopping the
+        # account worked. It is checked before FAILOVER_CODES, which contains 403 for the
+        # genuinely credential-broken case.
+        if _is_request_illegal(raw or error.raw, error.status):
+            return False
         if error.status in FAILOVER_CODES:
             return True
         # A plan-permission rejection is the one 400 worth replaying: another account in the

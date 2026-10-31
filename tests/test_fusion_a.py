@@ -23,6 +23,7 @@ from fastapi import HTTPException
 
 import converter
 from app.credit_floor import CostLedger, catalog_paid, floor_admit
+from app.control_store import ControlStore
 from app.credits import CreditLedger
 
 
@@ -231,6 +232,86 @@ class AuthFailThresholdTests(FusionFixture):
             pool.refresh_due()
         self.assertEqual(len(calls), 1)
         self.assertEqual(pool.snapshot()[0]["auth_fails"], 0)
+
+
+# --------------------------------------------------------------------------- #
+# 3b. 上游 403/11140（账号受限）：推理链路持久停权，只能人工/探活释放
+# --------------------------------------------------------------------------- #
+class UpstreamRestrictionTests(FusionFixture):
+    """403 + 11140 是账号级停权判定：写控制库、立刻出池、重启不复活、有明确释放路径。"""
+
+    BODY = b'{"code":11140,"msg":"request illegal","requestId":"req-1"}'
+
+    def setUp(self):
+        super().setUp()
+        self.control = ControlStore(self.root / "control.sqlite3")
+        self.addCleanup(self.control.close)
+        converter.CONFIG["control_store"] = self.control
+
+    def recorded(self, pool, index: int = 0) -> dict:
+        return self.control.snapshot()["credentials"].get(pool.entries()[index]["account_key"]) or {}
+
+    def test_inference_11140_restricts_once_without_stacking_writes(self):
+        pool, _ = self.pool(("a.info", "b.info"), ("uid-a", "uid-b"))
+        cm = pool.first()
+        pool.note_status(cm, 403, raw=self.BODY)
+        record = self.recorded(pool)
+        self.assertTrue(record["restricted"])
+        self.assertFalse(record["enabled"])
+        self.assertAlmostEqual(record["restricted_at"], time.time(), delta=30)
+        self.assertIn("11140", record["restricted_reason"] + record["restricted_evidence"])
+        self.assertIn("request illegal", record["restricted_evidence"])
+        # 同一账号在飞行的第二个 11140 是同一个判定：不重复写库，也不延长任何截止。
+        revision, stamp = self.control.snapshot()["revision"], record["restricted_at"]
+        pool.note_status(cm, 403, raw=self.BODY)
+        self.assertEqual(self.control.snapshot()["revision"], revision)
+        self.assertEqual(self.recorded(pool)["restricted_at"], stamp)
+
+    def test_restricted_account_leaves_the_pool_beyond_the_short_cooldown(self):
+        pool, _ = self.pool(("a.info", "b.info"), ("uid-a", "uid-b"))
+        pool.note_status(pool.first(), 403, raw=self.BODY)
+        self.clear_breaker(pool)          # 60s 短冷却已经过去，停权仍然生效
+        for _ in range(4):
+            self.assertIs(pool.pick(None), pool.entries()[1]["cm"])
+        # 四条自动化链读的是同一个 credent_enabled 闸，因此也一起停。
+        self.assertFalse(converter.model_policy.credential_enabled(converter.CONFIG, pool.entries()[0]))
+
+    def test_restriction_survives_a_restart(self):
+        pool, paths = self.pool(("a.info", "b.info"), ("uid-a", "uid-b"))
+        pool.note_status(pool.first(), 403, raw=self.BODY)
+        converter.CONFIG["control_store"] = ControlStore(self.root / "control.sqlite3")
+        self.addCleanup(converter.CONFIG["control_store"].close)
+        restarted = converter.CredentialPool(paths)
+        self.clear_breaker(restarted)
+        for _ in range(4):
+            self.assertIs(restarted.pick(None), restarted.entries()[1]["cm"])
+
+    def test_automation_chain_verdict_does_not_park_the_account(self):
+        """hub#661：同账号 chat 200、打卡 403/11140 —— 链路级判定不得关掉推理。"""
+        pool, _ = self.pool(("a.info",), ("uid-a",))
+        pool.note_status(pool.first(), 403, raw=self.BODY, source="checkin")
+        self.assertEqual(self.control.snapshot()["credentials"], {})
+        self.assertGreater(pool._entries[0]["fail_until"], time.time())   # 只保留短冷却
+
+    def test_plain_403_without_the_verdict_never_restricts(self):
+        pool, _ = self.pool(("a.info",), ("uid-a",))
+        for _ in range(3):
+            pool.note_status(pool.first(), 403, raw=b'{"code":99999,"msg":"forbidden"}')
+        self.assertEqual(self.control.snapshot()["credentials"], {})
+
+    def test_manual_reset_releases_the_restriction(self):
+        pool, _ = self.pool(("a.info",), ("uid-a",))
+        pool.note_status(pool.first(), 403, raw=self.BODY)
+        identity = pool.entries()[0]["account_key"]
+        outcome = pool.reset_cooldowns_for(identity)
+        self.assertTrue(outcome["restricted_released"])
+        self.assertFalse(self.recorded(pool)["restricted"])
+        self.assertTrue(self.recorded(pool)["enabled"])
+        self.assertTrue(converter.model_policy.credential_enabled(converter.CONFIG, pool.entries()[0]))
+        # 第二次重置是空操作，不写库、不改 revision。
+        revision = self.control.snapshot()["revision"]
+        self.assertFalse(pool.reset_cooldowns_for(identity)["restricted_released"])
+        self.assertEqual(self.control.snapshot()["revision"], revision)
 
 
 # --------------------------------------------------------------------------- #

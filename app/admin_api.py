@@ -72,6 +72,8 @@ def _public_credential(item):
               # web/src/fusion/types.ts declare an array; the array-shaped data reaches
               # the UI through "cooldowns" (app/gateway_management.py) instead.
               "paused", "auth_fails", "transport_fails", "transport_penalty_until",
+              # 上游停权（403/11140）：与人工停用共用 enabled=false，靠这四个字段区分原因。
+              "restricted", "restricted_at", "restricted_reason", "restricted_evidence",
               # Legacy companions consumed by non-WebUI clients (cpa-plugin status page).
               "healthy", "enterpriseName", "auth_file"}
     result = {key: value for key, value in item.items() if key in fields}

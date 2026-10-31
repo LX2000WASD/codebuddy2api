@@ -118,8 +118,12 @@ def _reset_cooldowns(gateway, identity):
     outcome = pool.reset_cooldowns_for(identity)
     result = {"id": identity, "name": Path(entry["id"]).name, "action": "reset-cooldown",
               "ok": outcome["durable"], "changed_in_memory": outcome["changed_in_memory"],
-              "durable": outcome["durable"]}
-    if outcome["durable"]:
+              "durable": outcome["durable"],
+              "restricted_released": outcome["restricted_released"]}
+    if outcome["restricted_released"]:
+        # 解除停权在这次写入里已完成，说清楚它是人工放行，而不是「冷却到期」。
+        result["message"] = "已人工解除上游停权（403/11140）并清除该账号冷却"
+    elif outcome["durable"]:
         result["message"] = "已清除该账号的冷却" if outcome["changed_in_memory"] else "该账号当前没有冷却"
     else:
         # Never let a failed write read as a completed reset: a restart would restore the row.

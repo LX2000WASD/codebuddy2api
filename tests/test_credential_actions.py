@@ -158,6 +158,37 @@ class CredentialActionTests(unittest.TestCase):
             self.assertTrue(self.post(action)["skipped"])
         self.assertEqual(self.requests, [])
 
+    def test_listing_exposes_the_upstream_restriction_fields(self):
+        identity = self.entry["account_key"]
+        self.control.set_restricted(identity, reason="上游判定账号受限（HTTP 403 / code 11140）",
+                                    evidence="HTTP 403 code=11140 request illegal")
+        row = next(r for r in self.client.get("/admin/credentials").json()["credentials"]
+                   if r["id"] == identity)
+        self.assertIs(row["restricted"], True)
+        self.assertIs(row["enabled"], False)          # 停权与人工停用共用同一个开关
+        self.assertEqual(row["restricted_reason"], "上游判定账号受限（HTTP 403 / code 11140）")
+        self.assertIn("11140", row["restricted_evidence"])
+        self.assertGreater(row["restricted_at"], 0)
+
+    def test_enabling_a_restricted_account_is_a_manual_release(self):
+        identity = self.entry["account_key"]
+        self.control.set_restricted(identity, reason="上游判定账号受限（HTTP 403 / code 11140）",
+                                    evidence="HTTP 403 code=11140 request illegal")
+        response = self.client.patch(self.url, json={"enabled": True})
+        self.assertEqual(response.status_code, 200, response.text)
+        record = self.control.snapshot()["credentials"][identity]
+        self.assertTrue(record["enabled"])
+        self.assertFalse(record["restricted"])
+        self.assertNotIn("restricted_at", record)     # 旧证据不残留成「仍受限」的错觉
+
+    def test_checkin_rejected_by_upstream_is_not_recorded_as_completed(self):
+        """403 不能让「今日已签到」成立：没签到就是没签到，不能拿失败冒充完成。"""
+        with patch.object(converter.credits_mod, "daily_checkin",
+                          return_value={"ok": False, "code": 11140, "message": "账号受限"}):
+            result = self.post("checkin")
+        self.assertFalse(result["ok"])
+        self.assertFalse(self.ledger.checkin_done(self.entry["id"], time.strftime("%Y-%m-%d")))
+
     def test_batch_checkin_does_not_run_maintenance(self):
         with patch.object(converter.credits_mod, "daily_checkin", return_value={"ok": True}) as checkin, \
              patch.object(converter, "_housekeep_once") as full:
@@ -295,6 +326,24 @@ class ResetCooldownTests(unittest.TestCase):
         revived = self.build_pool()
         others = {e["account_key"]: e for e in revived._entries}
         self.assertGreater(others[other["account_key"]]["fail_until"], time.time())
+
+    def test_reset_releases_an_upstream_restriction(self):
+        """人工放行就走既有的「重置冷却」入口，不要求运维记第二个按钮。"""
+        pool = self.build_pool()
+        entry = pool._entries[0]
+        self.control.set_restricted(entry["account_key"],
+                                    reason="上游判定账号受限（HTTP 403 / code 11140）",
+                                    evidence="HTTP 403 code=11140 request illegal")
+        self.assertFalse(pool._healthy(entry))
+        response = self.client.post(self.url(entry))
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()["results"][0]
+        self.assertTrue(result["restricted_released"], result)
+        self.assertIn("解除上游停权", result["message"])
+        record = self.control.snapshot()["credentials"][entry["account_key"]]
+        self.assertFalse(record["restricted"])
+        self.assertTrue(record["enabled"])
+        self.assertTrue(pool._healthy(entry))
 
     def test_reset_of_an_unknown_identity_is_rejected(self):
         self.build_pool()

@@ -38,6 +38,7 @@ class Management:
                 ledger = self.CONFIG.get("ledger")
                 balance = ledger.entry(path) if ledger else {}
                 enabled = model_policy.credential_enabled(self.CONFIG, entry)
+                restriction = model_policy.credential_restriction(self.CONFIG, entry)
                 until = entry.get("fail_until", 0)
                 # A breaker that already expired is not a failure: `last_error` is only
                 # cleared by an explicit reset (converter.py clear_cooldowns /
@@ -53,6 +54,7 @@ class Management:
                 state = ("disabled" if not enabled else "error" if row.get("error") else
                          "circuit_open" if until > now else "expired" if row.get("token_expired") else "ready")
                 row.update(id=identity, name=Path(path).name, enabled=enabled, health=state,
+                           **restriction,
                            auto_checkin=model_policy.credential_auto_checkin(self.CONFIG, entry),
                            checkin=checkin.view(balance.get("checkin") or {}),
                            auto_travel=model_policy.credential_auto_travel(self.CONFIG, entry),
