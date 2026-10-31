@@ -30,7 +30,7 @@
 
 - 模型级**软**冷却（上游已有固定的模型冷却）：429 窗口按「账号 × 模型」隔离，文案带重置时间时对齐墙钟，可整表开关，且软冷却期间的重复 429 不再叠加延长。
 - 认证类错误连续 N 次（默认 3）才禁用账号；refresh/chat 成功或手工复位即清零。
-- 上游 403 `request illegal`（11140）按「单账号风控判定」处理，不算凭证失能：推理链路命中即**持久停权**——控制库把 `enabled=false` 与 `restricted` / `restricted_at` / `restricted_reason` / `restricted_evidence` 一次写入，该号退出选路与四条自动化链，重启、刷新 token、重载阵容都不会自动回池；不计入连续认证失败；短冷却（`request_illegal_cooldown_s`，默认 60 秒）保留为同一秒内的去抖，真正生效的是持久停权。该判定**不换号重放**。释放没有时间自动路径，只能人工：`PATCH /admin/credentials/{id} {"enabled": true}` 或 `POST /admin/credentials/{id}/reset-cooldown`。自动化链路命中同一判定不会停权：每日活跃记 `state=restricted` 并停止当日排期，签到不会把 403 记成「今日已签到」。
+- 上游 403 `request illegal`（11140）按「单账号风控判定」处理，不算凭证失能：推理链路命中即**持久停权**——控制库把 `enabled=false` 与 `restricted` / `restricted_at` / `restricted_reason` / `restricted_evidence` 一次写入，该号退出选路与四条自动化链，重启、刷新 token、重载阵容都不会自动回池；不计入连续认证失败；短冷却（`request_illegal_cooldown_s`，默认 60 秒）保留为同一秒内的去抖，真正生效的是持久停权。该判定**不换号重放**。没有任何时间到期路径，释放有两条：人工（`PATCH /admin/credentials/{id} {"enabled": true}` 或 `POST /admin/credentials/{id}/reset-cooldown`），以及**受限号探活**拿到 HTTP 200。探活默认开启：每隔一个间隔（默认 6 小时）对最久未探的那个受限号发一次真实 chat 请求（首条 system、输出上限 16 token），200 即解除停权，连续 3 次 11140 后退避到一天，401/429/5xx 不改状态。`POST /admin/credentials/{id}/restricted-probe` 可立即探指定账号，`CODEBUDDY2API_RESTRICTED_PROBE=false` 则完全停止自动探活。自动化链路命中同一判定不会停权：每日活跃记 `state=restricted` 并停止当日排期，签到不会把 403 记成「今日已签到」。
 - 账号级 `paused`：只退出选号，签到／旅行／保号任务照常运行。
 - 积分保底：本地 EMA 扣费台账 + 上游目录倍率双判据，余额过低的账号不派发收费模型；全池触底返回 503 而不打穿上游。
 - 临期积分加权选号（168 小时窗口内软加权），不破坏账号粘性与零倍率优先。

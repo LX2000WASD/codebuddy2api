@@ -539,9 +539,34 @@ FEFO（先到期先出）明细 + 日均需耗，供首页提醒卡片。
 
 - 与 `enabled` 在同一次控制库写入里生效：`restricted=true` 必然 `enabled=false`。因此 `health` 枚举**不新增取值**，受限号显示 `health="disabled"`，靠 `restricted` 字段与「人工停用」区分。
 - 出池范围：选路（`_healthy` / `pick`）与四条自动化链（签到、旅行、每日活跃、保号任务）都读 `credentials.enabled`，停权后一并停止；重启、刷新 token、重载凭证都不会自动回池。
-- **没有时间自动释放**，也不写 `fail_until`、不抬高 `credential_cooldowns` 的 1 小时上限（那是「陈旧或伪造的冷却文件不能永久停号」的不变量）。释放只有人工两条入口，都是幂等操作：
+- **没有时间自动释放**，也不写 `fail_until`、不抬高 `credential_cooldowns` 的 1 小时上限（那是「陈旧或伪造的冷却文件不能永久停号」的不变量）。释放有人工两条入口与探活一条，都是幂等操作：
   - `PATCH /admin/credentials/{id}` `{"enabled": true}`：启用即人工放行，`restricted` 与证据字段一并清除（只改本地状态，不访问上游）；
   - `POST /admin/credentials/{id}/reset-cooldown`：清冷却的同时解除停权，结果新增 `restricted_released: bool`，命中时 `message` 为「已人工解除上游停权（403/11140）并清除该账号冷却」。
+- **探活释放**（§11.1）：一次真实 chat 请求拿到 HTTP 200 即解除停权，写的是与人工放行同一个控制库操作；11140/401/429/5xx 一律只记录，不改任何状态。
 - 链路级判定不升级为账号停权（同一账号可能 chat 200、打卡 403/11140）：自动化链路上的同码 403 只关该链当日——每日活跃写 `daily_chats.state=restricted` 并停止当日排期（手动触发也直接跳过），签到不会把 403 记成「今日已签到」。
 - 诊断视图（§3）同样不新增 `health` 取值：受限号报 `health="disabled"`、`disabled_reason="上游限制（11140）"` 与 `accounts[].restricted=true`；完整证据仍只在 `/admin/credentials` 的 `restricted*` 字段里。
+
+### 11.1 受限号探活
+
+自动探活默认开启（`restricted_probe=true`，间隔 `restricted_probe_interval_s=21600`）。每个循环周期最多探一个账号，挑选规则是「最久未探且已到时限」；账号首次探活的时限由 `restricted_at + 间隔` 推算，之后由进程内的上次探活时刻推算。重启只丢「上次探活时刻」，不丢停权本身。
+
+判定与状态：
+
+| 上游结果 | 动作 |
+| --- | --- |
+| HTTP 200 | `clear_restricted`（`enabled=true`、清证据）并记 `released=true`；该号立即可被选路 |
+| HTTP 403 + code 11140 | 不改状态，连续失败计数 +1；连续 3 次后退避到 `max(间隔, 86400)` 秒 |
+| 其它（401/429/5xx/传输失败） | 不改状态，不推进失败计数 |
+| 账号目录里没有可用模型 | 不发请求，记录 `no_model`，等下一个间隔 |
+
+探针自身：只打 `/v2/chat/completions`（计费/目录/刷新端点对受限号同样返回 200，拿来探活会得到假阳性）；首条消息必须是 system；`max_tokens=16`；会话 ID 前缀 `restricted-probe-`；带 chat 专属头；不换号、不重试。
+
+管理端点：
+
+| 端点 | 说明 |
+| --- | --- |
+| `POST /admin/credentials/{id}/restricted-probe` | 立即对指定账号探一次，**不受总开关与间隔限制**（人工意图优先）。响应：`{"ok": bool, "status": int \| null, "code": string \| null, "released": bool, "message": string, "model": string}`；账号不存在回 404 |
+| `GET /admin/restricted-probes` | 排期与最近结果：`{"enabled", "interval_s", "fail_threshold", "backoff_s", "accounts": [{"account_key", "last_at", "fails", "last_status", "last_code", "released_at", "trigger", "message"}]}` |
+
+审计：每次探活记一条 runtime 事件 `credential.restricted_probe`，details 含 `credential`、`trigger`（`auto` / `manual`）、`http_status`、`upstream_code`、`released`、`source="probe"`，因此「探了多少次 / 解封几次」可与真实流量分开统计。探活请求本身不写请求日志、不参与并发与冷却统计。
 

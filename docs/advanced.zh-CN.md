@@ -22,10 +22,9 @@ Compose 会加载 `.env` 中的每个键，注释掉一行即可解除锁定；�
 | `--admin-allowed-origins` | 无 | 额外信任的管理页来源（逗号分隔，裸域名按 HTTPS），用于反代登录；热生效，可在 WebUI 配置 |
 | `--auth-file` | 扫描 `auth/` | 指定凭据文件，可重复传入；不再扫描其他文件 |
 | `--log` | 已停用 | 提示弃用且不写文件；日志统一在 WebUI 查看 SQLite 记录 |
-| `--desensitize` | 关 | 适配固定 CLI 模板、压缩运行时提示、零宽脱敏关键词 |
+| `--desensitize` | 关 | 适配固定 CLI 模板、裁剪可信运行时上下文；不改写 user 轮次、不改写工具定义、不插入零宽字符 |
 | `--prompt-mode` | `empty` | `empty` 不附加网关默认 system 提示词；`prepend` 在最前面插入精简的 WorkBuddy／CodeBuddy 官方前缀；热生效，可在 WebUI 配置 |
 | `--no-compact` | 关 | 配合脱敏保留主要行为指令，仍适配模板及裁剪运行时上下文；不关闭 Responses 投影 |
-| `--keep-tool-metadata [true/false]` | `false` | 保留工具描述及参数 schema 的 `description/title`，与提示词压缩独立 |
 | `--skip-check` | 关 | 跳过启动预检 |
 | `--credit-price-cny` | `0.014` | 国内积分折算单价，元/Credit |
 | `--credit-price-usd` | `0.03` | 国际积分折算单价，美元/Credit |
@@ -62,15 +61,9 @@ Compose 会加载 `.env` 中的每个键，注释掉一行即可解除锁定；�
 
 降级到不含这些键的旧源码时，需按[流式模式](#流式模式)所述离线删除 `settings.responses_projection_mode` 与 `settings.responses_projection_max_bytes`。
 
-### 工具元数据保留
+### 工具定义（已固定为不改写）
 
-Responses 投影不再修改工具定义或 schema。启用脱敏时，默认剥离工具描述及参数 schema 的字符串 `description/title`；开启本开关后，Chat、Responses、Messages 会保留并按脱敏规则处理这些文本。`--no-compact` 不改变本开关。
-
-- **WebUI**：系统设置 → 保留工具描述，未被启动来源锁定时可立即生效并持久化。
-- **CLI**：在原启动命令追加 `--keep-tool-metadata` 或 `--keep-tool-metadata true`；显式 `false` 可覆盖环境变量。
-- **环境变量**：在 `.env` 中设置 `CODEBUDDY2API_KEEP_TOOL_METADATA=true`；注释掉该行即解除锁定，不要设为空串。
-
-需使用包含此功能的源码或镜像；修改容器环境后重新创建容器。保留描述可能增加输入 token 和审核拦截风险；设为 `false` 恢复脱敏默认剥离行为。此开关不改变 Responses 的 balanced/passthrough 模式，也不放宽请求体预算。
+Responses 投影与脱敏都不再修改工具定义或 schema：描述、参数 schema 的 `description/title` 一律原样上行。改写描述会改变模型被要求遵守的契约，删除描述则直接拿掉工具的使用说明；这条分支已随 `--keep-tool-metadata` 一起删除（该设为停用项，只为兼容旧控制库保留键名，管理面不再显示）。此行为不改变 Responses 的 balanced/passthrough 模式，也不放宽请求体预算。
 
 ### 流式模式
 
@@ -137,13 +130,15 @@ WebUI 系统设置可配置这两项；环境变量为 `CODEBUDDY2API_UPSTREAM_K
 scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` / `metadata.conversationId` 或顶层 `conversation_id` / `conversationId`。多处值须一致；冲突、非字符串、控制字符或超过 512 UTF-8 字节时返回 400。空值回退为协议适配后的指令与首条用户输入指纹，包含图片引用但不抓取 URL；缺少可靠输入时使用临时会话。无显式 ID 的相同输入仍无法区分；`user`、`metadata.user_id`、`prompt_cache_key` 不是会话 ID。原始标识不记录、不转发上游。
 
 设回 `legacy` 即恢复新请求的旧行为，在途请求保留入口模式。
-上游客户端身份按已核实的官方包对齐：国内 CLI 2.165.0／WorkBuddy 5.9.3，国际 CLI 2.161.0／WorkBuddy 5.8.4。国内 WorkBuddy 使用会话稳定的 UUIDv7 会话 ID、逐次请求／追踪头，并在 JSON 请求体达到 1024 字节时使用 gzip；CLI 与国际 WorkBuddy 保持原有 ID 关系，聊天 JSON 始终使用 gzip。所有身份头均在本地生成，不读取硬件 ID。
+上游客户端身份按官方发行包对齐：国内 CLI 2.165.0／WorkBuddy 5.9.3，国际 CLI 2.165.0／WorkBuddy 5.9.4，User-Agent 分族保持真机形态（`WorkBuddy/<版本> <slug>/<版本> CLI/<cli>`，国际版 slug 为小写 `workbuddy-ai`）。国内 WorkBuddy 使用会话稳定的 UUIDv7 会话 ID、逐次请求／追踪头，并在 JSON 请求体达到 1024 字节时使用 gzip；CLI 与国际 WorkBuddy 保持原有 ID 关系，聊天 JSON 始终使用 gzip。所有身份头均在本地生成，不读取硬件 ID。
+
+`X-Private-Data` 按官方反编译出的解析器出值，而不是一个全局常量：企业号恒为 `false`，个人号按自己的发行版（国内 `false`、国际 `true`）。`X-CodeBuddy-Request` 与 `X-Requested-With` 只随 chat 请求发出，refresh、目录、计费与签到都不再携带；token 刷新只发官方的那几类头（域名、租户、两个 refresh 专用头与一个追踪 ID），不带 SDK／agent／IDE 指纹。
 
 ## 自动化与奖励
 
 自动签到与 Buddy 旅行是按账号设置的开关（WebUI 凭证页）：国内个人账号默认开启，国际默认关闭，保存即生效，无需重启。成长中心仅面向个人账号，企业账号不参与旅行（也不再显示上游 403）。
 成长中心补领（`auto_growth`，国内个人账号默认开启）随每小时维护扫描执行，只做接取与领取：领取已完成任务的积分与能量，自身不启动任何行为链。任务级 `growth_auto` 开关（默认全部关闭）把指定任务纳入自动化，扫描随后驱动对应行为链——可能消耗积分的真实对话、应用体验或专家召唤。凭证页展示实时任务列表，支持单任务与已开开关任务的一键手动执行，任务开关可复制到已选账号（`POST /admin/credentials/growth-batch`）；面板由 `GET /admin/credentials/{id}/growth-tasks`、`.../growth-tasks/auto` 与 `.../auto-all` 支撑。手动执行是服务端后台任务（每个账号同时只有一个）：请求立即返回任务，关闭抽屉或页面不影响执行，运行中再次发起会返回当前任务；`GET /admin/growth-jobs` 列出各账号当前或最近一次任务及正在执行的任务，供页面横幅显示。指定专家任务使用已核实的任务专属专家 ID，沿用需主动开启的真实对话链。手动执行与扫描领取均入审计；企业与国际账号不显示该面板。
-签到、旅行、成长和活跃打卡的结果或异常携带 11140 时，把账号标记为官方限制并休眠两小时，当前扫描立即停止（包括剩余成长领取）；限制到期或人工解除前，后续扫描跳过该账号。推理路径仍走短冷却 `request_illegal_cooldown_s`（见「排障」）。其他业务码保持原有日志和重试行为。
+签到、旅行、成长和活跃打卡的结果或异常携带 11140 时，当前扫描立即停止（包括剩余成长领取）并收口当日状态；自动化链路**不停权**——受限号对自动化只会返回同一判定，再写一次只是重复证据。后续扫描在该号被控制库标记为受限期间一律跳过，即直到人工放行或某次探活成功。其他业务码保持原有日志和重试行为。
 
 `CODEBUDDY2API_AUTO_ACCEPT_BUDDY` 仅启动读取，默认 `false`；预授权已启用国内账号完成首次领猫任务、协议及旅行，自动旅行仍受账号开关控制。`first_buddy` 无需单独接取，包含 `not_accepted` 在内的待完成状态可直接发起一次本账号的真实国内 WorkBuddy 对话；优先可用零倍率模型，否则取最低已知倍率，最多请求 32 个输出 token，可能消耗少量积分。不执行其他奖励任务、不付费开盒、不切猫、不领取国际试用积分。
 
@@ -341,14 +336,11 @@ Messages 的 `enabled` / `adaptive` 启用 Chat 推理，`output_config.effort` 
 
 | 现象 | 处理与边界 |
 |------|------------|
-| WebUI 无法登录 | 确认设置了 API key；更换 key 后重新登录并重新发起未完成的 OAuth。HTTPS 反代后经域名登录失败时，用 `admin_allowed_origins` 信任对外来源（见上文） |
-| 本地 401 | 客户端密钥与网关不一致 |
-| 上游 401 / 403 | 凭证级认证熔断；在 WebUI 检查并重新登录。响应体是上游「request illegal」判定的 403 不算认证失败，见下一行 |
-| 上游 403 `request illegal`（11140） | 按「单账号风控判定」处理，而不是凭证失能。**推理链路**命中一次即持久停权：控制库同时写 `enabled=false` 与 `restricted` / `restricted_at` / `restricted_reason` / `restricted_evidence`，该号退出选路与四条自动化链，重启也不会自动回池。不计入连续认证失败次数，也不写模型冷却；短冷却（`request_illegal_cooldown_s`，默认 60 秒）保留为同一秒内的去抖，真正生效的是持久停权。该判定**不换号重放**——换号只会把同一判定摊到更多账号上，当前请求把上游 403 原样回给客户端。**没有时间自动释放**：人工用 `POST /admin/credentials/{id}/reset-cooldown`（结果带 `restricted_released`）或 `PATCH /admin/credentials/{id} {"enabled": true}` 放行。自动化链路命中同码不会停权：每日活跃记 `state=restricted` 并停止当日排期，签到不会把 403 记成「今日已签到」（下一轮维护仍可能重试） |
 | WebUI 无法登录 | 使用初始或当前管理密码，或执行 `converter.py admin reset-password`。HTTPS 反代后经域名登录失败时，用 `admin_allowed_origins` 信任对外来源（见上文） |
 | 本地 401 / 403 / 429 | 检查推理密钥是否存在、启用且未过期，再检查 IP/模型允许范围和 RPM；鉴权与权限错误按客户端协议返回 |
 | 上游 401 / 403 | 凭证级认证熔断；在 WebUI 检查并重新登录。响应体是上游「request illegal」判定的 403 不算认证失败，见 11140 一行 |
-| 上游 403 `request illegal`（11140） | 按「单账号风控判定」处理，而不是凭证失能：该账号进入短冷却（`request_illegal_cooldown_s`，默认 60 秒）并退出选路，后续请求落到别的账号；设了 `--failover-max` 时当前请求也会换凭证重放。不计入连续认证失败次数，也不写模型冷却，避免一轮风控把整池账号逐个禁掉。所有候选都答 11140 时把上游 403 原样回给客户端。自动化任务（签到、旅行、成长、活跃打卡）改用持久两小时限制 |
+| 上游 403 `request illegal`（11140） | 按「单账号风控判定」处理，而不是凭证失能。**推理链路**命中一次即持久停权：控制库同时写 `enabled=false` 与 `restricted` / `restricted_at` / `restricted_reason` / `restricted_evidence`，该号退出选路与四条自动化链，重启也不会自动回池。不计入连续认证失败次数，也不写模型冷却；短冷却（`request_illegal_cooldown_s`，默认 60 秒）保留为同一秒内的去抖，真正生效的是持久停权。该判定**不换号重放**——换号只会把同一判定摊到更多账号上，当前请求把上游 403 原样回给客户端。**没有任何时间到期路径**，释放只有两条：人工（`POST /admin/credentials/{id}/reset-cooldown`，结果带 `restricted_released`，或 `PATCH /admin/credentials/{id} {"enabled": true}`）与探活拿到 200（见下一行）。自动化链路命中同码不会停权：每日活跃记 `state=restricted` 并停止当日排期，签到不会把 403 记成「今日已签到」（下一轮维护仍可能重试） |
+| 受限号探活（`restricted_probe`） | 默认开启，是唯一的自动回池路径。每隔 `restricted_probe_interval_s`（默认 21600 秒）挑一个最久未探的受限号，发**一次真实 `/v2/chat/completions`**：首条消息必须是 system（国际网关对 user 开头的请求回 400/11128，那会把活号看成死号），提示词带随机 nonce，输出上限 16 token。只有 HTTP 200 才解除停权，且走与人工放行完全相同的控制库写入；401/429/5xx/11140 只记录、不改状态，连续 3 次 11140 后退避到 `max(间隔, 86400)` 秒，进程重启后首次时限由 `restricted_at` 重新推算。探活串行——每个循环周期最多一个账号，并在审计里记 `credential.restricted_probe`（`source=probe`），探了多少次、解封几次可与真实流量分开统计。`POST /admin/credentials/{id}/restricted-probe` 立即探一个账号（不受总开关与间隔限制），`GET /admin/restricted-probes` 查看排期与最近一次结果。设 `CODEBUDDY2API_RESTRICTED_PROBE=false` 即完全停止，此后受限号只能人工放行。这一条**故意比邻近实现的「按需单次」更自动（21 §2.2）**：没有定时器时，受限号在有人想起来之前一直不回来，而一次探活只花一个 16 token 输出的请求 |
 | 渠道校验（11128） | 可用时仅在同账号 `/console` 回退一次；第二次渠道拒绝可把 system 指令降为 user 后在同账号重试一次。最终仍拒绝则直接返回，不冷却任何账号；搜索/MCP 没有回退端点，账号保持可用 |
 | 模型限制（11148） | 仅冷却当前账号×模型 30 分钟，不冷却整个账号，当前请求不重放 |
 | 模型级 11129/11134/11150/11158 | 业务码优先于 HTTP 状态（包括 500/503）；不冷却账号或模型，不换账号重放，返回上游响应 |
