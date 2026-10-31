@@ -9,6 +9,7 @@ reader enforces, and to telling the caller when a row had to be given up.
 """
 
 import json
+import subprocess
 import sys
 import tempfile
 import time
@@ -452,6 +453,44 @@ class CoalescedWriteTests(unittest.TestCase):
         self.assertEqual(cooldowns.last_error, "store")
         self.assertGreater(cooldowns.model_until("a" * 64, "cn-work", "m"), self.now)
 
+
+class ColdStartImportTests(unittest.TestCase):
+    """Regression: a fresh interpreter must import the rate consumers in any order.
+
+    CI runs every test file as its own script, so a circular import between
+    `credit_floor` and `model_rates` (through `model_policy` → `model_capabilities` →
+    `model_catalog_view`) only ever failed there: pytest imports modules in a different
+    order and hid it. The grammar therefore lives in the leaf `app.rate_grammar`; these
+    checks pin that shape from a cold process, which is the only place the cycle shows.
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def run_python(self, code):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", code], cwd=self.ROOT,
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return completed.stdout
+
+    def test_credit_floor_imports_cold(self):
+        """The exact chain that failed in CI starts with credit_floor."""
+        self.run_python("import app.credit_floor")
+
+    def test_rate_consumers_import_in_any_order(self):
+        modules = ("app.model_rates", "app.credit_floor", "app.catalog_view",
+                   "app.model_catalog_view", "app.model_policy", "converter")
+        for first in modules:
+            with self.subTest(first=first):
+                self.run_python(f"import {first}; " + "; ".join(
+                    f"import {name}" for name in modules if name != first))
+
+    def test_the_grammar_module_stays_a_leaf(self):
+        """A relative import here would rebuild the cycle the split removed."""
+        source = (self.ROOT / "app" / "rate_grammar.py").read_text(encoding="utf-8")
+        relative = [line for line in source.splitlines()
+                    if line.lstrip().startswith(("from .", "import ."))]
+        self.assertEqual(relative, [], "app/rate_grammar.py must not import from the package")
 
 if __name__ == "__main__":
     unittest.main()
