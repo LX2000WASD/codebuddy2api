@@ -367,6 +367,25 @@ class RegionRoutingTests(unittest.TestCase):
                 self.assertEqual(first.headers["x-conversation-id"], repeat.headers["x-conversation-id"])
                 self.assertEqual(first.headers["x-user-id"], repeat.headers["x-user-id"])
 
+    def test_conversation_id_is_scoped_to_the_account(self):
+        """legacy 会话键含账号指纹：同一段对话在两个账号下不再共用一个 X-Conversation-ID。
+
+        两个账号发同一段 system+user 时，上游看到的是「同一个会话、两个身份」，这是可以
+        避免的关联特征；粘性会话与 prompt_cache 键仍按各自维度隔离。
+        """
+        self.add_account("cn-cli-2", "cn-cli")
+        pool = converter.CredentialPool([self.root / "cn-cli.info", self.root / "cn-cli-2.info"])
+        converter.CONFIG["cred_pool"] = pool
+        payload = self.payload("chat/completions", system="Keep this instruction.")
+        first, headers = converter._cred_for(payload, region="cn")
+        again, repeat = converter._cred_for(payload, region="cn")
+        self.assertEqual(headers["X-User-Id"], repeat["X-User-Id"])
+        self.assertEqual(headers["X-Conversation-ID"], repeat["X-Conversation-ID"])
+        other, switched = converter._cred_for(payload, region="cn",
+                                              tried={converter._cred_manager(first)})
+        self.assertNotEqual(headers["X-User-Id"], switched["X-User-Id"])
+        self.assertNotEqual(headers["X-Conversation-ID"], switched["X-Conversation-ID"])
+
     def test_single_region_pool_uses_original_root_and_rejects_absent_sources(self):
         for present, absent in (("cn", "intl"), ("intl", "cn")):
             expected = {present + "-cli", present + "-work"}

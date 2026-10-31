@@ -2804,11 +2804,14 @@ def _cred_for(payload: dict, model: str | None = None, *, region=None, tried=(),
     profile = profile_for_headers(headers)
     if not _in_region(profile, region):
         raise HTTPException(status_code=503, detail={"error": {"message": "未找到指定地域凭据", "type": "auth_error"}})
+    identity = account_key(profile, headers.get("X-User-Id"), headers.get("X-Enterprise-Id"))
     if context is not None and context.scoped:
-        identity = account_key(profile, headers.get("X-User-Id"), headers.get("X-Enterprise-Id"))
         headers["X-Conversation-ID"] = context.conversation_id(profile, identity)
     else:
-        headers.update(_dynamic_request_headers(f"{profile}:{skey}" if skey else None))
+        # 会话键里带上账号指纹：同一 profile 的不同账号不再共用 X-Conversation-ID。两个账号
+        # 发同一段对话时，上游看到的是「同一个会话、两个身份」，这是可避免的关联特征。
+        # 粘性会话与 prompt_cache 键各自按 skey / 账号隔离，不受这处改动影响。
+        headers.update(_dynamic_request_headers(f"{profile}:{identity}:{skey}" if skey else None))
     return cm, headers
 
 
