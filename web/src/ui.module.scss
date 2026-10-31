@@ -290,6 +290,10 @@ $white: var(--page);
 .navItem:hover {
   background: var(--surface-hover);
 }
+/* The one sidebar destination that is not a task area (the updates page). */
+.navExternal {
+  margin-top: var(--space-2);
+}
 .active {
   background: var(--accent-subtle);
   color: var(--accent-text-strong);
