@@ -86,6 +86,7 @@ class UpdaterFixture(unittest.TestCase):
         self.sums = None
         self.api_status = 200
         self.requests = []
+        self.api_headers = []
         self.audit = Mock()
         self.config = {"server": fake_server(), "launch": {"argv": ["python3", "converter.py"], "env": {}, "cwd": "/"},
                        "audit_store": self.audit}
@@ -115,6 +116,7 @@ class UpdaterFixture(unittest.TestCase):
         self.requests.append(str(request.url))
         url = str(request.url)
         if url.startswith("https://api.github.com/"):
+            self.api_headers.append(dict(request.headers))
             if self.api_status != 200:
                 return httpx.Response(self.api_status, json={"message": "rate limited"})
             return httpx.Response(200, json=self.releases())
@@ -335,6 +337,63 @@ class InstallTests(UpdaterFixture):
         self.archive = tarball(release_files("1.1.0", requirements="evil==1\n"), prefix="codebuddy2api-1.1.0")
         updater.install("v1.1.0")
         self.assertIn("校验失败", self.wait(updater)["message"])
+        self.assert_untouched()
+
+    def test_a_dead_mirror_falls_back_to_direct(self):
+        # The configured mirror answers nothing; the install still completes over direct.
+        self.config["update_mirror"] = "https://mirror.example/"
+        updater = self.updater()
+        updater.check()
+        updater.install("v1.1.0")
+        self.assertEqual(self.wait(updater)["status"], "restarting")
+        downloads = [url for url in self.requests if "releases/download" in url]
+        self.assertTrue(any(url.startswith("https://github.com/") for url in downloads))
+
+    def test_a_poisoned_mirror_falls_back_to_direct_bytes(self):
+        self.config["update_mirror"] = "https://mirror.example/"
+        real = self.archive
+        evil = tarball(release_files("1.1.0", requirements="evil==1\n"), prefix="codebuddy2api-1.1.0")
+        fixture = self
+        sums = f"{hashlib.sha256(real).hexdigest()}  codebuddy2api-1.1.0.tar.gz\n"
+        base = f"{REPOSITORY_URL}/releases/download/v1.1.0/"
+
+        def handler(request):
+            url = str(request.url)
+            if url.startswith("https://api.github.com/"):
+                return httpx.Response(200, json=fixture.releases())
+            mirrored = url.startswith("https://mirror.example/")
+            if url.endswith(base + "SHA256SUMS"):
+                return httpx.Response(200, text=(hashlib.sha256(evil).hexdigest() + "  codebuddy2api-1.1.0.tar.gz\n"
+                                                 if mirrored else sums))
+            if url.endswith(base + "codebuddy2api-1.1.0.tar.gz"):
+                return httpx.Response(200, content=evil if mirrored else real)
+            return httpx.Response(404)
+
+        updater = Updater(self.config, root=self.root, data_dir=self.data, version="1.0.0",
+                          deployment="archive", transport=httpx.MockTransport(handler))
+        updater.check()
+        updater.install("v1.1.0")
+        self.assertEqual(self.wait(updater)["status"], "restarting")
+        self.assertNotIn("evil", (self.root / "requirements.txt").read_text())
+
+    def test_a_failed_download_names_the_failure_without_echoing_urls(self):
+        """A user-facing update error must not repeat the mirror URL, proxy or TLS details."""
+        self.config["update_mirror"] = "https://mirror.example/"
+        fixture = self
+
+        def handler(request):
+            if str(request.url).startswith("https://api.github.com/"):
+                return httpx.Response(200, json=fixture.releases())
+            return httpx.Response(500)
+
+        updater = Updater(self.config, root=self.root, data_dir=self.data, version="1.0.0",
+                          deployment="archive", transport=httpx.MockTransport(handler))
+        updater.check()
+        updater.install("v1.1.0")
+        message = self.wait(updater)["message"]
+        self.assertIn("HTTP 500", message)
+        self.assertNotIn("mirror.example", message)
+        self.assertNotIn("https://", message)
         self.assert_untouched()
 
     def test_container_layers_fall_back_to_copying_directories(self):
@@ -655,7 +714,31 @@ class AdminRouteTests(UpdaterFixture):
         locked = self.client.post("/admin/update/mirror", json={"mirror": ""}, headers=self.headers)
         self.assertEqual(locked.status_code, 422)
         self.assertIn("锁定", locked.json()["error"]["message"])
+        tokened = self.client.post("/admin/update/mirror", json={"github_token": "github_pat_x1"},
+                                   headers=self.headers)
+        self.assertEqual(tokened.status_code, 200)
+        self.assertTrue(tokened.json()["github_token"])
+        self.assertNotIn("github_pat_x1", str(self.client.get("/admin/update", headers=self.headers).json()))
+        cleared = self.client.post("/admin/update/mirror", json={"github_token": "  "}, headers=self.headers)
+        self.assertEqual(cleared.status_code, 200)
+        self.assertFalse(cleared.json()["github_token"])
+        bad = self.client.post("/admin/update/mirror", json={"github_token": 7}, headers=self.headers)
+        self.assertEqual(bad.status_code, 422)
         self.assertTrue(self.client.get("/admin/update", headers=self.headers).json()["mirror_locked"])
+
+    def test_the_github_token_reaches_the_api_but_never_downloads_or_mirrors(self):
+        self.config["update_github_token"] = "github_pat_x1"
+        self.config["update_mirror"] = self.prefix = "https://mirror.example/"
+        updater = self.updater()
+        updater.check()
+        self.assertTrue(self.api_headers)
+        self.assertTrue(all(h.get("authorization") == "Bearer github_pat_x1" for h in self.api_headers))
+        for url in self.requests:
+            if "api.github.com" not in url:
+                self.assertIn("mirror.example/", url)
+        view = updater.view()
+        self.assertTrue(view["github_token"])
+        self.assertNotIn("github_pat_x1", str(view))
 
     def test_mirror_route_remembers_the_custom_slot(self):
         saved = self.client.post("/admin/update/mirror", json={"mirror": "https://slot.example",
