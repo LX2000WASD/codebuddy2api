@@ -1,6 +1,10 @@
-# 本地移植层镜像构建:推送到 local/main(或手动触发)时,
-# 先跑全量测试门禁,再以官方预构建镜像为底座 + COPY 我们的 Python 层,
-# 产出 ghcr.io/<owner>/codebuddy2api:local。
+# 本分支镜像构建：推送到 local/main（或手动触发）时，先跑全量后端测试门禁，
+# 再用仓库自己的 Dockerfile 构建完整镜像（内含前端构建与前端门禁），
+# 产出 ghcr.io/<owner>/codebuddy2api:local 与 :local-<sha>。
+#
+# 2026-11-04 起不再使用「上游预构建底座 + 覆盖层」的方式：上游 GHCR 只发布到 1.4.2，
+# 而本仓库已并入上游 1.5.2 的代码，底座标签不存在会让构建直接失败。完整构建与
+# Dockerfile 里的 VERSION、依赖锁保持一致。
 name: build-local-image
 on:
   push:
@@ -9,8 +13,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # Upstream base image. Bump together with the FROM in Dockerfile.local.
-  BASE_IMAGE: ghcr.io/maiphucgiang/codebuddy2api:1.3.6
 
 jobs:
   test:
@@ -51,13 +53,16 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Lowercase image name (GHCR requirement)
         run: echo "IMAGE_LC=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
-      - name: Pull official base image
-        run: docker pull "${{ env.BASE_IMAGE }}"
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.local
+          file: Dockerfile
           push: true
+          # BUILD_CHANNEL/BUILD_COMMIT land in build.json; the Updates page uses them to
+          # tell a fork build from an upstream release.
+          build-args: |
+            BUILD_CHANNEL=local
+            BUILD_COMMIT=${{ github.sha }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_LC }}:local
             ${{ env.REGISTRY }}/${{ env.IMAGE_LC }}:local-${{ github.sha }}

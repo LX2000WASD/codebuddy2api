@@ -103,10 +103,10 @@ docker compose up -d --no-build
 
 ## 构建本地镜像
 
-本分支以「覆盖层」方式发布：官方上游镜像作底座，叠加本地 Python 层与本地构建的前端。
+本分支用仓库自己的 `Dockerfile` 构建完整镜像（上游代码已并入本仓库，不再依赖上游预构建底座）。
 
 ```bash
-docker build -f Dockerfile.local -t codebuddy2api:local .
+docker build -t codebuddy2api:local .
 ```
 
 构建需要网络（Node 镜像、vite-plus 发行包、pnpm registry），不建议在小型 VPS 上直接构建。常规路径是 CI：推送到 `local/main` 后先跑全量测试，再发布 `ghcr.io/lx2000wasd/codebuddy2api:local` 与 `:local-<sha>`——见 [.github/workflows/build-local-image.yml](.github/workflows/build-local-image.yml)。
@@ -130,7 +130,7 @@ docker build -f Dockerfile.local -t codebuddy2api:local .
 ├── examples/            # 客户端配置示例
 ├── scripts/             # 版本与依赖锁定工具
 ├── Dockerfile           # 上游多阶段镜像：前端构建 + Python 运行时
-├── Dockerfile.local     # 分支覆盖层镜像：上游底座 + 本地 Python 与前端
+├── Dockerfile            # 完整镜像：Python 依赖 + WebUI 构建 + 运行时
 ├── docker-compose.yml   # 推荐部署方式
 ├── .env.example         # 全部运行时环境变量及注释
 └── .github/workflows/   # CI：测试、镜像发布、CodeQL、本地镜像

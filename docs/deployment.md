@@ -36,7 +36,7 @@ docker compose pull
 docker compose up -d --no-build
 ```
 
-Images support `linux/amd64` and `linux/arm64`. Upstream version tags pin releases, `latest` follows stable releases and `edge` follows main; the fork's `:local` follows its newest build and `:local-<sha>` pins one build (built by `Dockerfile.local` on the upstream base, see [building the local image](../README.md#building-the-local-image)). Features depend on the selected version — upstream tags contain no local layer, and older images may not include the current source's WebUI.
+Images support `linux/amd64` and `linux/arm64`. Upstream version tags pin releases, `latest` follows stable releases and `edge` follows main; the fork's `:local` follows its newest build and `:local-<sha>` pins one build (a complete build from this repository's `Dockerfile`, see [building the local image](../README.md#building-the-local-image)). Features depend on the selected version — upstream tags contain no local layer, and older images may not include the current source's WebUI.
 
 ### Build current source
 

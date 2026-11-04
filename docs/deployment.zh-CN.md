@@ -37,7 +37,7 @@ docker compose pull
 docker compose up -d --no-build
 ```
 
-镜像支持 `linux/amd64` 与 `linux/arm64`。上游版本标签固定发行版，`latest` 跟随稳定版，`edge` 跟随 main；本分支的 `:local` 跟随最新构建，`:local-<sha>` 固定某一次构建（由 `Dockerfile.local` 在上游基座之上构建，见[构建本地镜像](../README.zh-CN.md#构建本地镜像)）。功能以所选版本为准——上游标签不含本地融合层，旧镜像也可能不包含当前源码的 WebUI。
+镜像支持 `linux/amd64` 与 `linux/arm64`。上游版本标签固定发行版，`latest` 跟随稳定版，`edge` 跟随 main；本分支的 `:local` 跟随最新构建，`:local-<sha>` 固定某一次构建（由仓库自带的 `Dockerfile` 完整构建，见[构建本地镜像](../README.zh-CN.md#构建本地镜像)）。功能以所选版本为准——上游标签不含本地融合层，旧镜像也可能不包含当前源码的 WebUI。
 
 ### 构建当前源码
 

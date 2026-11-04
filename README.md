@@ -104,10 +104,10 @@ The template binds to localhost only. Configure HTTPS and restrict network acces
 
 ## Building the local image
 
-The fork is shipped as an overlay image: the official upstream image as the base, plus the local Python layer and a locally built WebUI.
+The fork builds a complete image from this repository's `Dockerfile`; upstream code is merged here, so no upstream base image is needed.
 
 ```bash
-docker build -f Dockerfile.local -t codebuddy2api:local .
+docker build -t codebuddy2api:local .
 ```
 
 Building needs network access (Node image, vite-plus release, pnpm registry) and is not recommended on a small VPS. The normal path is CI: pushing to `local/main` runs the full test suite and then publishes `ghcr.io/lx2000wasd/codebuddy2api:local` and `:local-<sha>` — see [.github/workflows/build-local-image.yml](.github/workflows/build-local-image.yml).
@@ -131,7 +131,7 @@ Building needs network access (Node image, vite-plus release, pnpm registry) and
 ├── examples/            # Client configuration examples
 ├── scripts/             # Version and dependency-lock tooling
 ├── Dockerfile           # Upstream multi-stage image: frontend build + Python runtime
-├── Dockerfile.local     # Fork overlay image: upstream base + local Python and frontend
+├── Dockerfile            # Complete image: Python deps, WebUI build, runtime
 ├── docker-compose.yml   # Recommended deployment
 ├── .env.example         # Every runtime environment variable, annotated
 └── .github/workflows/   # CI: tests, image publishing, CodeQL, local image
