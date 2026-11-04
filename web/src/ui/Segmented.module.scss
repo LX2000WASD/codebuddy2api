@@ -4,6 +4,10 @@
    by its own background and border (P1-1 was an opaque absolute block over the label). */
 .group {
   display: inline-flex;
+  /* A bar is as wide as its segments: as a flex child of a stretching column it used to
+     fill the whole row (1118px of chrome around 300px of buttons). */
+  width: fit-content;
+  align-self: flex-start;
   flex-wrap: wrap;
   gap: var(--space-1);
   min-width: 0;

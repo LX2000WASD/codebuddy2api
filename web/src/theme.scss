@@ -106,7 +106,8 @@
   --accent-c: 0.16;
   --accent-hover-d: 0.045;
   --accent-press-d: 0.08;
-  --accent-strong-d: 0.03;
+  /* 0.03 left the "strong" accent at 4.47:1 on a card — under AA for 12px text. */
+  --accent-strong-d: 0.08;
   --accent: oklch(var(--accent-l) var(--accent-c) var(--palette-hue));
   --accent-hover: oklch(
     calc(var(--accent-l) - var(--accent-hover-d)) var(--accent-c) var(--palette-hue)
@@ -211,8 +212,9 @@
   --accent-press-d: 0.06;
   --accent-subtle: color-mix(in oklab, var(--accent) 18%, var(--surface));
   --accent-border: color-mix(in oklab, var(--accent) 76%, var(--surface));
-  /* The dark page is darker than the card, so accent already clears 4.5:1 on it. */
-  --accent-text-strong: var(--accent);
+  /* On the dark *card* (not the page) the accent landed at 4.09:1; lifting lightness a
+     step clears AA without turning the accent into a different colour. */
+  --accent-text-strong: oklch(calc(var(--accent-l) + 0.05) var(--accent-c) var(--palette-hue));
   --on-accent: var(--n12);
 
   --page: var(--n12);

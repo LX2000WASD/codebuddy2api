@@ -76,7 +76,12 @@ export function HeaderBar({
               ⌘K
             </Button>
             {narrow ? (
-              <OverflowMenu busy={busy} onSignOut={onSignOut} />
+              <>
+                {/* Kept outside the overflow menu: the drawer it opens unmounts with the
+                    menu, and the theme initialiser lives in the same component. */}
+                <Appearance />
+                <OverflowMenu busy={busy} onSignOut={onSignOut} />
+              </>
             ) : (
               <>
                 <LanguageToggle />
@@ -137,7 +142,6 @@ function OverflowMenu({ busy, onSignOut }: { busy: boolean; onSignOut: () => voi
           >
             <div className={s.menuRow}>
               <LanguageToggle onChoose={close} />
-              <Appearance onOpen={close} />
             </div>
             <span className={s.menuStatus}>
               <span className={s.sessionDot} aria-hidden="true" />

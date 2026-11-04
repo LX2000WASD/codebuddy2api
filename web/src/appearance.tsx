@@ -120,6 +120,8 @@ export function Appearance({ onOpen }: { onOpen?: () => void } = {}) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const { mode, palette, dark, persisted } = useAppearance();
+  // main.tsx also calls initializeAppearance() at startup; this is the idempotent
+  // re-run for a client that mounts the control on its own (tests, storybook).
   useEffect(initializeAppearance, []);
   return (
     <>

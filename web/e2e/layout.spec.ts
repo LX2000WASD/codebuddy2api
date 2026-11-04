@@ -88,7 +88,9 @@ test.describe("narrow layout", () => {
     await page.setViewportSize({ width: 390, height: 820 });
     await openDashboard(page);
     await page.goto("/dashboard/credentials");
-    await page.getByRole("button", { name: "列表视图" }).first().click();
+    // No view switch at this width: below the card breakpoint both views render cards, so
+    // the toggle is hidden rather than offering two identical states.
+    await expect(page.getByRole("button", { name: "列表视图" })).toHaveCount(0);
     const menus = page.getByRole("button", { name: /更多/ });
     await expect(menus.first()).toBeVisible();
     await menus.nth((await menus.count()) - 1).click();

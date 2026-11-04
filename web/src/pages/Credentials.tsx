@@ -1389,6 +1389,7 @@ export function Credentials() {
       header: "目录与同步状态",
       className: s.cellWrap,
       cell: (c) => renderSyncAndCatalog(c),
+      secondary: true,
     },
     {
       id: "balance",
@@ -1420,6 +1421,7 @@ export function Credentials() {
       sortable: true,
       className: `${s.cellWrap} ${s.usageCell}`,
       cell: (c) => renderUsageBlock(c, true),
+      secondary: true,
     },
     {
       id: "status",
@@ -1587,6 +1589,7 @@ export function Credentials() {
             label="视图切换"
             value={view}
             options={VIEW_OPTIONS}
+            className={s.viewSwitch}
             onChange={(next) => chooseView(next as ViewMode)}
           />
         </Toolbar>

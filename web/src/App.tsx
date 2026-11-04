@@ -98,10 +98,19 @@ function Shell() {
   // The breadcrumb names the task area, then the section when the area holds several.
   // Reading ?section= keeps the crumb in step with the tabs without a second route.
   const crumb = useMemo(() => {
-    if (!area) return [t("nav.overview")];
+    // Three routes live outside the five task areas (they are reached from inside a page,
+    // not from the rail). Naming them keeps the crumb from claiming "概览" while the
+    // operator is looking at the key list.
+    const standalone: Record<string, string> = {
+      keys: t("keys.title"),
+      media: t("media.title"),
+      updates: t("updates.title"),
+    };
+    const tail = location.pathname.replace(/^\/dashboard\/?/, "").split("/")[0];
+    if (!area) return [standalone[tail] ?? t("nav.overview")];
     const section = sectionFor(area, new URLSearchParams(location.search).get("section"));
     return area.sections.length > 1 ? [t(area.labelKey), t(section.labelKey)] : [t(area.labelKey)];
-  }, [area, location.search, t]);
+  }, [area, location.search, location.pathname, t]);
   const closeNav = useCallback(() => setNavOpen(false), []);
   const signOutNow = () => {
     setBusy(true);

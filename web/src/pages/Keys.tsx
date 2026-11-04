@@ -257,6 +257,7 @@ export function Keys() {
       id: "secret",
       header: t("keys.secret"),
       cell: (item) => <span className={s.mono}>{item.masked ?? item.prefix}</span>,
+      secondary: true,
     },
     {
       id: "status",
@@ -277,13 +278,17 @@ export function Keys() {
       id: "expiry",
       header: t("keys.expiry"),
       cell: (item) => (item.expires_at === null ? t("keys.never") : formatTime(item.expires_at)),
+      // With five action buttons the row needs every pixel at 1024; the card layout still
+      // shows the expiry, and the table's own tooltip carries it.
+      secondary: true,
     },
     {
       id: "ip",
       header: "IP",
       cell: (item) => item.ip_allow?.join("、") || t("keys.unlimited"),
+      secondary: true,
     },
-    { id: "rpm", header: "RPM", cell: (item) => item.rpm ?? t("keys.unlimited") },
+    { id: "rpm", header: "RPM", cell: (item) => item.rpm ?? t("keys.unlimited"), secondary: true },
     {
       id: "models",
       header: t("keys.models"),
@@ -291,9 +296,20 @@ export function Keys() {
         item.models === null
           ? t("keys.all")
           : item.models.map((id) => modelLabel(id)).join("、") || t("keys.all"),
+      secondary: true,
     },
-    { id: "usage", header: t("keys.usage24h"), cell: (item) => metric(item.usage?.requests) },
-    { id: "lastUsed", header: t("keys.lastUsed"), cell: (item) => formatTime(item.last_used_at) },
+    {
+      id: "usage",
+      header: t("keys.usage24h"),
+      cell: (item) => metric(item.usage?.requests),
+      secondary: true,
+    },
+    {
+      id: "lastUsed",
+      header: t("keys.lastUsed"),
+      cell: (item) => formatTime(item.last_used_at),
+      secondary: true,
+    },
     {
       id: "actions",
       header: t("keys.actions"),

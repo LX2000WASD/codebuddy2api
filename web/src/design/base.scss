@@ -49,7 +49,7 @@
   --table-actions-min-w: 148px;
   /* The widest a single table cell may get before it ellipsizes: wide enough for a model id
      with its badges, narrow enough that one long note cannot take the whole viewport. */
-  --table-cell-max: 280px;
+  --table-cell-max: 200px;
   /* The narrowest the table may get before it scrolls instead of squeezing its columns. */
   --table-min-width: 880px;
   /* Soft edge under a pinned table column (the actions column scrolls over content). */
