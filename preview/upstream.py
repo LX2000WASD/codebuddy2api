@@ -58,10 +58,8 @@ TASKS = (
     ("Buddy_App", "在 Buddy 应用中聊一次", 5, 1, "web", "not_accepted", 0),
     ("automation_1", "创建 1 个自动化任务", 8, 1, "web", "not_accepted", 0),
     ("template_5", "使用 5 次模板", 6, 5, "web", "accepted", 5),
-    ("Hp_Appearance", "更换一次外观主题", 3, 1, "web", "claimed", 1),
-    ("Model_chat_GLM5.2", "与 GLM 模型对话", 12, 1, "web", "not_accepted", 0),
     ("skill_1", "使用 1 次技能", 5, 1, "web", "locked", 0),
-    ("school_season", "开学季打卡", 20, 1, "miniprogram", "not_accepted", 0),
+    ("Sequential_Tasks_1", "完成 1 次小程序对话", 20, 1, "miniprogram", "not_accepted", 0),
 )
 
 
@@ -594,7 +592,7 @@ class Upstream:
             return Reply(payload={"code": 400, "msg": "already traveling"})
         if _departed_today(state) >= DAILY_TRIPS:
             return Reply(payload={"code": 400, "msg": "daily limit reached"})
-        location = next((l for l in LOCATIONS if l["id"] == body.get("location_id")), LOCATIONS[0])
+        location = next((item for item in LOCATIONS if item["id"] == body.get("location_id")), LOCATIONS[0])
         today = time.strftime("%Y-%m-%d")
         state.departures = {today: _departed_today(state) + 1}
         state.trip = {"state": "traveling", "location": location, "arrive_at": time.time() + TRAVEL_SECONDS,

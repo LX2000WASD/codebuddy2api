@@ -8,6 +8,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+import warnings
 
 from app.control_store import ConflictError, ControlStore
 from app.settings import apply_persisted_settings, resolve_settings, validate_settings
@@ -207,6 +208,31 @@ class ControlStoreTests(unittest.TestCase):
             db.execute("UPDATE control SET payload=?", (json.dumps(payload),))
         with self.assertRaises(ValueError):
             ControlStore(self.path)
+
+    def test_retired_growth_task_codes_are_dropped_instead_of_rejecting_the_store(self):
+        """上游下线的任务码必须一次性剔除：留着会让整份凭证元数据判无效、网关起不来。"""
+        identity = "a" * 32
+        self.store.set_growth_auto(identity, {"chat_5": True})
+        self.store.close()
+        # An older release accepted the code, so the stored document still names it.
+        with sqlite3.connect(self.path) as db:
+            payload = json.loads(db.execute("SELECT payload FROM control WHERE id=1").fetchone()[0])
+            payload["credentials"][identity]["growth_auto"]["retired_task"] = True
+            db.execute("UPDATE control SET payload=?", (json.dumps(payload),))
+        with self.assertWarns(RuntimeWarning) as caught:
+            reopened = ControlStore(self.path)
+        self.addCleanup(reopened.close)
+        self.assertIn("retired_task", str(caught.warning))
+        self.assertEqual(reopened.snapshot()["credentials"][identity]["growth_auto"], {"chat_5": True})
+        with sqlite3.connect(self.path) as db:
+            stored = json.loads(db.execute("SELECT payload FROM control WHERE id=1").fetchone()[0])
+        # The removal is written back once, so a later start neither warns nor re-parses it.
+        self.assertEqual(stored["credentials"][identity]["growth_auto"], {"chat_5": True})
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            again = ControlStore(self.path)
+        self.addCleanup(again.close)
+        self.assertEqual(again.snapshot()["credentials"][identity]["growth_auto"], {"chat_5": True})
 
     def test_legacy_daily_chats_table_gains_the_state_column(self):
         """生产库早于 state 列：升级后必须补列，否则「当日终态」无处记录。"""

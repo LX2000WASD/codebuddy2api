@@ -152,7 +152,7 @@ class SweepTests(unittest.TestCase):
 
     def test_single_failure_does_not_abort(self):
         default_tasks = [raw_task("chat_5", current=5, target=5),
-                         raw_task("create_canvas", current=1, target=1)]
+                         raw_task("automation_1", current=1, target=1)]
         fake = FakeGrowth(default_tasks, [])
         fake.claims["chat_5"] = None
         original_transport = fake.transport
@@ -164,13 +164,13 @@ class SweepTests(unittest.TestCase):
 
         fake.transport = flaky
         summary = with_fake(fake, growth_tasks.sweep_account, "tok")
-        self.assertEqual(summary["claimed"], ["create_canvas"])
+        self.assertEqual(summary["claimed"], ["automation_1"])
         self.assertEqual(summary["errors"], 1)
         self.assertFalse(summary["ok"])
 
     def test_account_restriction_aborts_remaining_claims(self):
         default_tasks = [raw_task("chat_5", current=5, target=5),
-                         raw_task("create_canvas", current=1, target=1)]
+                         raw_task("template_5", current=1, target=1)]
         fake = FakeGrowth(default_tasks, [])
         original_transport = fake.transport
 
@@ -185,7 +185,7 @@ class SweepTests(unittest.TestCase):
         self.assertEqual(summary["errors"], 1)
         self.assertEqual(summary["error"]["code"], 11140)
         self.assertEqual(summary["claimed"], [])
-        self.assertEqual(fake.requests_to("/activity/growth/tasks/create_canvas/claim"), [])
+        self.assertEqual(fake.requests_to("/activity/growth/tasks/template_5/claim"), [])
 
     def test_idempotent_second_pass_makes_no_write(self):
         tasks = [raw_task("chat_5", current=5, target=5, accept="claimed")]
@@ -244,8 +244,10 @@ class StoreSwitchTests(unittest.TestCase):
 
     def test_rejects_unknown_metadata_keys(self):
         # 写路径不做元数据校验（与既有字段一致），损坏在下次打开时被拒绝。
+        # 注意：growth_auto 里上游已下线的任务码不算损坏（见 tests/test_control_store.py
+        # 的迁移用例）——那条路径必须放行，否则删码升级会让整库打不开。
         self.store._update(None, lambda state: state["credentials"].setdefault(
-            "acct", {"enabled": True}).update(growth_auto={"nope": True}))
+            "acct", {"enabled": True}).update(bogus_field=True))
         with self.assertRaises(ValueError):
             ControlStore(self.path)
 

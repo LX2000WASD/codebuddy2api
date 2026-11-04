@@ -11,6 +11,7 @@ import sqlite3
 import threading
 import time
 import uuid
+import warnings
 
 from .settings import validate_settings
 from .audit_store import _secure_path, safe_label
@@ -182,6 +183,7 @@ class ControlStore:
                 self._db.execute("PRAGMA user_version=1")
             elif version not in (1, 2, self.SCHEMA_VERSION):
                 raise ValueError("管理数据库 schema 不受支持或已有库为空，未执行初始化")
+            self._retire_growth_tasks()
             self._snapshot = self._load()
             self._db.execute("CREATE TABLE IF NOT EXISTS buddy_bootstrap ("
                              "account_key TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, attempted_at REAL NOT NULL, "
@@ -256,6 +258,41 @@ class ControlStore:
         index = indexes.get("api_keys_single_admin")
         if index is None or not index[2]:
             raise ValueError("管理数据库 api_keys 索引结构不匹配，请从备份恢复")
+
+    def _retire_growth_tasks(self):
+        """Drop automation switches for task codes the upstream catalog no longer lists.
+
+        A retired code can never run again, but its presence fails the credential check in
+        the load step — so an upgrade that drops codes would refuse to open every store that
+        still remembers one. The pruned document is written back once, before that check, and
+        only the retired switches change: nothing else is re-saved or re-normalized.
+        """
+        if not self._db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='control'").fetchone():
+            return  # A database without the control table is diagnosed by the load step, not here.
+        row = self._db.execute("SELECT payload FROM control WHERE id=1").fetchone()
+        document = json.loads(row[0]) if row else None
+        credentials = document.get("credentials") if isinstance(document, dict) else None
+        if not isinstance(credentials, dict):
+            return  # Malformed documents are rejected by the load step with a readable message.
+        retired = {}
+        for identity, metadata in credentials.items():
+            mapping = metadata.get("growth_auto") if isinstance(metadata, dict) else None
+            if not isinstance(mapping, dict):
+                continue
+            stale = sorted(set(mapping) - set(GROWTH_TASK_CODES))
+            if not stale:
+                continue
+            for code in stale:
+                mapping.pop(code)
+            retired[identity] = stale
+        if not retired:
+            return
+        self._db.execute("UPDATE control SET payload=? WHERE id=1",
+                         (json.dumps(document, ensure_ascii=False, allow_nan=False),))
+        codes = sorted({code for stale in retired.values() for code in stale})
+        # No account identity in the message; the codes are the operator-relevant part.
+        warnings.warn(f"已剔除 {len(retired)} 个账号上 {len(codes)} 个上游已下线的成长任务开关"
+                      f"（{'、'.join(codes)}）", RuntimeWarning, stacklevel=2)
 
     def _load(self):
         row = self._db.execute("SELECT revision,payload FROM control WHERE id=1").fetchone()
