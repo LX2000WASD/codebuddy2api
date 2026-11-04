@@ -1,0 +1,134 @@
+@use "./design/breakpoints.scss" as bp;
+
+/* Chart internals: the container, the type scale and the colour roles.
+ *
+ * The geometry (viewBox, plot insets, bar width, tick positions) stays in charts.tsx
+ * because it is derived from the measured container width at render time; what lives
+ * here is everything a theme can change. Every colour and every font size is a token,
+ * so the four palettes and both modes reach the SVG through the same cascade the rest
+ * of the page uses — the previous stylesheet also had px type sizes in this area.
+ */
+
+/* The measured box. `position: relative` anchors the detail row; no horizontal padding,
+ * because Panel's body already insets the chart and charts.tsx subtracts the SVG's own
+ * padding from the viewBox it derives. */
+.plot {
+  position: relative;
+  min-width: 0;
+}
+
+/* One user unit is one CSS pixel: the viewBox follows the measured width, so a fixed
+ * height would stretch the plot and shrink the 11px tick labels into unreadability.
+ * `height: auto` keeps that 1:1 mapping. */
+.svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  touch-action: pan-y;
+  cursor: crosshair;
+}
+
+.tick {
+  font-size: var(--fs-11);
+  fill: var(--text-muted);
+}
+
+.meanLabel {
+  font-size: var(--fs-11);
+  font-weight: var(--fw-strong);
+  fill: var(--accent-text-strong);
+}
+
+.peakLabel {
+  font-size: var(--fs-11);
+  font-weight: var(--fw-strong);
+  fill: var(--danger-fg);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* Selection is the button's own surface: aria-pressed paints it, so the label can never
+ * sit under an opaque decorative layer (defect P1-1 was exactly that shape). */
+.legendButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--control-h-sm);
+  padding: 0 var(--space-3);
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-full);
+  font: inherit;
+  font-size: var(--fs-11);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition:
+    background var(--duration-micro) var(--ease-standard),
+    border-color var(--duration-micro) var(--ease-standard),
+    color var(--duration-micro) var(--ease-standard);
+}
+
+.legendButton:hover {
+  border-color: var(--border-strong);
+}
+
+.legendButton[aria-pressed="true"] {
+  color: var(--accent-text-strong);
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+}
+
+/* A hidden series stays readable but steps back; opacity is not a colour, and the
+ * aria-pressed attribute is what carries the state for assistive tech. */
+.legendButton[aria-pressed="false"] {
+  opacity: 0.55;
+}
+
+.legendCount {
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+}
+
+/* The per-bucket breakdown under the plot. Wraps instead of scrolling: the row is a
+ * sentence about one bucket, not a table. */
+.detail {
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-muted);
+  background: var(--surface-sunken);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-block);
+  font-size: var(--fs-11);
+  overflow-wrap: anywhere;
+}
+
+.detailRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-4);
+}
+
+.detailRow strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.detailRow span {
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The keyboard hint that explains the plot to a screen reader. */
+.visuallyHidden {
+  @include bp.visually-hidden;
+}

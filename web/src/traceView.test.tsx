@@ -253,12 +253,16 @@ describe("RequestTrace", () => {
       />,
     );
     const rendered = steps(container);
-    const badges = (row: Element) =>
-      [...row.querySelectorAll("span")].map((node) => node.className).join(" ");
+    // Badge paints its tone as data-tone (the old stylesheet used a `bad` class), so the
+    // assertion reads the tone itself instead of a generated class name.
+    const tones = (row: Element) =>
+      [...row.querySelectorAll("span")]
+        .map((node) => node.getAttribute("data-tone"))
+        .filter(Boolean);
     expect(rendered[0].textContent).toContain("upstream_429");
-    expect(badges(rendered[0])).not.toMatch(/_bad_/);
+    expect(tones(rendered[0])).not.toContain("bad");
     expect(rendered[1].textContent).toContain("11128");
-    expect(badges(rendered[1])).toMatch(/_bad_/);
+    expect(tones(rendered[1])).toContain("bad");
   });
 
   it("gives a failing stage the failure treatment and its codes", () => {

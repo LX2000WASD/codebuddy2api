@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, errorMessage, object, type ModelRule, type RecordValue } from "./api";
-import { profileLabel } from "./components";
 import { jobResponse, useJobPolling, type Job } from "./jobs";
 import { formatTokens } from "./modelMetadata";
-import s from "./ui.module.scss";
+import m from "./models.module.scss";
+import { Button, Cluster, Field, Input } from "./ui";
+import { profileLabel } from "./values";
 
 export type Measured = {
   billed: boolean;
@@ -58,12 +59,12 @@ export function formatEstimate(value: number): string {
 }
 
 export function measuredNote(detail: RateDetail): string {
-  const m = detail.measured;
-  if (!m) return "";
-  const average = m.avg_credit != null ? `，平均 ≈${m.avg_credit} 积分/次` : "";
+  const measured = detail.measured;
+  if (!measured) return "";
+  const average = measured.avg_credit != null ? `，平均 ≈${measured.avg_credit} 积分/次` : "";
   return (
-    `上游目录声明 ${detail.declared ?? 0}x，但对该模型实际扣费（近 7 天 ${m.charged}/${m.samples} 次计费${average}）；` +
-    (m.rate != null
+    `上游目录声明 ${detail.declared ?? 0}x，但对该模型实际扣费（近 7 天 ${measured.charged}/${measured.samples} 次计费${average}）；` +
+    (measured.rate != null
       ? "倍率来自探测：同一请求对照本产品已声明倍率的参考模型折算"
       : "日常流量多命中会话缓存，单次扣费不能折算倍率；点「一键探测倍率」测出")
   );
@@ -108,32 +109,32 @@ export function OutputProbeNote({ probe }: { probe: OutputProbe | undefined }) {
   if (measured && claimed && probe.verdict === "clamped" && measured < claimed) {
     const times = claimed / measured;
     return (
-      <span className={s.probeNote} title={tip}>
-        <strong className={s.probeClamped}>{formatTokens(measured)} ⚠</strong>
+      <span className={m.probeNote} title={tip}>
+        <strong className={m.probeClamped}>{formatTokens(measured)} ⚠</strong>
         <small>钳制 {times >= 10 ? Math.round(times) : Math.round(times * 10) / 10}×</small>
       </span>
     );
   }
   if (measured && claimed && probe.verdict !== "inconclusive" && measured >= claimed * 0.98)
     return (
-      <span className={s.probeNote} title={tip}>
-        <strong className={s.probeOk}>
+      <span className={m.probeNote} title={tip}>
+        <strong className={m.probeOk}>
           {formatTokens(measured)} {measured > claimed * 1.02 ? "↑" : "✓"}
         </strong>
       </span>
     );
   if (measured && probe.verdict !== "inconclusive")
     return (
-      <span className={s.probeNote} title={tip}>
-        <strong className={s.probeMuted}>
+      <span className={m.probeNote} title={tip}>
+        <strong className={m.probeMuted}>
           {probe.verdict === "at_least" ? "≥" : ""}
           {formatTokens(measured)}
         </strong>
       </span>
     );
   return (
-    <span className={s.probeNote} title={tip}>
-      <strong className={s.probeMuted}>?</strong>
+    <span className={m.probeNote} title={tip}>
+      <strong className={m.probeMuted}>?</strong>
       <small>未测出</small>
     </span>
   );
@@ -201,11 +202,13 @@ export function RateOverrideFields({
     onChange(next);
   };
   return (
-    <fieldset className={s.fieldset}>
+    <fieldset className={m.formGroup}>
       <legend>消费倍率</legend>
-      <p>留空按上游目录或实测计费；手填后路由与 /v1/models 均以手填值为准。0 表示确认免费。</p>
-      {!served.length && <p>当前没有账号目录提供该模型。</p>}
-      <div className={s.formGrid}>
+      <p className={m.note}>
+        留空按上游目录或实测计费；手填后路由与 /v1/models 均以手填值为准。0 表示确认免费。
+      </p>
+      {!served.length && <p className={m.note}>当前没有账号目录提供该模型。</p>}
+      <div className={m.formGrid}>
         {served.map((profile) => {
           const detail = details[profile];
           const source = rateSource(detail);
@@ -217,9 +220,8 @@ export function RateOverrideFields({
                 ? `目录 ${formatEstimate(source === "manual" ? (detail?.declared ?? effective) : effective)}`
                 : "目录倍率未知";
           return (
-            <label className={s.field} key={profile}>
-              {profileLabel(profile)}
-              <input
+            <Field key={profile} label={profileLabel(profile)} hint={hint}>
+              <Input
                 type="number"
                 min={0}
                 max={1000}
@@ -231,15 +233,13 @@ export function RateOverrideFields({
                 disabled={disabled}
                 onChange={(e) => edit(profile, e.target.value)}
               />
-              <small>{hint}</small>
-            </label>
+            </Field>
           );
         })}
       </div>
       {probe && (
-        <div className={s.actions}>
-          <button
-            type="button"
+        <Cluster gap="2">
+          <Button
             disabled={disabled || running || !served.length}
             title="后台任务：每个产品发起一次 ≈8K token 对话；有扣费即为实测计费，未扣费才是真 0 倍率。关闭抽屉不影响执行"
             onClick={() => probe.start(model.id)}
@@ -249,25 +249,25 @@ export function RateOverrideFields({
                 ? "探测中…"
                 : "其他探测进行中…"
               : "一键探测倍率"}
-          </button>
-        </div>
+          </Button>
+        </Cluster>
       )}
-      {probe?.error && <p className={s.warning}>{probe.error}</p>}
+      {probe?.error && <p className={m.warning}>{probe.error}</p>}
       {results.map((row) => (
-        <div className={s.actions} key={row.profile}>
-          <small>
+        <Cluster gap="2" key={row.profile}>
+          <small className={m.muted}>
             {profileLabel(row.profile)}：{row.message}
           </small>
           {row.rate != null && (
-            <button
-              type="button"
+            <Button
+              size="sm"
               disabled={disabled}
               onClick={() => edit(row.profile, String(row.rate))}
             >
               填入 {formatEstimate(row.rate)}
-            </button>
+            </Button>
           )}
-        </div>
+        </Cluster>
       ))}
     </fieldset>
   );

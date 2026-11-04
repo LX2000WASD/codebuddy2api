@@ -1,0 +1,76 @@
+@use "../design/breakpoints.scss" as bp;
+
+/* KPI cards and the window controls use the primitives (<Stat>, <Grid>); what is left here
+   is the shape only this page has: the FEFO distribution bars and one account's figures. */
+
+/* A label + control pair inside the window panel. The select is the native element on
+   purpose: the page's tests drive it with a change event, and it keeps the platform's own
+   list in a sheet. Only the face comes from the design system's control mixin, so it
+   cannot drift from Input/Select. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+}
+
+.field select {
+  @include bp.control-face;
+}
+
+/* Expiry distribution: one labelled bar per band. */
+.distribution {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.band {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.band progress {
+  width: 100%;
+  height: var(--space-2);
+  accent-color: var(--accent);
+}
+
+/* The account's four figures: an auto-fitting grid, so 390px stacks them instead of
+   squeezing four columns into 59px each (P2-1). */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--grid-min-sm)), 1fr));
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+}
+
+.metrics > div {
+  min-width: 0;
+}
+
+.metrics dt {
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+}
+
+.metrics dd {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-13);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.metrics dd small {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+}

@@ -1,0 +1,7 @@
+/* The account form: one column, controls full width, the action at the end. */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}

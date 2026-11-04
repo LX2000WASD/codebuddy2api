@@ -28,6 +28,15 @@
   animation: spin calc(var(--duration-panel) * 6) linear infinite;
 }
 
+.turn {
+  display: inline-flex;
+}
+
+/* RefreshIcon stops after the turn it is in, so the glyph never freezes mid-rotation. */
+.turn[data-spinning="true"] {
+  animation: spin calc(var(--duration-panel) * 6) linear infinite;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

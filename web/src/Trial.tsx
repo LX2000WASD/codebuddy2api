@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, credentialResponse, errorMessage, list, object, type Credential } from "./api";
-import { Badge, Drawer, ErrorNotice } from "./components";
-import s from "./ui.module.scss";
+import { Badge, Button, Cluster, Drawer, ErrorNotice } from "./ui";
+import { useT } from "./i18n";
+import s from "./Trial.module.scss";
 
 type TrialResult = {
   ok: boolean;
@@ -47,6 +48,7 @@ export function Trial({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const t = useT();
   const [status, setStatus] = useState<TrialResult>(unknown);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"claim" | "status" | null>(null);
@@ -99,14 +101,19 @@ export function Trial({
   };
   const failed = !status.ok && !["available", "unknown"].includes(status.state);
   return (
-    <Drawer title="领取一次性体验积分" onClose={onClose} dismissDisabled={busy !== null}>
-      <p>
+    <Drawer
+      title="领取一次性体验积分"
+      closeLabel={t("common.closeDrawer")}
+      dismissDisabled={busy !== null}
+      onClose={onClose}
+    >
+      <p className={s.lead}>
         <strong>{credential.name ?? credential.id}</strong> · 国际 WorkBuddy
       </p>
       <p className={s.note}>
         仅向官方申请当前账号的一次性体验积分，不签到、不旅行、不切换账号。资格和额度由官方决定。
       </p>
-      <div role="status" aria-live="polite">
+      <div className={s.state} role="status" aria-live="polite">
         <Badge tone={status.ok ? "good" : failed ? "warn" : "neutral"}>
           {status.claimed || status.upstream_already
             ? "官方已确认，记录未保存"
@@ -114,8 +121,12 @@ export function Trial({
               ? "已领取"
               : "未确认领取"}
         </Badge>
-        {!failed && <p>{status.message}</p>}
-        {busy && <p>{busy === "claim" ? "正在申请，请勿重复点击…" : "正在读取本地领取记录…"}</p>}
+        {!failed && <p className={s.message}>{status.message}</p>}
+        {busy && (
+          <p className={s.message}>
+            {busy === "claim" ? "正在申请，请勿重复点击…" : "正在读取本地领取记录…"}
+          </p>
+        )}
       </div>
       <ErrorNotice message={error ?? (failed ? status.message : null)} />
       {(status.status != null || status.code != null) && (
@@ -128,18 +139,18 @@ export function Trial({
           最早可再次手动申请：{new Date(status.retry_at * 1000).toLocaleString("zh-CN")}
         </p>
       )}
-      <div className={s.actions}>
-        <button
-          className={s.primary}
+      <Cluster>
+        <Button
+          variant="primary"
           disabled={busy !== null || !status.can_claim || credential.enabled !== true}
           onClick={() => void execute(true)}
         >
           确认领取
-        </button>
-        <button disabled={busy !== null} onClick={() => void execute(false)}>
+        </Button>
+        <Button disabled={busy !== null} onClick={() => void execute(false)}>
           刷新领取状态
-        </button>
-      </div>
+        </Button>
+      </Cluster>
       <p className={s.note}>
         刷新状态不会领取。失败至少等待 24
         小时；关闭页面不会撤销已发送请求。领取成功后可另行同步余额。

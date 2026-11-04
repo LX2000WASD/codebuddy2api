@@ -1,7 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { metric, object } from "../api";
-import { Badge, Empty, ErrorNotice, Icon, PageTitle, Panel, Skeleton } from "../components";
-import { Drawer, DrawerPresence } from "../components";
+import {
+  Badge,
+  Button,
+  Cluster,
+  Drawer,
+  DrawerPresence,
+  Empty,
+  ErrorNotice,
+  Field,
+  Grid,
+  Icon,
+  Input,
+  Page,
+  Panel,
+  Skeleton,
+  Stack,
+  Switch,
+  Toolbar,
+} from "../ui";
 import {
   fusionGet,
   fusionMutate,
@@ -20,7 +37,7 @@ import {
   type ChannelTestResult,
 } from "../fusion/types";
 import { t, useDateFormat, useT } from "../i18n";
-import s from "../ui.module.scss";
+import s from "./system.module.scss";
 
 function normalizeEvents(value: unknown): AlertEventsResponse {
   const data = object(value, t("fusion.alerts.eventsContext"));
@@ -93,58 +110,70 @@ function EventsPanel() {
 
   return (
     <Panel title={t("fusion.alerts.eventsPanel")} hint={t("fusion.alerts.eventsPanelHint")}>
-      <div className={s.filterChips} role="group" aria-label={t("fusion.alerts.filterKinds")}>
-        {ALERT_KINDS.map((kind) => (
-          <button
-            key={kind}
-            type="button"
-            aria-pressed={kinds.has(kind)}
-            className={kinds.has(kind) ? s.chipOn : s.chip}
-            onClick={() =>
-              setKinds((old) => {
-                const next = new Set(old);
-                if (next.has(kind)) next.delete(kind);
-                else next.add(kind);
-                return next;
-              })
-            }
-          >
-            {t(ALERT_KIND_LABELS[kind])}
-          </button>
-        ))}
+      <Toolbar split gap="2">
+        <div role="group" aria-label={t("fusion.alerts.filterKinds")}>
+          <Cluster gap="1">
+            {ALERT_KINDS.map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                aria-pressed={kinds.has(kind)}
+                className={s.chip}
+                onClick={() =>
+                  setKinds((old) => {
+                    const next = new Set(old);
+                    if (next.has(kind)) next.delete(kind);
+                    else next.add(kind);
+                    return next;
+                  })
+                }
+              >
+                {t(ALERT_KIND_LABELS[kind])}
+              </button>
+            ))}
+          </Cluster>
+        </div>
+        {/* A native select on purpose: the compact filter in a chip bar keeps its
+            platform behaviour, and three suites drive it by value (fireEvent.change /
+            Playwright selectOption). ui/Select is the form-field control. */}
         <select
           aria-label={t("fusion.alerts.severityFilter")}
           value={severity}
           onChange={(e) => setSeverity(e.target.value)}
-          className={s.severitySelect}
+          className={s.filter}
         >
           <option value="">{t("fusion.alerts.allSeverities")}</option>
           <option value="critical">{t("fusion.severity.critical")}</option>
           <option value="warning">{t("fusion.severity.warning")}</option>
           <option value="info">{t("fusion.severity.info")}</option>
         </select>
-      </div>
-      {error && <ErrorNotice message={error} retry={() => setReloadRevision((v) => v + 1)} />}
+      </Toolbar>
+      {error && (
+        <ErrorNotice
+          message={error}
+          retry={{ label: t("common.retry"), onClick: () => setReloadRevision((v) => v + 1) }}
+        />
+      )}
       {loading && !items.length ? (
         <Skeleton variant="table" label={t("fusion.alerts.eventsLoading")} />
       ) : items.length ? (
         <>
-          <div className={s.eventList}>
+          <Stack gap="2">
             {items.map((event) => (
-              <article key={event.id} className={s.eventItem} data-severity={event.severity}>
+              <article key={event.id} className={s.event} data-severity={event.severity}>
                 <div className={s.eventHead}>
-                  <strong>{event.title}</strong>
+                  <strong className={s.eventTitle}>{event.title}</strong>
                   <Badge tone={severityTone(event.severity)}>{severityLabel(event.severity)}</Badge>
                 </div>
-                <small>
+                <small className={s.eventMeta}>
                   {event.kind in ALERT_KIND_LABELS
                     ? t(ALERT_KIND_LABELS[event.kind as AlertKind])
                     : event.kind}{" "}
                   · {format.dateTime(new Date(event.fired_at * 1000))}
                 </small>
-                <p>{event.detail}</p>
+                <p className={s.eventBody}>{event.detail}</p>
                 {event.delivered.length > 0 && (
-                  <small>
+                  <small className={s.eventMeta}>
                     {t("fusion.alerts.delivery")}
                     {event.delivered
                       .map((d) =>
@@ -160,13 +189,15 @@ function EventsPanel() {
                 )}
               </article>
             ))}
-          </div>
+          </Stack>
           {hasMore && (
             <div className={s.pagination}>
-              <span>{t("fusion.alerts.shownCount", { count: items.length })}</span>
-              <button disabled={loading} onClick={() => load("older")}>
+              <span className={s.eventMeta}>
+                {t("fusion.alerts.shownCount", { count: items.length })}
+              </span>
+              <Button size="sm" disabled={loading} onClick={() => load("older")}>
                 {t("fusion.alerts.loadOlder")}
-              </button>
+              </Button>
             </div>
           )}
         </>
@@ -307,8 +338,24 @@ function ChannelEditor({
       .finally(() => setBusy(false));
   };
 
+  const enable = (field: keyof typeof form, label: string) => (
+    <div className={s.switchRow}>
+      <span className={s.switchLabel}>{label}</span>
+      <Switch
+        label={label}
+        checked={form[field] === true}
+        onChange={(checked) => set(field, checked)}
+      />
+    </div>
+  );
+
   return (
-    <Drawer title={t("fusion.alerts.editorTitle")} onClose={onClose} dismissDisabled={busy}>
+    <Drawer
+      title={t("fusion.alerts.editorTitle")}
+      closeLabel={t("common.closeDrawer")}
+      onClose={onClose}
+      dismissDisabled={busy}
+    >
       <p className={s.note}>{t("fusion.alerts.editorNote")}</p>
       <form
         onSubmit={(e) => {
@@ -332,192 +379,167 @@ function ChannelEditor({
             .finally(() => setBusy(false));
         }}
       >
-        <fieldset className={s.fieldset}>
-          <legend>Webhook</legend>
-          <label className={s.check}>
-            <input
-              type="checkbox"
-              role="switch"
-              checked={form.webhook_enabled}
-              onChange={(e) => set("webhook_enabled", e.target.checked)}
-            />
-            {t("fusion.alerts.enableWebhook")}
-          </label>
-          <label className={s.field}>
-            {t("fusion.alerts.webhookUrl")}
-            <input
-              type="url"
-              value={form.webhook_url}
-              onChange={(e) => set("webhook_url", e.target.value)}
-              placeholder="https://hook.example.com/path?token=…"
-              disabled={!form.webhook_enabled}
-            />
-          </label>
-          {maskedHints.webhook && form.webhook_enabled && (
-            <small className={s.mutedInline}>{maskedHints.webhook}</small>
-          )}
-        </fieldset>
-        <fieldset className={s.fieldset}>
-          <legend>Bark</legend>
-          <label className={s.check}>
-            <input
-              type="checkbox"
-              role="switch"
-              checked={form.bark_enabled}
-              onChange={(e) => set("bark_enabled", e.target.checked)}
-            />
-            {t("fusion.alerts.enableBark")}
-          </label>
-          <label className={s.field}>
-            {t("fusion.alerts.barkServer")}
-            <input
-              value={form.bark_server}
-              onChange={(e) => set("bark_server", e.target.value)}
-              placeholder="https://api.day.app"
-              disabled={!form.bark_enabled}
-            />
-          </label>
-          <label className={s.field}>
-            {t("fusion.alerts.barkKey")}
-            <input
-              value={form.bark_key}
-              onChange={(e) => set("bark_key", e.target.value)}
-              disabled={!form.bark_enabled}
-            />
-          </label>
-          {maskedHints.bark && form.bark_enabled && (
-            <small className={s.mutedInline}>{maskedHints.bark}</small>
-          )}
-        </fieldset>
-        <fieldset className={s.fieldset}>
-          <legend>{t("fusion.alerts.emailLegend")}</legend>
-          <label className={s.check}>
-            <input
-              type="checkbox"
-              role="switch"
-              checked={form.email_enabled}
-              onChange={(e) => set("email_enabled", e.target.checked)}
-            />
-            {t("fusion.alerts.enableEmail")}
-          </label>
-          <label className={s.field}>
-            {t("fusion.alerts.emailHost")}
-            <input
-              value={form.email_host}
-              onChange={(e) => set("email_host", e.target.value)}
-              disabled={!form.email_enabled}
-            />
-          </label>
-          <label className={s.field}>
-            {t("fusion.alerts.emailPort")}
-            <input
-              type="number"
-              min={1}
-              max={65535}
-              value={form.email_port}
-              onChange={(e) => set("email_port", e.target.value)}
-              disabled={!form.email_enabled}
-            />
-          </label>
-          <label className={s.field}>
-            {t("fusion.alerts.emailUsername")}
-            <input
-              value={form.email_username}
-              onChange={(e) => set("email_username", e.target.value)}
-              disabled={!form.email_enabled}
-            />
-          </label>
-          <label className={s.field}>
-            {t("fusion.alerts.emailPassword")}
-            <input
-              type="password"
-              value={form.email_password}
-              onChange={(e) => set("email_password", e.target.value)}
-              disabled={!form.email_enabled}
-              autoComplete="off"
-            />
-          </label>
-          <label className={s.field}>
-            {t("fusion.alerts.emailFrom")}
-            <input
-              type="email"
-              value={form.email_from}
-              onChange={(e) => set("email_from", e.target.value)}
-              disabled={!form.email_enabled}
-            />
-          </label>
-          <label className={s.field}>
-            {t("fusion.alerts.emailTo")}
-            <input
-              value={form.email_to}
-              onChange={(e) => set("email_to", e.target.value)}
-              placeholder="ops@example.com, ops2@example.com"
-              disabled={!form.email_enabled}
-            />
-          </label>
-          <label className={s.check}>
-            <input
-              type="checkbox"
-              checked={form.email_tls}
-              onChange={(e) => set("email_tls", e.target.checked)}
-              disabled={!form.email_enabled}
-            />
-            {t("fusion.alerts.emailTls")}
-          </label>
-          {maskedHints.email && form.email_enabled && (
-            <small className={s.mutedInline}>{maskedHints.email}</small>
-          )}
-        </fieldset>
-        <ErrorNotice message={error} />
-        <div className={s.actions}>
-          <button className={s.primary} disabled={busy}>
-            {busy ? t("fusion.alerts.saving") : t("fusion.alerts.save")}
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              setError(null);
-              setTest(null);
-            }}
-          >
-            {t("fusion.alerts.clearNotice")}
-          </button>
-        </div>
-      </form>
-      <Panel title={t("fusion.alerts.testPanel")}>
-        <p className={s.note}>{t("fusion.alerts.testNote")}</p>
-        <div className={s.actions}>
-          {CHANNEL_KINDS.map((channel) => (
-            <button
-              key={channel}
-              type="button"
-              disabled={busy}
-              onClick={() => runTest(channel)}
-              aria-label={t("fusion.alerts.testChannelAria", { channel: channelLabel(channel) })}
-            >
-              {t("fusion.alerts.testChannel", { channel: channelLabel(channel) })}
-            </button>
-          ))}
-        </div>
-        {test && (
-          <div className={s.eventItem} data-severity={test.ok ? "info" : "critical"}>
-            <div className={s.eventHead}>
-              <strong>{channelLabel(test.channel as ChannelKind)}</strong>
-              <Badge tone={test.ok ? "good" : "bad"}>
-                {test.ok ? t("fusion.alerts.deliveryOk") : t("fusion.alerts.deliveryFailed")}
-              </Badge>
+        <Stack gap="4">
+          <Panel title="Webhook">
+            {enable("webhook_enabled", t("fusion.alerts.enableWebhook"))}
+            <Field label={t("fusion.alerts.webhookUrl")}>
+              <Input
+                type="url"
+                value={form.webhook_url}
+                onChange={(e) => set("webhook_url", e.target.value)}
+                placeholder="https://hook.example.com/path?token=…"
+                disabled={!form.webhook_enabled}
+                mono
+              />
+            </Field>
+            {maskedHints.webhook && form.webhook_enabled && (
+              <small className={s.note}>{maskedHints.webhook}</small>
+            )}
+          </Panel>
+          <Panel title="Bark">
+            {enable("bark_enabled", t("fusion.alerts.enableBark"))}
+            <Grid min="sm" gap="3">
+              <Field label={t("fusion.alerts.barkServer")}>
+                <Input
+                  value={form.bark_server}
+                  onChange={(e) => set("bark_server", e.target.value)}
+                  placeholder="https://api.day.app"
+                  disabled={!form.bark_enabled}
+                />
+              </Field>
+              <Field label={t("fusion.alerts.barkKey")}>
+                <Input
+                  value={form.bark_key}
+                  onChange={(e) => set("bark_key", e.target.value)}
+                  disabled={!form.bark_enabled}
+                  mono
+                />
+              </Field>
+            </Grid>
+            {maskedHints.bark && form.bark_enabled && (
+              <small className={s.note}>{maskedHints.bark}</small>
+            )}
+          </Panel>
+          <Panel title={t("fusion.alerts.emailLegend")}>
+            {enable("email_enabled", t("fusion.alerts.enableEmail"))}
+            <Grid min="sm" gap="3">
+              <Field label={t("fusion.alerts.emailHost")}>
+                <Input
+                  value={form.email_host}
+                  onChange={(e) => set("email_host", e.target.value)}
+                  disabled={!form.email_enabled}
+                />
+              </Field>
+              <Field label={t("fusion.alerts.emailPort")}>
+                <Input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={form.email_port}
+                  onChange={(e) => set("email_port", e.target.value)}
+                  disabled={!form.email_enabled}
+                />
+              </Field>
+              <Field label={t("fusion.alerts.emailUsername")}>
+                <Input
+                  value={form.email_username}
+                  onChange={(e) => set("email_username", e.target.value)}
+                  disabled={!form.email_enabled}
+                />
+              </Field>
+              <Field label={t("fusion.alerts.emailPassword")}>
+                <Input
+                  type="password"
+                  value={form.email_password}
+                  onChange={(e) => set("email_password", e.target.value)}
+                  disabled={!form.email_enabled}
+                  autoComplete="off"
+                />
+              </Field>
+              <Field label={t("fusion.alerts.emailFrom")}>
+                <Input
+                  type="email"
+                  value={form.email_from}
+                  onChange={(e) => set("email_from", e.target.value)}
+                  disabled={!form.email_enabled}
+                />
+              </Field>
+              <Field label={t("fusion.alerts.emailTo")}>
+                <Input
+                  value={form.email_to}
+                  onChange={(e) => set("email_to", e.target.value)}
+                  placeholder="ops@example.com, ops2@example.com"
+                  disabled={!form.email_enabled}
+                />
+              </Field>
+            </Grid>
+            <div className={s.switchRow}>
+              <span className={s.switchLabel}>{t("fusion.alerts.emailTls")}</span>
+              <Switch
+                label={t("fusion.alerts.emailTls")}
+                checked={form.email_tls}
+                disabled={!form.email_enabled}
+                onChange={(checked) => set("email_tls", checked)}
+              />
             </div>
-            <small>
-              {t("fusion.alerts.testResult", {
-                attempts: metric(test.attempts),
-                duration: metric(test.duration_ms),
-              })}
-            </small>
-            {test.error && <p>{test.error}</p>}
-          </div>
-        )}
-      </Panel>
+            {maskedHints.email && form.email_enabled && (
+              <small className={s.note}>{maskedHints.email}</small>
+            )}
+          </Panel>
+          <Panel title={t("fusion.alerts.testPanel")}>
+            <p className={s.note}>{t("fusion.alerts.testNote")}</p>
+            <Cluster gap="2">
+              {CHANNEL_KINDS.map((channel) => (
+                <Button
+                  key={channel}
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => runTest(channel)}
+                  aria-label={t("fusion.alerts.testChannelAria", {
+                    channel: channelLabel(channel),
+                  })}
+                >
+                  {t("fusion.alerts.testChannel", { channel: channelLabel(channel) })}
+                </Button>
+              ))}
+            </Cluster>
+            {test && (
+              <div className={s.event} data-severity={test.ok ? "info" : "critical"}>
+                <div className={s.eventHead}>
+                  <strong className={s.eventTitle}>
+                    {channelLabel(test.channel as ChannelKind)}
+                  </strong>
+                  <Badge tone={test.ok ? "good" : "bad"}>
+                    {test.ok ? t("fusion.alerts.deliveryOk") : t("fusion.alerts.deliveryFailed")}
+                  </Badge>
+                </div>
+                <small className={s.eventMeta}>
+                  {t("fusion.alerts.testResult", {
+                    attempts: metric(test.attempts),
+                    duration: metric(test.duration_ms),
+                  })}
+                </small>
+                {test.error && <p className={s.eventBody}>{test.error}</p>}
+              </div>
+            )}
+          </Panel>
+          <ErrorNotice message={error} />
+          <Toolbar gap="2">
+            <Button variant="primary" type="submit" disabled={busy}>
+              {busy ? t("fusion.alerts.saving") : t("fusion.alerts.save")}
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={() => {
+                setError(null);
+                setTest(null);
+              }}
+            >
+              {t("fusion.alerts.clearNotice")}
+            </Button>
+          </Toolbar>
+        </Stack>
+      </form>
     </Drawer>
   );
 }
@@ -534,62 +556,68 @@ export function Alerts() {
   );
 
   return (
-    <>
-      <PageTitle
-        title={t("nav.alerts")}
-        description={t("fusion.alerts.pageDesc")}
-        actions={
-          <>
-            {FUSION_DEVELOPMENT && <Badge tone="warn">{t("fusion.common.demoData")}</Badge>}
-            <button onClick={channels.reload} disabled={channels.loading}>
-              <Icon name="refresh" />
-              {t("fusion.alerts.refreshChannels")}
-            </button>
-            <button className={s.primary} disabled={!status} onClick={() => setEditing(true)}>
-              <Icon name="bell" />
-              {t("fusion.alerts.configureChannels")}
-            </button>
-          </>
-        }
-      />
+    <Page
+      title={t("nav.alerts")}
+      description={t("fusion.alerts.pageDesc")}
+      actions={
+        <>
+          {FUSION_DEVELOPMENT && <Badge tone="warn">{t("fusion.common.demoData")}</Badge>}
+          <Button
+            onClick={channels.reload}
+            disabled={channels.loading}
+            icon={<Icon name="refresh" spin={channels.loading} />}
+          >
+            {t("fusion.alerts.refreshChannels")}
+          </Button>
+          <Button variant="primary" icon="bell" disabled={!status} onClick={() => setEditing(true)}>
+            {t("fusion.alerts.configureChannels")}
+          </Button>
+        </>
+      }
+    >
       <Panel title={t("fusion.alerts.channelsPanel")}>
         {channels.error ? (
-          <ErrorNotice message={channels.error} retry={channels.reload} />
+          <ErrorNotice
+            message={channels.error}
+            retry={{ label: t("common.retry"), onClick: channels.reload }}
+          />
         ) : channels.loading ? (
           <Skeleton variant="card" label={t("fusion.alerts.channelsLoading")} />
         ) : status ? (
-          <div className={s.alertsChannelGrid}>
+          <Grid min="md" gap="3">
             {CHANNEL_KINDS.map((kind) => {
-              const channels = status.channels;
-              const enabled = Boolean(channels[kind]?.enabled);
+              const configured = status.channels;
+              const enabled = Boolean(configured[kind]?.enabled);
               return (
-                <section className={s.alertsChannelCard} key={kind}>
-                  <div>
+                <section className={s.card} key={kind}>
+                  <div className={s.cardHead}>
                     <strong>{channelLabel(kind)}</strong>
                     <Badge tone={enabled ? "good" : "neutral"}>
                       {enabled ? t("fusion.common.enabled") : t("fusion.common.disabled")}
                     </Badge>
                   </div>
                   {kind === "webhook" && (
-                    <small>{channels.webhook?.url_masked ?? t("fusion.alerts.noUrl")}</small>
+                    <small className={s.note}>
+                      {configured.webhook?.url_masked ?? t("fusion.alerts.noUrl")}
+                    </small>
                   )}
                   {kind === "bark" && (
-                    <small>
-                      {channels.bark?.server ?? "https://api.day.app"} ·{" "}
-                      {channels.bark?.key_masked ?? t("fusion.alerts.noKey")}
+                    <small className={s.note}>
+                      {configured.bark?.server ?? "https://api.day.app"} ·{" "}
+                      {configured.bark?.key_masked ?? t("fusion.alerts.noKey")}
                     </small>
                   )}
                   {kind === "email" && (
-                    <small>
-                      {channels.email?.smtp_host}:{channels.email?.smtp_port} ·{" "}
-                      {(channels.email?.to ?? []).join(t("fusion.common.listSeparator")) ||
+                    <small className={s.note}>
+                      {configured.email?.smtp_host}:{configured.email?.smtp_port} ·{" "}
+                      {(configured.email?.to ?? []).join(t("fusion.common.listSeparator")) ||
                         t("fusion.alerts.noRecipients")}
                     </small>
                   )}
                 </section>
               );
             })}
-          </div>
+          </Grid>
         ) : (
           <Empty title={t("fusion.alerts.channelsUnknown")} />
         )}
@@ -614,6 +642,6 @@ export function Alerts() {
           />
         )}
       </DrawerPresence>
-    </>
+    </Page>
   );
 }

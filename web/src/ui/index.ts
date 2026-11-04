@@ -11,6 +11,8 @@
 import "../design/base.scss";
 
 export { Button, type ButtonProps, type ButtonSize, type ButtonVariant } from "./Button";
+export { ClearLogs, CLEAR_CONFIRMATION, type ClearLogsProps } from "./ClearLogs";
+export { Countdown, FreshnessHint } from "./Countdown";
 export {
   Badge,
   Empty,
@@ -21,11 +23,13 @@ export {
   type EmptyProps,
   type EmptyTone,
   type ErrorNoticeProps,
+  type LoadingLineProps,
+  LoadingLine,
   type SkeletonCell,
   type SkeletonProps,
 } from "./Feedback";
 export { Field, type FieldProps } from "./Field";
-export { Icon, type IconName, type IconProps } from "./Icon";
+export { Icon, RefreshIcon, type IconName, type IconProps } from "./Icon";
 export { IconButton, type IconButtonProps } from "./IconButton";
 export { Input, type InputProps } from "./Input";
 export {
@@ -44,9 +48,21 @@ export {
   type ToolbarProps,
 } from "./Layout";
 export { Dialog, Drawer, DrawerPresence, type OverlayProps } from "./Overlay";
+export { Markdown } from "./Markdown";
 export { Panel, type PanelProps } from "./Panel";
+export {
+  JobBanner,
+  ProgressBanner,
+  type JobBannerProps,
+  type JobProgress,
+  type ProgressBannerProps,
+} from "./Progress";
+export { ResourceState, type ResourceStateProps } from "./ResourceState";
+export { SearchInput, type SearchInputProps } from "./SearchInput";
 export { Segmented, type SegmentedOption, type SegmentedProps } from "./Segmented";
 export { Select, type SelectProps } from "./Select";
+export { compareValues, nextSort, sortRows, type SortValue } from "./sort";
+export { Stat, type StatProps, type StatTone } from "./Stat";
 export { Switch, type SwitchProps } from "./Switch";
 export {
   Table,
@@ -56,6 +72,7 @@ export {
   type TableSort,
 } from "./Table";
 export { Textarea, type TextareaProps } from "./Textarea";
+export { resetUrlState, useUrlParams, writeUrlParams, type UrlParams } from "./urlState";
 export {
   clearToasts,
   dismiss,

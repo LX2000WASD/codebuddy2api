@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage, list, object, text, type Credential, type RecordValue } from "./api";
 import { jobResponse, useJobPolling, type Job } from "./jobs";
-import s from "./ui.module.scss";
+import { Badge, Button, Switch } from "./ui";
+import s from "./GrowthTasks.module.scss";
 
 type GrowthTask = {
   task_code: string;
@@ -201,55 +202,53 @@ export function GrowthTasks({
   const selectable = automatable.filter((task) => !task.claimed);
   const allOn =
     selectable.length > 0 && selectable.every((task) => view.growth_auto[task.task_code] === true);
+  const account = credential.name ?? credential.id;
 
   return (
-    <div className={s.credCardTasks}>
-      <div className={s.credTaskRow}>
-        <label className={s.check}>
-          <input
-            type="checkbox"
-            role="switch"
-            aria-label={`自动成长补领 ${credential.name ?? credential.id}`}
+    <div className={s.tasks}>
+      <div className={s.row}>
+        <span className={s.switchRow}>
+          <Switch
+            label={`自动成长补领 ${account}`}
             checked={credential.auto_growth === true}
             disabled={busy || typeof credential.auto_growth !== "boolean"}
-            onChange={(e) => onPreference(credential, "auto_growth", e.target.checked)}
+            onChange={(checked) => onPreference(credential, "auto_growth", checked)}
           />
-          自动成长补领
-        </label>
-        <small>仅补齐「已达标未领」的奖励，不发起对话或行为上报</small>
+          <span>自动成长补领</span>
+        </span>
+        <small className={s.note}>仅补齐「已达标未领」的奖励，不发起对话或行为上报</small>
       </div>
       {Object.entries(groups).map(([group, tasks]) => (
-        <div key={group}>
-          <small>
+        <div key={group} className={s.group}>
+          <small className={s.groupLabel}>
             <strong>{GROUP_LABELS[group] ?? "其他"}</strong>
             {group === "chat" ? "（开启即授权消耗该账号对话额度）" : ""}
           </small>
           {tasks.map((task) => (
-            <div key={task.task_code} className={s.growthTaskRow}>
-              <label className={s.check}>
-                <input
-                  type="checkbox"
-                  role="switch"
-                  aria-label={`自动${task.title} ${credential.name ?? credential.id}`}
+            <div key={task.task_code} className={s.taskRow}>
+              <span className={s.switchRow}>
+                <Switch
+                  label={`自动${task.title} ${account}`}
                   checked={view.growth_auto[task.task_code] === true}
                   disabled={busy || saving || task.claimed}
-                  onChange={(e) => saveSwitches({ [task.task_code]: e.target.checked })}
+                  onChange={(checked) => saveSwitches({ [task.task_code]: checked })}
                 />
-                {task.title}
-              </label>
-              <span className={s.badge}>
+                <span>{task.title}</span>
+              </span>
+              <Badge>
                 {`${task.current}/${task.target || "—"}${
                   task.credit || task.energy ? ` · +${task.credit}c +${task.energy}e` : ""
                 }`}
-              </span>
+              </Badge>
               {/* 提示挂在外层：禁用按钮在部分浏览器不触发悬停提示。 */}
               <span
-                className={s.growthAction}
+                className={s.taskAction}
                 title={!task.claimed && task.locked ? "按官方节奏逐日开放" : undefined}
               >
-                <button
+                <Button
+                  size="sm"
                   disabled={busy || running || task.claimed || task.locked}
-                  aria-label={`一键完成${task.title} ${credential.name ?? credential.id}`}
+                  aria-label={`一键完成${task.title} ${account}`}
                   onClick={() => run(task.task_code)}
                 >
                   {task.claimed
@@ -259,43 +258,46 @@ export function GrowthTasks({
                       : currentCode === task.task_code
                         ? "执行中…"
                         : "一键完成"}
-                </button>
+                </Button>
               </span>
             </div>
           ))}
         </div>
       ))}
-      <div className={s.credTaskRow}>
-        <button
+      <div className={s.row}>
+        <Button
+          size="sm"
           disabled={busy || saving || selectable.length === 0}
-          aria-label={`${allOn ? "全不选" : "全选"}任务开关 ${credential.name ?? credential.id}`}
+          aria-label={`${allOn ? "全不选" : "全选"}任务开关 ${account}`}
           onClick={() =>
             saveSwitches(Object.fromEntries(selectable.map((task) => [task.task_code, !allOn])))
           }
         >
           {allOn ? "全不选" : "全选"}
-        </button>
-        <button
+        </Button>
+        <Button
+          size="sm"
           disabled={busy || saving || running}
-          aria-label={`全部执行 ${credential.name ?? credential.id}`}
+          aria-label={`全部执行 ${account}`}
           onClick={() => run()}
         >
           {running
             ? `执行中 ${job.completed}/${job.total}`
             : "全部执行（未勾选时执行全部未完成任务）"}
-        </button>
+        </Button>
         {selectedIds.some((id) => id !== credential.id) && (
-          <button
+          <Button
+            size="sm"
             disabled={busy}
-            aria-label={`同步开关到已选账号 ${credential.name ?? credential.id}`}
+            aria-label={`同步开关到已选账号 ${account}`}
             onClick={syncToSelected}
           >
             同步开关到已选账号 ({selectedIds.filter((id) => id !== credential.id).length})
-          </button>
+          </Button>
         )}
       </div>
-      {notice && <small>{text(notice)}</small>}
-      {error && <small>{text(error)}</small>}
+      {notice && <small className={s.note}>{text(notice)}</small>}
+      {error && <small className={s.note}>{text(error)}</small>}
     </div>
   );
 }

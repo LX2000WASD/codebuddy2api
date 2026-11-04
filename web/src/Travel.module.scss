@@ -1,0 +1,15 @@
+/* Travel facts: one line per fact, each allowed to shrink inside a card column. */
+.travel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.travel > small {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}

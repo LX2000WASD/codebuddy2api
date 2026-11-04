@@ -1,0 +1,83 @@
+@use "../design/breakpoints.scss" as bp;
+
+/* The key editor: one column, controls full width, the action row at the end. */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+/* The two selects stay native: their value set is long, the platform list is the best
+   keyboard story there is, and a Field already names them. */
+.control {
+  @include bp.control-face;
+}
+
+.fieldset {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-block);
+}
+
+.fieldset legend {
+  padding: 0 var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+}
+
+.hint {
+  margin: 0 0 var(--space-2);
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+}
+
+/* A single checkbox with its own label text. */
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.note {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  color: var(--text-muted);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-block);
+  font-size: var(--fs-11);
+  line-height: var(--lh-relaxed);
+}
+
+.warning {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+  border: var(--hairline) solid var(--warning-border);
+  border-radius: var(--radius-block);
+  font-size: var(--fs-12);
+}
+
+/* A one-time secret is read character by character, so it wraps anywhere and never gets
+   an ellipsis. */
+.secret {
+  display: block;
+  padding: var(--space-3);
+  color: var(--text);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-block);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+}

@@ -1,0 +1,172 @@
+/* The download-source card and its drawer.
+ *
+ * The card is a fourth tile next to the version tiles, so it borrows their geometry from
+ * ui/Stat (same padding, same surface, same container query); it stays a <button> because
+ * pressing it opens the drawer, and ui/ has no "card that is a button" primitive. */
+
+.mirrorCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-5);
+  color: var(--text);
+  background: var(--surface);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-card);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  container-type: inline-size;
+  transition: border-color var(--duration-micro) var(--ease-standard);
+}
+
+.mirrorCard:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.mirrorHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.mirrorLabel {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.mirrorIcon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  color: var(--accent-text-strong);
+  background: var(--accent-subtle);
+  border-radius: var(--radius-block);
+}
+
+/* A host name can be long, so it shrinks with the tile and ellipsizes — with the full value
+   in the title, which is the only condition under which the contract allows the ellipsis. */
+.mirrorValue {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: clamp(var(--fs-15), 4.6cqi, var(--fs-20));
+  font-weight: var(--fw-strong);
+  line-height: var(--lh-tight);
+}
+
+.mirrorHint {
+  min-width: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+/* ── Drawer ───────────────────────────────────────────────────────────────────*/
+.lead {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.subtle {
+  min-width: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* One source per row: name (+ tags), then the measurement, then the two actions. It wraps
+   instead of scrolling sideways, and the actions keep their full labels at every width. */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-sunken);
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-block);
+}
+
+/* The source in use is the row's own border and surface, not a marker drawn over it. */
+.row[data-current="true"] {
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+}
+
+.rowName {
+  display: flex;
+  flex: 1 1 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.rowStats {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+}
+
+.rowActions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* The custom slot is a field inside a row: it takes the name column and stops there. */
+.slot {
+  flex: 1 1 0;
+  min-width: var(--control-min-w);
+}
+
+.tokenRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.tokenRow > :first-child {
+  flex: 1 1 0;
+  min-width: var(--control-min-w);
+}

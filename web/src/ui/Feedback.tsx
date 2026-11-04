@@ -48,6 +48,21 @@ export function Empty({ title, tone = "initial", action, children }: EmptyProps)
   );
 }
 
+export type LoadingLineProps = {
+  /** What is loading ("凭证列表"). Announced once as a status. */
+  label: string;
+};
+
+/** A single status line for a page that is fetching: a spinner and one word. */
+export function LoadingLine({ label }: LoadingLineProps) {
+  return (
+    <div className={s.loading} role="status">
+      <span className={s.loadingDot} aria-hidden="true" />
+      {label}
+    </div>
+  );
+}
+
 export type ErrorNoticeProps = {
   /** The page's load or save error; nothing renders when it is empty. */
   message: string | null;

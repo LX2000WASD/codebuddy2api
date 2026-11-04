@@ -1,0 +1,234 @@
+@use "../design/breakpoints.scss" as bp;
+
+/* The overview page's own layout pieces: the panel grid, the two ranking/progress lists,
+ * the configuration notice and the footer line. Everything that is a primitive
+ * (page frame, panels, tables, buttons, badges) comes from ui/.
+ */
+
+/* Four panels beside each other while there is room for both columns; one column under
+ * 1200, where a half-width panel can no longer hold a table without horizontal scroll. */
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+@include bp.lg-down {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* A select in the page header sizes to its own content.
+ *
+ * The shared control face sets `width: 100%` so a field fills a form column. In the page
+ * header the toolbar is an auto-width flex item, and a 100%-wide child inside it resolves
+ * to "one control per line": the three controls stacked into a 287px column and pushed the
+ * page title out of the header row. The doubled selector outranks the primitive without
+ * `!important` and without depending on stylesheet order. */
+.range.range {
+  inline-size: auto;
+  min-inline-size: var(--control-min-w);
+  max-inline-size: 100%;
+}
+
+/* The notice is one bordered warning block, not a card: it sits at the top of the page
+ * and must not read as a peer of the KPI cards. */
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+  border: var(--hairline) solid var(--warning-border);
+  border-radius: var(--radius-block);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.notice > svg {
+  flex-shrink: 0;
+}
+
+.noticeBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.noticeBody p {
+  margin: 0;
+  line-height: var(--lh-base);
+}
+
+/* The command to copy, on its own line so it can be selected in one gesture. */
+.noticeCommand {
+  display: block;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-tag);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  overflow-wrap: anywhere;
+}
+
+/* Credential health: two facts per row, no inner scroll — the page owns the scroll, so a
+ * long list cannot trap the wheel inside a 340px box. */
+.healthList {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.healthRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  min-width: 0;
+  padding: var(--space-2) 0;
+  border-block-end: var(--hairline) solid var(--line);
+}
+
+.healthRow:last-child {
+  border-block-end: 0;
+}
+
+.healthIdentity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.healthIdentity strong {
+  color: var(--text);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+
+.healthIdentity small,
+.healthState small {
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+}
+
+.healthState {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* Share of requests per profile: a labelled progress row, one per product. */
+.distribution {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.distributionRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.distributionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+}
+
+.distributionHead strong {
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
+.distributionHead span {
+  font-variant-numeric: tabular-nums;
+}
+
+.distribution progress {
+  inline-size: 100%;
+  block-size: var(--space-2);
+  overflow: hidden;
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius-full);
+  accent-color: var(--accent);
+}
+
+.distribution progress::-webkit-progress-bar {
+  background: var(--surface-sunken);
+}
+
+.distribution progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: var(--radius-full);
+}
+
+.distribution progress::-moz-progress-bar {
+  background: var(--accent);
+  border-radius: var(--radius-full);
+}
+
+/* The rank in front of a model name. It is a number, so it keeps the tabular figures and
+ * steps back to the muted role instead of competing with the model id. */
+.rank {
+  margin-inline-end: var(--space-2);
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.modelCell {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.modelCell strong {
+  min-width: 0;
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+
+/* The generation timestamp: context, not content. */
+.updated {
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  text-align: end;
+  margin: 0;
+}
+
+.muted {
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+}
+
+/* A quiet one-line statement inside a panel body (the balance explanation). */
+.note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}

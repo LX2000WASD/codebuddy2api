@@ -1,8 +1,31 @@
 import { useId, useState, type PointerEvent } from "react";
 import { metric, number, text, type RecordValue } from "./api";
-import { Empty } from "./components";
+import { Empty, Table, type TableColumn } from "./ui";
 import { useT } from "./i18n";
-import s from "./ui.module.scss";
+import s from "./Trend.module.scss";
+
+/** One row of the disclosure table: the bucket fields the chart already holds, keyed. */
+type TrendRow = {
+  key: string;
+  date: unknown;
+  requests: unknown;
+  success: unknown;
+  error: unknown;
+};
+
+/** The plot's own numbers as four columns; the date column is named by the granularity. */
+function trendColumns(granularity: string): TableColumn<TrendRow>[] {
+  return [
+    {
+      id: "date",
+      header: granularity === "hour" ? "时段（UTC）" : "日期（UTC）",
+      cell: (row) => text(row.date),
+    },
+    { id: "requests", header: "请求", cell: (row) => metric(row.requests) },
+    { id: "success", header: "成功", cell: (row) => metric(row.success) },
+    { id: "error", header: "失败", cell: (row) => metric(row.error) },
+  ];
+}
 
 export function Trend({
   rows,
@@ -46,13 +69,22 @@ export function Trend({
     else choose(closest);
   };
   const selected = active === null ? null : rows[active];
+  // The bucket key is not always present (a sparse fixture has only dates), so the table
+  // is keyed by position; it is a projection of `rows`, not an identity.
+  const tableRows: TrendRow[] = rows.map((row, index) => ({
+    key: String(index),
+    date: row.date,
+    requests: row.requests,
+    success: row.success,
+    error: row.error,
+  }));
   return (
     <>
-      <div className={s.chartInteractive}>
+      <div className={s.frame}>
         <svg
           viewBox="0 0 780 200"
           preserveAspectRatio="none"
-          className={s.chart}
+          className={s.svg}
           role="img"
           tabIndex={0}
           aria-label={granularity === "hour" ? t("dash.trend.hourly") : t("dash.trend.daily")}
@@ -132,7 +164,7 @@ export function Trend({
         </svg>
         {selected && active !== null && (
           <div
-            className={s.chartTooltip}
+            className={s.tooltip}
             id={`${id}-tooltip`}
             role="tooltip"
             style={{ left: `${Math.min(96, Math.max(4, (xAt(active) / 780) * 100))}%` }}
@@ -156,35 +188,25 @@ export function Trend({
           </div>
         )}
       </div>
-      <p className={s.srOnly} id={`${id}-hint`}>
+      <p className={s.visuallyHidden} id={`${id}-hint`}>
         指向或点按查看时段；键盘左右方向键逐点查看，Home 和 End 跳到首尾，Esc 关闭提示。
       </p>
-      <div className={s.chartAxis}>
+      <div className={s.axis}>
         <span>{text(rows[0].date)}</span>
         {rows.length > 1 && <span>{text(rows.at(-1)?.date)}</span>}
       </div>
-      <details className={s.chartData}>
+      <details className={s.data}>
         <summary>查看趋势数据表</summary>
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">{granularity === "hour" ? "时段（UTC）" : "日期（UTC）"}</th>
-              <th scope="col">请求</th>
-              <th scope="col">成功</th>
-              <th scope="col">失败</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={i}>
-                <td>{text(r.date)}</td>
-                <td>{metric(r.requests)}</td>
-                <td>{metric(r.success)}</td>
-                <td>{metric(r.error)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {/* The same numbers the plot draws, in the shared table: it stays readable at
+            every width and its header carries the column meaning when the chart is
+            unreadable (a screen reader, a narrow phone). */}
+        <Table
+          columns={trendColumns(granularity)}
+          rows={tableRows}
+          rowKey={(row) => row.key}
+          label="趋势数据表"
+          scroll
+        />
       </details>
     </>
   );

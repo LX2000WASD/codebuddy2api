@@ -1,0 +1,162 @@
+/* The attempt trail of one request: an ordered timeline where the bar length is the
+   stage's share of the request, and the tone is the stage's meaning (a retry is a warning,
+   a rejection is a failure). Moved out of ui.module.scss unchanged in behaviour; only the
+   hairline widths and the stray px timings now come from tokens. */
+.traceTimeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.traceStep {
+  display: grid;
+  grid-template-columns: var(--control-h-md) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-block);
+  font-size: var(--fs-12);
+}
+
+.traceStep + .traceStep {
+  border-top-color: var(--line);
+  border-start-start-radius: 0;
+  border-start-end-radius: 0;
+}
+
+.traceOrdinal {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  color: var(--text-muted);
+  background: var(--surface-hover);
+  border-radius: var(--radius-full);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.traceBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.traceLabel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.traceStage {
+  font-weight: var(--fw-medium);
+}
+
+.traceMeta {
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.traceBar {
+  height: var(--space-1);
+  overflow: hidden;
+  background: var(--surface-hover);
+  border-radius: var(--radius-full);
+}
+
+.traceBar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width var(--duration-standard) var(--ease-standard);
+}
+
+.traceDuration {
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* A rejected dial. */
+.traceStepFailed {
+  background: color-mix(in srgb, var(--danger-bg) 55%, transparent);
+  border-color: var(--danger-border);
+}
+
+.traceStepFailed .traceOrdinal {
+  color: var(--danger-fg);
+  background: color-mix(in srgb, var(--danger-fg) 18%, transparent);
+}
+
+.traceStepFailed .traceBar > span {
+  background: var(--danger-fg);
+}
+
+/* A retry or a recovery: attention, not failure. */
+.traceStepWarn {
+  background: color-mix(in srgb, var(--warning-bg) 45%, transparent);
+}
+
+.traceStepWarn .traceBar > span {
+  background: var(--warning-fg);
+}
+
+/* The raw record, for when the timeline is not enough. */
+.rawData summary {
+  color: var(--accent-text-strong);
+  font-size: var(--fs-11);
+  cursor: pointer;
+}
+
+.rawData pre {
+  max-height: 20rem;
+  margin: 0;
+  padding: var(--space-3);
+  overflow: auto;
+  color: var(--text);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-block);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  line-height: var(--lh-relaxed);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* The copy control: a code chip the pointer can act on. */
+.copy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  margin: 0;
+  padding: 0 var(--space-1);
+  color: var(--text-muted);
+  background: var(--surface-sunken);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-tag);
+  font: inherit;
+  font-size: var(--fs-11);
+  cursor: pointer;
+}
+
+.copy:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.copy code {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}

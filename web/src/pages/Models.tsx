@@ -19,28 +19,22 @@ import {
   type ModelRule,
   type RecordValue,
 } from "../api";
+import { RefreshIcon } from "../components";
+import { useFusionResource } from "../fusion/client";
+import { t, useT, type MessageKey } from "../i18n";
 import {
-  Badge,
-  DataValue,
-  Drawer,
-  DrawerPresence,
-  Empty,
-  ErrorNotice,
-  Icon,
-  RefreshIcon,
-  PageTitle,
-  Panel,
-  ResourceState,
-  Skeleton,
-  profileLabel,
-} from "../components";
-import {
-  ColumnMenu,
-  DataTable,
-  useColumnVisibility,
-  type DataTableColumn,
-  type SortingState,
-} from "../dataTable";
+  HealthSparkline,
+  ModelHealthCell,
+  SPARKLINE_LIMIT,
+  healthFor,
+  sparklineKeys,
+  useModelHealth,
+  useModelSparklines,
+  type ModelHealth,
+  type SparklineEntry,
+} from "../insights";
+import { JobBanner, ProgressBanner, type Job } from "../jobs";
+import css from "../models.module.scss";
 import {
   CapabilityChips,
   EffortChips,
@@ -53,19 +47,6 @@ import {
   rateOf,
   specRange,
 } from "../modelMetadata";
-import { useFusionResource } from "../fusion/client";
-import {
-  HealthSparkline,
-  ModelHealthCell,
-  SPARKLINE_LIMIT,
-  healthFor,
-  sparklineKeys,
-  useModelHealth,
-  useModelSparklines,
-  type ModelHealth,
-  type SparklineEntry,
-} from "../insights";
-import { t, useT, type MessageKey } from "../i18n";
 import {
   OutputProbeNote,
   type OutputProbe,
@@ -80,10 +61,34 @@ import {
   type RateProbeControl,
   type RateSource,
 } from "../modelRates";
-import { JobBanner, ProgressBanner, type Job } from "../jobs";
-import s from "../ui.module.scss";
-import { SearchInput, Select } from "../fields";
-import { clearToasts, notify } from "../toast";
+import { popoverHost, usePopover } from "../popover";
+import {
+  Badge,
+  Button,
+  clearToasts,
+  Cluster,
+  Dialog,
+  Drawer,
+  DrawerPresence,
+  Empty,
+  ErrorNotice,
+  Field,
+  Input,
+  notify,
+  Page,
+  Panel,
+  Select,
+  Skeleton,
+  Stack,
+  Switch,
+  Table,
+  Toolbar,
+  type BadgeTone,
+  type TableColumn,
+  type TableSort,
+} from "../ui";
+import { DataValue, profileLabel } from "../values";
+
 export const profiles = ["cn-cli", "cn-work", "intl-cli", "intl-work"];
 const mediaKindKeys: Record<string, MessageKey> = {
   image: "models.mediaKind.image",
@@ -138,6 +143,11 @@ function bindingMode(rule: ModelRule): Mode {
   if (rule.credential_ids.length) return rule.region || rule.profile ? "legacy" : "accounts";
   return rule.region || rule.profile ? "region" : "auto";
 }
+/** What the route-boundary cell says on its one line. */
+function boundaryScope(model: ModelRule): string {
+  if (model.credential_ids.length) return `${model.credential_ids.length} 个指定账号`;
+  return model.region ? profileLabel(model.region) : "自动选择";
+}
 type Preview = { candidates: RecordValue[]; excluded: RecordValue[] } & Pick<
   ModelRule,
   "capabilities" | "limits" | "metadata_by_profile"
@@ -148,18 +158,20 @@ function RoutePreview({ preview }: { preview: Preview }) {
       title="路由预览"
       hint={`${preview.candidates.length} 个候选 · ${preview.excluded.length} 个不可用`}
     >
-      <div className={s.routePreview}>
+      <Stack gap="2">
         {!preview.candidates.length && (
-          <p className={s.note}>当前没有可用候选。保存不会授权范围外的账号，也不会绕过账号目录。</p>
+          <p className={css.note}>
+            当前没有可用候选。保存不会授权范围外的账号，也不会绕过账号目录。
+          </p>
         )}
         {[
           ...preview.candidates.map((row) => ({ row, allowed: true })),
           ...preview.excluded.map((row) => ({ row, allowed: false })),
         ].map(({ row, allowed }, i) => (
-          <div className={s.routeCandidate} key={i}>
+          <div className={css.candidate} key={i}>
             <div>
               <strong>{typeof row.name === "string" ? row.name : "未命名账号"}</strong>
-              <small>
+              <small className={css.muted}>
                 {typeof row.profile === "string" ? profileLabel(row.profile) : "产品未知"}
               </small>
             </div>
@@ -168,13 +180,23 @@ function RoutePreview({ preview }: { preview: Preview }) {
             </Badge>
           </div>
         ))}
-      </div>
+      </Stack>
     </Panel>
   );
 }
 
-function RateCell({ model }: { model: ModelRule }) {
-  const rate = rateOf(model.credits);
+/** How one rate reads: the two significant digits, and where the number came from. */
+function rateLabel(value: number, kind: RateSource): string {
+  return kind === "measured"
+    ? `≈${formatEstimate(value)} · 实测计费`
+    : kind === "manual"
+      ? `${formatEstimate(value)} · 手填`
+      : value === 0
+        ? "限时免费 0x"
+        : formatRate(value);
+}
+/** One model's rates per product, and the notes that explain where each came from. */
+function rateEntries(model: ModelRule) {
   const details = rateDetails(model);
   const perProfile =
     model.credits_by_profile &&
@@ -182,78 +204,64 @@ function RateCell({ model }: { model: ModelRule }) {
     !Array.isArray(model.credits_by_profile)
       ? Object.entries(model.credits_by_profile)
       : [];
-  // The headline rate comes from the cheapest product; its provenance decides the label.
-  const headline = perProfile.find(([, price]) => rateOf(price) === rate)?.[0];
-  const source = headline ? rateSource(details[headline]) : "declared";
   const unpriced = Object.entries(details).find(
     ([, detail]) => rateSource(detail) === "measured" && detail.measured?.rate == null,
   );
+  return { details, perProfile, unpriced };
+}
+function RateCell({ model }: { model: ModelRule }) {
+  const rate = rateOf(model.credits);
+  const { details, perProfile, unpriced } = rateEntries(model);
+  // The headline rate comes from the cheapest product; its provenance decides the label.
+  const headline = perProfile.find(([, price]) => rateOf(price) === rate)?.[0];
+  const source = headline ? rateSource(details[headline]) : "declared";
   if (rate === null) {
     if (unpriced)
       return (
-        <div className={s.rateStack} title={measuredNote(unpriced[1])}>
-          <span className={`${s.rateChip} ${s.rateMeasured}`}>实测计费 · 倍率待估</span>
-        </div>
+        <Badge tone="warn" title={measuredNote(unpriced[1])}>
+          实测计费 · 倍率待估
+        </Badge>
       );
     return (
-      <>
+      <span className={css.cellLine}>
         <DataValue value={model.credits} />
-        <small className={s.specNote}>产品倍率未知</small>
-      </>
+        <small className={css.muted}>产品倍率未知</small>
+      </span>
     );
   }
-  const rows = perProfile.filter(
-    ([profile, price]) =>
-      perProfile.length > 1 || rateOf(price) !== rate || rateSource(details[profile]) !== source,
-  );
-  const label = (value: number, kind: RateSource) =>
-    kind === "measured"
-      ? `≈${formatEstimate(value)} · 实测计费`
-      : kind === "manual"
-        ? `${formatEstimate(value)} · 手填`
-        : value === 0
-          ? "限时免费 0x"
-          : formatRate(value);
   return (
-    <div className={s.rateStack}>
-      <span
-        className={
-          source === "measured"
-            ? `${s.rateChip} ${s.rateMeasured}`
-            : rate === 0
-              ? `${s.rateChip} ${s.rateFree}`
-              : s.rateChip
-        }
-        title={
-          source === "measured" && headline
-            ? measuredNote(details[headline])
-            : source === "manual"
-              ? "管理员手填倍率，路由与 /v1/models 以此为准"
-              : undefined
-        }
-      >
-        {label(rate, source)}
-      </span>
-      {rows.map(([profile, price]) => {
-        const value = rateOf(price);
-        const kind = rateSource(details[profile]);
-        return (
-          <small
-            className={s.rateProfile}
-            key={profile}
-            title={kind === "measured" ? measuredNote(details[profile]) : undefined}
-          >
-            {profileLabel(profile)} {value === null ? "未知" : label(value, kind)}
-          </small>
-        );
-      })}
-      {unpriced && headline !== unpriced[0] && (
-        <small className={s.rateProfile} title={measuredNote(unpriced[1])}>
-          {profileLabel(unpriced[0])} 实测计费 · 倍率待估
-        </small>
-      )}
-    </div>
+    <Badge
+      tone={source === "measured" ? "warn" : rate === 0 ? "good" : "neutral"}
+      title={
+        source === "measured" && headline
+          ? measuredNote(details[headline])
+          : source === "manual"
+            ? "管理员手填倍率，路由与 /v1/models 以此为准"
+            : undefined
+      }
+    >
+      {rateLabel(rate, source)}
+    </Badge>
   );
+}
+/**
+ * The per-product table the rate cell cannot show on one line: each product's own rate, its
+ * provenance and the measured-billing note. Table clips the cell and hands the overflow to
+ * its tooltip, so the numbers stay reachable without the column owning the row's height.
+ */
+function rateTooltip(model: ModelRule): string | undefined {
+  const rate = rateOf(model.credits);
+  const { details, perProfile, unpriced } = rateEntries(model);
+  const lines = perProfile.map(([profile, price]) => {
+    const value = rateOf(price);
+    const kind = rateSource(details[profile]);
+    const note = kind === "measured" ? `（${measuredNote(details[profile])}）` : "";
+    return `${profileLabel(profile)} ${value === null ? "倍率未知" : rateLabel(value, kind)}${note}`;
+  });
+  if (unpriced && !lines.some((line) => line.startsWith(profileLabel(unpriced[0]))))
+    lines.push(`${profileLabel(unpriced[0])} 实测计费 · 倍率待估（${measuredNote(unpriced[1])}）`);
+  if (!lines.length) return rate === null ? "产品倍率未知" : undefined;
+  return lines.join(" · ");
 }
 /**
  * Locks are grouped by (profile, model) in the backend (app/diagnostic.py:93-150), so one
@@ -304,13 +312,8 @@ export function AvailabilityCell({
 }) {
   const available = model.available_credentials;
   const disabled = !model.enabled;
-  const tone = disabled
-    ? s.availMuted
-    : available === undefined
-      ? s.availMuted
-      : available > 0
-        ? s.availGood
-        : s.availBad;
+  const tone: BadgeTone =
+    disabled || available === undefined ? "neutral" : available > 0 ? "good" : "bad";
   const label = disabled
     ? t("models.avail.disabled")
     : available === undefined
@@ -329,19 +332,394 @@ export function AvailabilityCell({
         : t("models.avail.reason.noAccounts");
   const worst = worstLock(locks);
   return (
-    <div className={s.availStack}>
-      <span className={`${s.availBadge} ${tone}`} title={title}>
+    <span className={css.cellLine}>
+      <Badge tone={tone} title={title}>
         {label}
-      </span>
+      </Badge>
       {worst && (
-        <span
-          className={`${s.availBadge} ${worst.kind === "model_block" ? s.availBad : s.availWarn}`}
-          title={lockTitle(locks)}
-        >
+        <Badge tone={worst.kind === "model_block" ? "bad" : "warn"} title={lockTitle(locks)}>
           {lockLabel(worst)}
           {locks.length > 1 ? ` +${locks.length - 1}` : ""}
-        </span>
+        </Badge>
       )}
+    </span>
+  );
+}
+
+/**
+ * The catalog's columns. `id` doubles as the Table sort key, the column-visibility
+ * storage key and the card-layout label, so it must stay stable across releases.
+ *
+ * Built per render rather than at module scope because the cells read live page
+ * state (account total, diagnostic locks, the row actions' callbacks).
+ */
+type ModelColumn = TableColumn<ModelRule> & {
+  /** Sort key. A column without one is not sorted by the header. */
+  sortValue?: (model: ModelRule) => number | string | undefined;
+  /** Windows and windows read largest-first. */
+  sortDescFirst?: boolean;
+  /** Offered by the column-visibility menu; identity and actions always stay. */
+  optional?: boolean;
+};
+function modelColumns({
+  totalAccounts,
+  locks,
+  health,
+  sparks,
+  onDetails,
+  onEdit,
+  onDelete,
+  actionsDisabled,
+  outputProbes,
+}: {
+  totalAccounts: number | null;
+  locks: ModelLock[];
+  health: Map<string, ModelHealth>;
+  sparks: Map<string, SparklineEntry>;
+  outputProbes: Record<string, OutputProbe>;
+  onDetails: (model: ModelRule) => void;
+  onEdit: (model: ModelRule) => void;
+  onDelete: (model: ModelRule) => void;
+  actionsDisabled: boolean;
+}): ModelColumn[] {
+  return [
+    {
+      id: "id",
+      header: t("models.col.id"),
+      sortable: true,
+      sortValue: (m) => m.public_id,
+      // The line carries identity and state. Everything else about the rule — the display
+      // name, the route list, the original id a rename retains — is the tooltip's job: a
+      // table row is read across, not stacked (Table clips a cell to one line).
+      title: (m) =>
+        [
+          m.public_id,
+          modelDisplayName(m),
+          (m.routes?.length ?? 0) > 1
+            ? `${t("models.routes.label")}：${m
+                .routes!.map(
+                  (route) =>
+                    `${route.upstream_id}${route.weight !== null ? ` · ${route.weight}` : ""}${
+                      route.enabled ? "" : `（${t("models.routes.remove")}）`
+                    }`,
+                )
+                .join("、")}`
+            : "",
+          m.keep_original ? `同时保留 ${m.id}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      cell: (m) => (
+        <span className={css.cellLine}>
+          <strong className={css.modelName}>{m.public_id}</strong>
+          <small className={css.mono}>{m.upstream_id ?? m.id}</small>
+          {!m.enabled && <Badge tone="neutral">{t("models.avail.disabled")}</Badge>}
+          {m.custom && <Badge>自建</Badge>}
+          {m.media_kinds?.map((kind) => (
+            <Badge key={kind} tone="neutral">
+              {mediaKindKeys[kind] ? t(mediaKindKeys[kind]!) : kind}
+            </Badge>
+          ))}
+          {m.embedding && <Badge tone="neutral">{t("models.embedding")}</Badge>}
+          {m.rerank && <Badge tone="neutral">{t("models.rerank")}</Badge>}
+        </span>
+      ),
+    },
+    {
+      id: "rate",
+      header: t("models.col.rate"),
+      cell: (m) => <RateCell model={m} />,
+      title: rateTooltip,
+      sortable: true,
+      sortValue: rateValue,
+      optional: true,
+    },
+    {
+      id: "capability",
+      header: t("models.col.capability"),
+      cell: (m) => <CapabilityChips model={m} />,
+      optional: true,
+    },
+    {
+      id: "availability",
+      header: t("models.avail.title"),
+      cell: (m) => (
+        <AvailabilityCell model={m} total={totalAccounts} locks={locksForModel(locks, m)} />
+      ),
+    },
+    {
+      // Seven-day health: the aggregate badge is available for every row (one shared
+      // dimensions query), the sparkline only for the busiest rows in the current
+      // view (one series request each, capped — see insights.tsx).
+      id: "health",
+      header: t("models.health.column"),
+      cell: (m) => {
+        // Aggregates are keyed by the requested model name (public_id); the rule id
+        // is only a local handle and would match nothing in the audit store.
+        const spark = sparks.get(m.public_id) ?? sparks.get(m.id);
+        return (
+          <ModelHealthCell
+            name={m.public_id}
+            health={healthFor(health, m)}
+            spark={
+              spark?.rows ? (
+                <HealthSparkline name={m.public_id} rows={spark.rows} />
+              ) : spark?.loading ? (
+                <small className={css.muted}>{t("models.health.loading")}</small>
+              ) : undefined
+            }
+          />
+        );
+      },
+      optional: true,
+    },
+    {
+      id: "context",
+      header: t("models.col.context"),
+      cell: (m) => <SpecValue model={m} kind="input" />,
+      sortable: true,
+      sortValue: (m) => widestWindow(m, "input"),
+      sortDescFirst: true,
+      optional: true,
+    },
+    {
+      id: "output",
+      header: t("models.col.output"),
+      cell: (m) => (
+        <>
+          <SpecValue model={m} kind="output" />
+          <OutputProbeNote
+            probe={outputProbes[m.public_id] ?? outputProbes[m.upstream_id ?? m.id]}
+          />
+        </>
+      ),
+      sortable: true,
+      sortValue: (m) => widestWindow(m, "output"),
+      sortDescFirst: true,
+      optional: true,
+    },
+    {
+      id: "effort",
+      header: t("models.col.effort"),
+      cell: (m) => <EffortChips model={m} />,
+      optional: true,
+    },
+    {
+      id: "boundary",
+      header: t("models.col.boundary"),
+      title: (m) =>
+        [
+          boundaryScope(m),
+          m.profile
+            ? profileLabel(m.profile)
+            : m.credential_ids.length
+              ? "严格绑定，不越界回退"
+              : "按账号能力选择",
+        ].join(" · "),
+      cell: (m) => (
+        <span className={css.cellLine}>
+          {boundaryScope(m)}
+          {bindingMode(m) === "legacy" && <Badge tone="warn">旧联合范围</Badge>}
+        </span>
+      ),
+      optional: true,
+    },
+    {
+      id: "actions",
+      header: t("models.col.actions"),
+      // The one column that must survive every offset and every viewport: Table pins it
+      // to the right edge and the card layout keeps it as the row's last pair (P1-2).
+      actions: true,
+      cell: (m) => (
+        <Cluster gap="1">
+          <Button size="sm" onClick={() => onDetails(m)}>
+            模型详情
+          </Button>
+          <Button size="sm" disabled={actionsDisabled} onClick={() => onEdit(m)}>
+            编辑规则
+          </Button>
+          {m.custom && (
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={actionsDisabled}
+              onClick={() => onDelete(m)}
+            >
+              删除
+            </Button>
+          )}
+        </Cluster>
+      ),
+    },
+  ];
+}
+
+type CatalogFilter = { region: string; capability: string; effort: string; price: string };
+const emptyFilter: CatalogFilter = { region: "", capability: "", effort: "", price: "" };
+const EFFORT_FILTERS = ["low", "medium", "high", "xhigh", "max"];
+/** Unknown rates sort last: "not reported" must not read as the cheapest model. */
+function rateValue(model: ModelRule): number | undefined {
+  return rateOf(model.credits) ?? undefined;
+}
+function widestWindow(model: ModelRule, kind: "input" | "output"): number | undefined {
+  return specRange(model, kind === "input" ? "maxInputTokens" : "maxOutputTokens").at(-1);
+}
+/**
+ * Which region a rule serves, in the order the backend resolves it: an explicit region
+ * wins, then the product's prefix, and only then the accounts' own declarations.
+ *
+ * The last step is the upstream fd78e7a fix: a model that declares no region and no
+ * profile but is only declared by intl-work accounts *is* an international model, and
+ * filtering by 国际 used to drop it because this function only looked at `region`.
+ */
+export function modelHasRegion(model: ModelRule, region: "cn" | "intl"): boolean {
+  if (model.region) return model.region === region;
+  if (model.profile) return model.profile.startsWith(`${region}-`);
+  const declarations = model.metadata_by_profile;
+  if (!declarations || typeof declarations !== "object" || Array.isArray(declarations))
+    return false;
+  return Object.keys(declarations).some((profile) => profile.startsWith(`${region}-`));
+}
+function matchesCatalog(model: ModelRule, query: string, filter: CatalogFilter): boolean {
+  if (query) {
+    const text = modelSearchText(model);
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!terms.every((term) => text.includes(term))) return false;
+  }
+  if (filter.region) {
+    if (filter.region === "auto") {
+      if (bindingMode(model) !== "auto") return false;
+    } else if (!modelHasRegion(model, filter.region as "cn" | "intl")) return false;
+  }
+  if (filter.capability === "media_image") {
+    if (!model.media_kinds?.some((kind) => kind === "image" || kind === "edit")) return false;
+  } else if (filter.capability === "media_video") {
+    if (!model.media_kinds?.includes("video")) return false;
+  } else if (filter.capability) {
+    const declared =
+      model.capabilities && typeof model.capabilities === "object"
+        ? (model.capabilities as RecordValue)
+        : {};
+    if (declared[filter.capability] !== "supported") return false;
+  }
+  if (filter.effort) {
+    const efforts = effortSummary(model);
+    if (filter.effort === "off" ? !efforts.closable : !efforts.options.includes(filter.effort))
+      return false;
+  }
+  if (filter.price === "free" && rateOf(model.credits) !== 0) return false;
+  if (filter.price === "paid" && (rateOf(model.credits) ?? 0) <= 0) return false;
+  return true;
+}
+
+/**
+ * Column visibility, persisted per browser. The catalog's secondary columns start hidden
+ * (eight of them already scrolled sideways at 1280px); Table renders the remaining ones
+ * and switches to the card layout below 900px by itself, so a phone never needs a
+ * horizontal scrollbar to reach a column.
+ */
+const COLUMNS_KEY = "codebuddy.models.columns";
+const COLUMN_KEYS = [
+  "rate",
+  "capability",
+  "availability",
+  "health",
+  "context",
+  "output",
+  "effort",
+  "boundary",
+] as const;
+type ColumnKey = (typeof COLUMN_KEYS)[number];
+const DEFAULT_HIDDEN: ColumnKey[] = ["context", "output", "effort"];
+function readHiddenColumns(): ColumnKey[] | null {
+  try {
+    const raw = localStorage.getItem(COLUMNS_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter((value): value is ColumnKey => COLUMN_KEYS.includes(value as ColumnKey));
+  } catch {
+    return null;
+  }
+}
+function useColumnVisibility(): { hidden: ColumnKey[]; toggle: (id: ColumnKey) => void } {
+  const [hidden, setHidden] = useState<ColumnKey[]>(
+    () => readHiddenColumns() ?? [...DEFAULT_HIDDEN],
+  );
+  const toggle = (id: ColumnKey) =>
+    setHidden((old) => {
+      const next = old.includes(id) ? old.filter((key) => key !== id) : [...old, id];
+      try {
+        localStorage.setItem(COLUMNS_KEY, JSON.stringify(next));
+      } catch {
+        // 隐私模式或存储配额不足时只在本次会话内生效。
+      }
+      return next;
+    });
+  return { hidden, toggle };
+}
+
+/**
+ * The column picker. A button plus a popover that popover.ts places and clamps to the
+ * viewport (a plain absolute menu opened downward off-screen — P3-2), and that closes on
+ * Escape or an outside press, handing focus back to the button that opened it.
+ */
+function ColumnMenu({
+  label,
+  columns,
+  hidden,
+  onToggle,
+}: {
+  label: string;
+  columns: { id: ColumnKey; header: string }[];
+  hidden: ColumnKey[];
+  onToggle: (id: ColumnKey) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLDivElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const close = useCallback(() => {
+    setOpen(false);
+    anchor.current?.querySelector("button")?.focus();
+  }, []);
+  const placement = usePopover(open, close, anchor, menu, "end");
+  if (!columns.length) return null;
+  return (
+    <div className={css.menuAnchor} ref={anchor}>
+      <Button
+        size="sm"
+        aria-expanded={open}
+        aria-haspopup="true"
+        onClick={() => setOpen((value) => !value)}
+      >
+        {label}
+      </Button>
+      {open &&
+        createPortal(
+          <div
+            ref={menu}
+            role="group"
+            aria-label={label}
+            className={css.menu}
+            style={
+              placement
+                ? { top: placement.top, left: placement.left, minWidth: placement.minWidth }
+                : { visibility: "hidden" }
+            }
+          >
+            {columns.map((column) => (
+              <label className={css.menuItem} key={column.id}>
+                <input
+                  type="checkbox"
+                  checked={!hidden.includes(column.id)}
+                  onChange={() => onToggle(column.id)}
+                />
+                {column.header}
+              </label>
+            ))}
+          </div>,
+          popoverHost(anchor.current),
+        )}
     </div>
   );
 }
@@ -462,9 +840,20 @@ export function ModelEditor({
         if (!controller.signal.aborted) setBusy(false);
       });
   };
+  const routes = rule.routes ?? [];
+  const patchRoute = (index: number, patch: RecordValue) =>
+    update(
+      "routes",
+      routes.map((item, i) => (i === index ? { ...item, ...patch } : item)),
+    );
   return (
-    <Drawer title={creating ? "新增模型" : "编辑模型规则"} onClose={onClose} dismissDisabled={busy}>
-      <p className={s.note}>
+    <Drawer
+      title={creating ? "新增模型" : "编辑模型规则"}
+      closeLabel={t("common.closeDrawer")}
+      onClose={onClose}
+      dismissDisabled={busy}
+    >
+      <p className={css.note}>
         对外 ID 供客户端使用，上游 ID
         是发送给官方后端的模型名称。两者独立，账号能力与额度校验仍然生效。
       </p>
@@ -474,21 +863,19 @@ export function ModelEditor({
           run(true);
         }}
       >
-        <fieldset className={s.formFields} disabled={busy}>
-          <div className={s.formGrid}>
-            <label className={s.field}>
-              对外 ID
-              <input
+        <fieldset className={css.formStack} disabled={busy}>
+          <div className={css.formGrid}>
+            <Field label="对外 ID">
+              <Input
                 value={rule.public_id}
                 required
                 maxLength={160}
                 placeholder="例如 my-coding-model"
                 onChange={(e) => update("public_id", e.target.value)}
               />
-            </label>
-            <label className={s.field}>
-              上游 ID
-              <input
+            </Field>
+            <Field label="上游 ID">
+              <Input
                 value={rule.upstream_id}
                 required
                 maxLength={160}
@@ -496,136 +883,107 @@ export function ModelEditor({
                 placeholder="实际调用的模型 ID"
                 onChange={(e) => update("upstream_id", e.target.value)}
               />
-            </label>
-            <datalist id={suggestions}>
-              {[...new Set(models.map((m) => m.upstream_id ?? m.id))].map((id) => (
-                <option key={id} value={id} />
-              ))}
-            </datalist>
+            </Field>
           </div>
-          <fieldset className={s.fieldset}>
+          <datalist id={suggestions}>
+            {[...new Set(models.map((model) => model.upstream_id ?? model.id))].map((id) => (
+              <option key={id} value={id} />
+            ))}
+          </datalist>
+          <fieldset className={css.formGroup}>
             <legend>{t("models.routes.title")}</legend>
-            <p>{t("models.routes.help")}</p>
-            {(rule.routes?.length ?? 0) > 0 && (
-              <div className={s.routePreview}>
-                {rule.routes?.map((route, index) => (
-                  <div className={s.routeCandidate} key={`${route.upstream_id}-${index}`}>
-                    <input
+            <p className={css.note}>{t("models.routes.help")}</p>
+            {routes.length > 0 && (
+              <Stack gap="2">
+                {routes.map((route, index) => (
+                  <div className={css.routeRow} key={`${route.upstream_id}-${index}`}>
+                    <Input
                       value={route.upstream_id}
                       list={suggestions}
+                      aria-label={`路由 ${index + 1} 的上游模型 ID`}
                       placeholder="上游模型 ID"
-                      onChange={(e) =>
-                        update(
-                          "routes",
-                          (rule.routes ?? []).map((item, i) =>
-                            i === index ? { ...item, upstream_id: e.target.value } : item,
-                          ),
-                        )
-                      }
+                      onChange={(e) => patchRoute(index, { upstream_id: e.target.value })}
                     />
-                    <input
+                    <Input
                       type="number"
-                      min="0"
-                      max="1000"
+                      min={0}
+                      max={1000}
                       step="any"
                       value={route.weight ?? ""}
+                      aria-label={`路由 ${index + 1} 权重`}
                       placeholder={t("models.routes.weight")}
                       onChange={(e) =>
-                        update(
-                          "routes",
-                          (rule.routes ?? []).map((item, i) =>
-                            i === index
-                              ? {
-                                  ...item,
-                                  weight: e.target.value === "" ? null : Number(e.target.value),
-                                }
-                              : item,
-                          ),
-                        )
+                        patchRoute(index, {
+                          weight: e.target.value === "" ? null : Number(e.target.value),
+                        })
                       }
                     />
-                    <label className={s.check}>
+                    <label className={css.check}>
                       <input
                         type="checkbox"
                         checked={route.enabled}
-                        onChange={(e) =>
-                          update(
-                            "routes",
-                            (rule.routes ?? []).map((item, i) =>
-                              i === index ? { ...item, enabled: e.target.checked } : item,
-                            ),
-                          )
-                        }
+                        onChange={(e) => patchRoute(index, { enabled: e.target.checked })}
                       />
                       {t("models.routes.enabled")}
                     </label>
-                    <button
-                      type="button"
+                    <Button
+                      size="sm"
+                      variant="ghost"
                       onClick={() =>
                         update(
                           "routes",
-                          (rule.routes ?? []).filter((_, i) => i !== index),
+                          routes.filter((_, i) => i !== index),
                         )
                       }
                     >
                       {t("models.routes.remove")}
-                    </button>
+                    </Button>
                   </div>
                 ))}
-              </div>
+              </Stack>
             )}
-            <button
-              type="button"
-              onClick={() =>
-                update(
-                  "routes",
-                  (rule.routes?.length ?? 0)
-                    ? [
-                        ...(rule.routes ?? []),
-                        {
-                          upstream_id: rule.upstream_id,
-                          weight: null,
-                          enabled: true,
-                          source: "manual",
-                        },
-                      ]
-                    : [
-                        {
-                          upstream_id: rule.upstream_id,
-                          weight: null,
-                          enabled: true,
-                          source: "manual",
-                        },
-                      ],
-                )
-              }
-            >
-              {t("models.routes.add")}
-            </button>
+            <Cluster gap="2">
+              <Button
+                size="sm"
+                onClick={() =>
+                  update("routes", [
+                    ...routes,
+                    {
+                      upstream_id: rule.upstream_id,
+                      weight: null,
+                      enabled: true,
+                      source: "manual",
+                    },
+                  ])
+                }
+              >
+                {t("models.routes.add")}
+              </Button>
+            </Cluster>
           </fieldset>
-          <div className={s.actions}>
-            <label className={s.check}>
-              <input
-                type="checkbox"
+          <Cluster gap="3">
+            <label className={css.switchLine}>
+              <Switch
+                label="启用模型"
                 checked={rule.enabled}
-                onChange={(e) => update("enabled", e.target.checked)}
+                onChange={(value) => update("enabled", value)}
               />
-              启用模型
+              <span>启用模型</span>
             </label>
             {!creating && !model.custom && (
-              <label className={s.check}>
-                <input
-                  type="checkbox"
+              <label className={css.switchLine}>
+                <Switch
+                  label="同时保留原模型 ID"
                   checked={rule.keep_original}
-                  onChange={(e) => update("keep_original", e.target.checked)}
+                  onChange={(value) => update("keep_original", value)}
                 />
-                同时保留原模型 ID
+                <span>同时保留原模型 ID</span>
               </label>
             )}
-          </div>
-          <fieldset className={s.fieldset}>
+          </Cluster>
+          <fieldset className={css.formGroup}>
             <legend>选择路由方式</legend>
-            <div className={s.routeModes}>
+            <div className={css.modeGroup}>
               {(
                 [
                   ["auto", "自动选择", "按现有账号能力选路"],
@@ -634,7 +992,7 @@ export function ModelEditor({
                 ] as const
               ).map(([value, label, hint]) => (
                 <label
-                  className={`${s.modeOption} ${mode === value ? s.modeSelected : ""}`}
+                  className={`${css.modeOption} ${mode === value ? css.modeSelected : ""}`}
                   key={value}
                 >
                   <input
@@ -651,18 +1009,20 @@ export function ModelEditor({
                 </label>
               ))}
             </div>
-            <p>账号与区域二选一，切换方式会清除另一种绑定；不可用时不越界回退。</p>
+            <p className={css.note}>
+              账号与区域二选一，切换方式会清除另一种绑定；不可用时不越界回退。
+            </p>
           </fieldset>
           {mode === "legacy" && (
-            <div className={s.warning}>
+            <p className={css.warning}>
               旧规则同时设置了账号和区域。当前仍按原交集执行，请明确选择一种路由方式后再保存。
-            </div>
+            </p>
           )}
           {mode === "region" && (
-            <div className={s.formGrid}>
-              <label className={s.field}>
-                区域
+            <div className={css.formGrid}>
+              <Field label="区域">
                 <Select
+                  label="区域"
                   value={rule.region || (rule.profile.startsWith("intl-") ? "intl" : "cn")}
                   onChange={(value) => {
                     const region = value;
@@ -677,65 +1037,70 @@ export function ModelEditor({
                   <option value="cn">中国大陆 · CN</option>
                   <option value="intl">国际 · INTL</option>
                 </Select>
-              </label>
-              <label className={s.field}>
-                产品
-                <Select value={rule.profile} onChange={(value) => update("profile", value)}>
+              </Field>
+              <Field label="产品">
+                <Select
+                  label="产品"
+                  value={rule.profile}
+                  onChange={(value) => update("profile", value)}
+                >
                   <option value="">不限产品</option>
                   {profiles
-                    .filter((p) => !rule.region || p.startsWith(`${rule.region}-`))
-                    .map((p) => (
-                      <option key={p} value={p}>
-                        {profileLabel(p)}
+                    .filter((profile) => !rule.region || profile.startsWith(`${rule.region}-`))
+                    .map((profile) => (
+                      <option key={profile} value={profile}>
+                        {profileLabel(profile)}
                       </option>
                     ))}
                 </Select>
-              </label>
+              </Field>
             </div>
           )}
           {mode === "accounts" && (
-            <fieldset className={s.fieldset}>
+            <fieldset className={css.formGroup}>
               <legend>指定凭证</legend>
               {credentials === null ? (
-                <p>凭证列表未加载，现有绑定保持不变。</p>
+                <p className={css.note}>凭证列表未加载，现有绑定保持不变。</p>
               ) : !credentials.length ? (
-                <p>暂无账号，请先在凭证管理添加。</p>
+                <p className={css.note}>暂无账号，请先在凭证管理添加。</p>
               ) : (
-                credentials.map((c) => (
-                  <label className={s.accountChoice} key={c.id}>
+                credentials.map((credential) => (
+                  <label className={css.choice} key={credential.id}>
                     <input
                       type="checkbox"
-                      checked={rule.credential_ids.includes(c.id)}
+                      checked={rule.credential_ids.includes(credential.id)}
                       onChange={(e) =>
                         update(
                           "credential_ids",
                           e.target.checked
-                            ? [...rule.credential_ids, c.id]
-                            : rule.credential_ids.filter((id) => id !== c.id),
+                            ? [...rule.credential_ids, credential.id]
+                            : rule.credential_ids.filter((id) => id !== credential.id),
                         )
                       }
                     />
                     <span>
-                      <strong>{c.name ?? c.id}</strong>
+                      <strong>{credential.name ?? credential.id}</strong>
                       <small>
-                        {typeof c.profile === "string" ? profileLabel(c.profile) : "产品未知"}
+                        {typeof credential.profile === "string"
+                          ? profileLabel(credential.profile)
+                          : "产品未知"}
                       </small>
                     </span>
-                    {c.enabled === false && <Badge tone="warn">已停用</Badge>}
+                    {credential.enabled === false && <Badge tone="warn">已停用</Badge>}
                   </label>
                 ))
               )}
               {rule.credential_ids
-                .filter((id) => !credentials?.some((c) => c.id === id))
+                .filter((id) => !credentials?.some((credential) => credential.id === id))
                 .map((id) => (
-                  <label className={s.check} key={id}>
+                  <label className={css.check} key={id}>
                     <input
                       type="checkbox"
                       checked
                       onChange={() =>
                         update(
                           "credential_ids",
-                          rule.credential_ids.filter((v) => v !== id),
+                          rule.credential_ids.filter((value) => value !== id),
                         )
                       }
                     />
@@ -753,16 +1118,16 @@ export function ModelEditor({
               disabled={busy}
             />
           )}
+          <ErrorNotice message={error} />
+          <Cluster gap="2">
+            <Button disabled={busy} onClick={() => run(false)}>
+              预览候选路由
+            </Button>
+            <Button type="submit" variant="primary" disabled={busy}>
+              {busy ? "处理中…" : creating ? "创建模型" : "保存规则"}
+            </Button>
+          </Cluster>
         </fieldset>
-        <ErrorNotice message={error} />
-        <div className={s.actions}>
-          <button type="button" disabled={busy} onClick={() => run(false)}>
-            预览候选路由
-          </button>
-          <button className={s.primary} disabled={busy}>
-            {busy ? "处理中…" : creating ? "创建模型" : "保存规则"}
-          </button>
-        </div>
       </form>
       {preview && (
         <>
@@ -783,65 +1148,6 @@ const emptyRule: ModelRule = {
   profile: "",
   credential_ids: [],
 };
-type CatalogFilter = { region: string; capability: string; effort: string; price: string };
-const emptyFilter: CatalogFilter = { region: "", capability: "", effort: "", price: "" };
-const EFFORT_FILTERS = ["low", "medium", "high", "xhigh", "max"];
-/** Unknown rates sort last: "not reported" must not read as the cheapest model. */
-function rateValue(model: ModelRule): number | undefined {
-  return rateOf(model.credits) ?? undefined;
-}
-function widestWindow(model: ModelRule, kind: "input" | "output"): number | undefined {
-  return specRange(model, kind === "input" ? "maxInputTokens" : "maxOutputTokens").at(-1);
-}
-function matchesCatalog(model: ModelRule, query: string, filter: CatalogFilter): boolean {
-  if (query) {
-    const text = modelSearchText(model);
-    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-    if (!terms.every((term) => text.includes(term))) return false;
-  }
-  if (filter.region) {
-    if (filter.region === "auto") {
-      if (bindingMode(model) !== "auto") return false;
-    } else if (model.region !== filter.region) return false;
-  }
-  if (filter.capability === "media_image") {
-    if (!model.media_kinds?.some((kind) => kind === "image" || kind === "edit")) return false;
-  } else if (filter.capability === "media_video") {
-    if (!model.media_kinds?.includes("video")) return false;
-  } else if (filter.capability) {
-    const declared =
-      model.capabilities && typeof model.capabilities === "object"
-        ? (model.capabilities as RecordValue)
-        : {};
-    if (declared[filter.capability] !== "supported") return false;
-  }
-  if (filter.effort) {
-    const efforts = effortSummary(model);
-    if (filter.effort === "off" ? !efforts.closable : !efforts.options.includes(filter.effort))
-      return false;
-  }
-  if (filter.price === "free" && rateOf(model.credits) !== 0) return false;
-  if (filter.price === "paid" && (rateOf(model.credits) ?? 0) <= 0) return false;
-  return true;
-}
-/**
- * Optional columns start hidden: eight columns already forced a horizontal scroll at
- * 1280px, so identity, rate, capability, availability, route boundary and actions win.
- * The choice persists per browser, like the credential page's page size. Below
- * 900px the rate and capability columns drop out too — a phone should show the
- * identity and whether the model can serve, not a horizontal scrollbar.
- */
-const COLUMNS_KEY = "codebuddy.models.columns";
-type ColumnKey =
-  | "rate"
-  | "capability"
-  | "availability"
-  | "context"
-  | "output"
-  | "effort"
-  | "boundary";
-const DEFAULT_HIDDEN: ColumnKey[] = ["context", "output", "effort"];
-
 type BulkAction = "enable" | "disable";
 /**
  * PUT /admin/models/{id} rewrites the whole rule: a body carrying only
@@ -866,199 +1172,22 @@ export function legacyScope(model: ModelRule): boolean {
 }
 
 /**
- * The catalog's columns. `id` doubles as the DataTable sort key and the
- * localStorage visibility key, so it must stay stable across releases.
- *
- * Built per render rather than at module scope because the cells read live page
- * state (account total, diagnostic locks, the row actions' callbacks).
+ * The catalog's order: reported values first, unknown last in both directions. Table owns
+ * the header's aria-sort; the page owns the order, because "not reported" is a page rule.
  */
-function modelColumns({
-  totalAccounts,
-  locks,
-  health,
-  sparks,
-  onDetails,
-  onEdit,
-  onDelete,
-  actionsDisabled,
-  outputProbes,
-}: {
-  totalAccounts: number | null;
-  locks: ModelLock[];
-  health: Map<string, ModelHealth>;
-  sparks: Map<string, SparklineEntry>;
-  outputProbes: Record<string, OutputProbe>;
-  onDetails: (model: ModelRule) => void;
-  onEdit: (model: ModelRule) => void;
-  onDelete: (model: ModelRule) => void;
-  actionsDisabled: boolean;
-}): DataTableColumn<ModelRule>[] {
-  return [
-    {
-      id: "id",
-      header: t("models.col.id"),
-      cell: (m) => (
-        <div className={s.modelCell}>
-          <div className={s.modelIdLine}>
-            <strong className={s.modelName}>{m.public_id}</strong>
-            {!m.enabled && <Badge tone="neutral">{t("models.avail.disabled")}</Badge>}
-            {m.custom && <Badge>自建</Badge>}
-            {m.media_kinds?.map((kind) => (
-              <Badge key={kind} tone="neutral">
-                {mediaKindKeys[kind] ? t(mediaKindKeys[kind]!) : kind}
-              </Badge>
-            ))}
-            {m.embedding && <Badge tone="neutral">{t("models.embedding")}</Badge>}
-            {m.rerank && <Badge tone="neutral">{t("models.rerank")}</Badge>}
-          </div>
-          <small className={s.mono}>{m.upstream_id ?? m.id}</small>
-          {modelDisplayName(m) && <small>{modelDisplayName(m)}</small>}
-          {(m.routes?.length ?? 0) > 1 && (
-            <div className={s.routeSummary} aria-label={t("models.routes.label")}>
-              <span className={s.routeSummaryLabel}>{t("models.routes.label")}</span>
-              {m.routes!.map((route) => (
-                <span
-                  className={`${s.routePill} ${route.enabled ? "" : s.routeDisabled}`}
-                  key={`${route.source}-${route.upstream_id}`}
-                  title={`${route.source} · ${route.enabled ? t("models.routes.enabled") : t("models.routes.remove")}`}
-                >
-                  {route.upstream_id}
-                  {route.weight !== null ? ` · ${route.weight}` : ""}
-                </span>
-              ))}
-            </div>
-          )}
-          {m.keep_original && <small>同时保留 {m.id}</small>}
-        </div>
-      ),
-      sortValue: (m) => m.public_id,
-    },
-    {
-      id: "rate",
-      header: t("models.col.rate"),
-      cell: (m) => <RateCell model={m} />,
-      sortValue: rateValue,
-      sortUndefined: "last",
-      optional: true,
-      hideBelow: 900,
-    },
-    {
-      id: "capability",
-      header: t("models.col.capability"),
-      cell: (m) => <CapabilityChips model={m} />,
-      className: s.capCell,
-      optional: true,
-      hideBelow: 900,
-    },
-    {
-      id: "availability",
-      header: t("models.avail.title"),
-      cell: (m) => (
-        <AvailabilityCell model={m} total={totalAccounts} locks={locksForModel(locks, m)} />
-      ),
-    },
-    {
-      // Seven-day health: the aggregate badge is available for every row (one shared
-      // dimensions query), the sparkline only for the busiest rows in the current
-      // view (one series request each, capped — see insights.tsx).
-      id: "health",
-      header: t("models.health.column"),
-      cell: (m) => {
-        // Aggregates are keyed by the requested model name (public_id); the rule id
-        // is only a local handle and would match nothing in the audit store.
-        const spark = sparks.get(m.public_id) ?? sparks.get(m.id);
-        return (
-          <ModelHealthCell
-            name={m.public_id}
-            health={healthFor(health, m)}
-            spark={
-              spark?.rows ? (
-                <HealthSparkline name={m.public_id} rows={spark.rows} />
-              ) : spark?.loading ? (
-                <span className={s.sparklineEmpty}>{t("models.health.loading")}</span>
-              ) : undefined
-            }
-          />
-        );
-      },
-      optional: true,
-      // The same breakpoint the rate and capability columns use: a phone shows
-      // identity, availability and health, and drops the rest.
-      hideBelow: 900,
-    },
-    {
-      id: "context",
-      header: t("models.col.context"),
-      cell: (m) => <SpecValue model={m} kind="input" />,
-      className: s.specCell,
-      sortValue: (m) => widestWindow(m, "input"),
-      sortDescFirst: true,
-      sortUndefined: "last",
-      optional: true,
-    },
-    {
-      id: "output",
-      header: t("models.col.output"),
-      cell: (m) => (
-        <>
-          <SpecValue model={m} kind="output" />
-          <OutputProbeNote
-            probe={outputProbes[m.public_id] ?? outputProbes[m.upstream_id ?? m.id]}
-          />
-        </>
-      ),
-      className: s.specCell,
-      sortValue: (m) => widestWindow(m, "output"),
-      sortDescFirst: true,
-      sortUndefined: "last",
-      optional: true,
-    },
-    {
-      id: "effort",
-      header: t("models.col.effort"),
-      cell: (m) => <EffortChips model={m} />,
-      optional: true,
-    },
-    {
-      id: "boundary",
-      header: t("models.col.boundary"),
-      cell: (m) => (
-        <>
-          {m.credential_ids.length
-            ? `${m.credential_ids.length} 个指定账号`
-            : m.region
-              ? profileLabel(m.region)
-              : "自动选择"}
-          <small>
-            {m.profile
-              ? profileLabel(m.profile)
-              : m.credential_ids.length
-                ? "严格绑定，不越界回退"
-                : "按账号能力选择"}
-          </small>
-          {bindingMode(m) === "legacy" && <Badge tone="warn">旧联合范围</Badge>}
-        </>
-      ),
-      optional: true,
-    },
-    {
-      id: "actions",
-      header: t("models.col.actions"),
-      cell: (m) => (
-        <div className={s.rowActions}>
-          <button onClick={() => onDetails(m)}>模型详情</button>
-          <button disabled={actionsDisabled} onClick={() => onEdit(m)}>
-            编辑规则
-          </button>
-          {m.custom && (
-            <button className={s.textDanger} disabled={actionsDisabled} onClick={() => onDelete(m)}>
-              删除
-            </button>
-          )}
-        </div>
-      ),
-    },
-  ];
+function sortedRows(rows: ModelRule[], columns: ModelColumn[], sort: TableSort): ModelRule[] {
+  const column = sort ? columns.find((candidate) => candidate.id === sort.id) : undefined;
+  const value = column?.sortValue;
+  if (!sort || !value) return rows;
+  const direction = sort.desc ? -1 : 1;
+  return [...rows].sort((left, right) => {
+    const a = value(left);
+    const b = value(right);
+    if (a === undefined) return b === undefined ? 0 : 1;
+    if (b === undefined) return -1;
+    if (typeof a === "number" && typeof b === "number") return (a - b) * direction;
+    return String(a).localeCompare(String(b)) * direction;
+  });
 }
 
 function rateProbeTitle(job: Job) {
@@ -1106,10 +1235,6 @@ export function Models() {
   // Advisory only: without the diagnostic endpoint the table still shows the account
   // counts the model catalog itself reports.
   const diagnostic = useFusionResource("/admin/diagnostic", null, normalizeModelLocks);
-  // Stable identity matters: a fresh `[]` on every render rebuilds the column
-  // definitions, which makes TanStack rebuild every row and replace the row DOM
-  // nodes. That is exactly the e2e "element is not attached to the DOM" failure,
-  // and it would also throw away focus and the scroll anchor on every render.
   const locks = useMemo(() => diagnostic.data?.model_locks ?? [], [diagnostic.data]);
   const totalAccounts = credentials.data?.length ?? null;
   const [query, setQuery] = useState("");
@@ -1196,19 +1321,15 @@ export function Models() {
       .finally(() => setBusy(false));
   };
   const [filter, setFilter] = useState<CatalogFilter>(emptyFilter);
-  const [sorting, setSorting] = useState<SortingState>([]);
+  const [sort, setSort] = useState<TableSort>(null);
   const filtering = Boolean(
     query || filter.region || filter.capability || filter.effort || filter.price,
   );
-  // The table sorts; the page only decides which rows are eligible. Keeping the
-  // filter here (not in a column filter model) is what makes "select all" mean
-  // "these visible rows" for the bulk action below.
-  //
-  // Memoized on purpose: TanStack keys its core row model on the `data` identity, so
-  // a fresh array per render rebuilds every row (and every row's DOM nodes) on each
-  // keystroke, scroll tick and unrelated parent re-render.
+  // The table sorts and the page decides which rows are eligible. Keeping the filter here
+  // (not in a column filter model) is what makes "select all" mean "these visible rows"
+  // for the bulk action below.
   const rows = useMemo(
-    () => resource.data?.models.filter((m) => matchesCatalog(m, query, filter)),
+    () => resource.data?.models.filter((model) => matchesCatalog(model, query, filter)),
     [resource.data, query, filter],
   );
 
@@ -1240,15 +1361,10 @@ export function Models() {
           setDeleting(model);
           setError(null);
         },
-        // Row-level edit/delete stay disabled while a batch runs (unchanged from
-        // the pre-DataTable page); the list itself stays scrollable and readable,
-        // which is the whole point of showing progress.
+        // Row-level edit/delete stay disabled while a batch runs; the list itself stays
+        // scrollable and readable, which is the whole point of showing progress.
         actionsDisabled: bulkBusy,
       }),
-    // `bulkBusy` is a dependency, not a late-bound read: the dependency array is
-    // evaluated during render, so the value must already be initialised above.
-    // `health` and `sparks` are maps rebuilt only when their payload changes, so the
-    // column identities stay stable and TanStack does not rebuild every row.
     [
       totalAccounts,
       locks,
@@ -1259,17 +1375,27 @@ export function Models() {
       outputProbes,
     ],
   );
-  const { hidden, toggle: toggleColumn } = useColumnVisibility({
-    storageKey: COLUMNS_KEY,
-    columns,
-    defaultHidden: DEFAULT_HIDDEN,
-  });
+  const { hidden, toggle: toggleColumn } = useColumnVisibility();
+  const visibleColumns = columns.filter((column) => !hidden.includes(column.id as ColumnKey));
+  const ordered = useMemo(() => sortedRows(rows ?? [], columns, sort), [rows, columns, sort]);
+  const toggleSort = (columnId: string) => {
+    const column = columns.find((candidate) => candidate.id === columnId);
+    setSort((old) => {
+      if (old?.id !== columnId) return { id: columnId, desc: column?.sortDescFirst === true };
+      return old.desc ? null : { id: columnId, desc: true };
+    });
+  };
+  const resetView = () => {
+    setQuery("");
+    setFilter(emptyFilter);
+    setSort(null);
+  };
 
   const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
-  const bulkTargets = (resource.data?.models ?? []).filter((m) => selected.has(m.id));
-  const bulkRunnable = bulkTargets.filter((m) => !legacyScope(m));
+  const bulkTargets = (resource.data?.models ?? []).filter((model) => selected.has(model.id));
+  const bulkRunnable = bulkTargets.filter((model) => !legacyScope(model));
   const bulkSkipped = bulkTargets.length - bulkRunnable.length;
   const openBulk = (action: BulkAction) => {
     setBulkAction(action);
@@ -1338,75 +1464,80 @@ export function Models() {
     setBulkAction(null);
     setBulkProgress(null);
   };
+  const catalog = rows ?? [];
   return (
-    <>
-      <PageTitle
-        title="模型路由"
-        description="独立映射模型名称，并明确每条路由的账号或区域边界。"
-        actions={
-          <>
-            <button
-              onClick={() => {
-                clearToasts();
-                resource.reload();
-                credentials.reload();
-              }}
-            >
-              <RefreshIcon spinning={resource.refreshing || credentials.refreshing} />
-              刷新目录
-            </button>
-            <button
-              disabled={rateJob.job?.status === "running"}
-              onClick={() => rateJob.start()}
-              title="后台任务：对目录声明 0x 的模型逐产品发起一次 ≈8K token 对话；有扣费即为实测计费，未扣费才是真 0 倍率"
-            >
-              <RefreshIcon spinning={rateJob.job?.status === "running"} />
-              {rateJob.job?.status === "running"
-                ? `检测中 ${rateJob.job.completed}/${rateJob.job.total}`
-                : "一键检测倍率"}
-            </button>
-            <button
-              disabled={scanBusy || scan?.status === "running"}
-              onClick={startScan}
-              title="逐个账号刷新目录，仅由你手动触发；单账号失败时保留其旧目录"
-            >
-              <RefreshIcon spinning={scanBusy || scan?.status === "running"} />
-              {scan?.status === "running"
-                ? `扫描中 ${scan.completed}/${scan.total}`
-                : "扫描全部账号模型"}
-            </button>
-            <button
-              className={s.primary}
-              disabled={!resource.data}
-              onClick={() => {
-                setEditorRevision(resource.data?.revision ?? null);
-                setCreating(true);
-              }}
-            >
-              <Icon name="plus" />
-              新增模型
-            </button>
-          </>
-        }
-      />
+    <Page
+      title="模型路由"
+      description="独立映射模型名称，并明确每条路由的账号或区域边界。"
+      actions={
+        <>
+          <Button
+            icon={<RefreshIcon spinning={resource.refreshing || credentials.refreshing} />}
+            onClick={() => {
+              clearToasts();
+              resource.reload();
+              credentials.reload();
+            }}
+          >
+            刷新目录
+          </Button>
+          <Button
+            icon={<RefreshIcon spinning={rateJob.job?.status === "running"} />}
+            disabled={rateJob.job?.status === "running"}
+            onClick={() => rateJob.start()}
+            title="后台任务：对目录声明 0x 的模型逐产品发起一次 ≈8K token 对话；有扣费即为实测计费，未扣费才是真 0 倍率"
+          >
+            {rateJob.job?.status === "running"
+              ? `检测中 ${rateJob.job.completed}/${rateJob.job.total}`
+              : "一键检测倍率"}
+          </Button>
+          <Button
+            icon={<RefreshIcon spinning={scanBusy || scan?.status === "running"} />}
+            disabled={scanBusy || scan?.status === "running"}
+            onClick={startScan}
+            title="逐个账号刷新目录，仅由你手动触发；单账号失败时保留其旧目录"
+          >
+            {scan?.status === "running"
+              ? `扫描中 ${scan.completed}/${scan.total}`
+              : "扫描全部账号模型"}
+          </Button>
+          <Button
+            variant="primary"
+            icon="plus"
+            disabled={!resource.data}
+            onClick={() => {
+              setEditorRevision(resource.data?.revision ?? null);
+              setCreating(true);
+            }}
+          >
+            新增模型
+          </Button>
+        </>
+      }
+    >
       {resource.loading && !resource.data ? (
-        // Same geometry as the DataTable skeleton below (which also paints while
-        // loading): 71px is the measured row height of this catalog, so the two
-        // blocks agree instead of one being 87px and the other 71px.
-        <Skeleton variant="table" label={t("models.loading")} rowHeight={71} />
-      ) : (
-        <ResourceState {...resource} />
-      )}
-      <ErrorNotice message={error} />
+        <Skeleton
+          variant="table"
+          label={t("models.loading")}
+          cells={["text", "badge", "badge", "twoLine"]}
+        />
+      ) : null}
+      <ErrorNotice
+        message={resource.error}
+        retry={{ label: t("common.retry"), onClick: resource.reload }}
+      />
       <ErrorNotice message={rateJob.error} />
       {rateJob.job?.status === "running" && (
         <JobBanner title={rateProbeTitle(rateJob.job)} job={rateJob.job} describe={describeProbe} />
       )}
-      <ErrorNotice message={credentials.error} retry={credentials.reload} />
+      <ErrorNotice
+        message={credentials.error}
+        retry={{ label: t("common.retry"), onClick: credentials.reload }}
+      />
       {/* Bulk runs report through a banner (they can end half-done); the guard
           switches report through the toast they already raise. */}
       {bulkNotice && (
-        <p className={s.successNotice} role="status">
+        <p className={css.successNotice} role="status">
           {bulkNotice}
         </p>
       )}
@@ -1419,22 +1550,23 @@ export function Models() {
         title="模型目录"
         hint={
           resource.data
-            ? filtering && rows
-              ? `命中 ${rows.length} / ${resource.data.models.length} 个模型`
+            ? filtering
+              ? `命中 ${catalog.length} / ${resource.data.models.length} 个模型`
               : `${resource.data.models.length} 个模型`
             : undefined
         }
       >
-        <div className={s.toolbar}>
-          <SearchInput
+        <Toolbar gap="2">
+          <Input
+            className={css.search}
             aria-label="搜索模型"
             placeholder="搜索 ID、名称、描述、厂商，支持空格分隔多关键词…"
             value={query}
-            onChange={setQuery}
+            onChange={(e) => setQuery(e.target.value)}
           />
-          <div className={s.filterBar}>
+          <div className={css.filterField}>
             <Select
-              aria-label="筛选区域"
+              label="筛选区域"
               value={filter.region}
               onChange={(value) => setFilter({ ...filter, region: value })}
             >
@@ -1443,8 +1575,10 @@ export function Models() {
               <option value="cn">中国大陆</option>
               <option value="intl">国际</option>
             </Select>
+          </div>
+          <div className={css.filterField}>
             <Select
-              aria-label="筛选能力"
+              label="筛选能力"
               value={filter.capability}
               onChange={(value) => setFilter({ ...filter, capability: value })}
             >
@@ -1455,8 +1589,10 @@ export function Models() {
               <option value="tools">支持工具</option>
               <option value="reasoning">支持思考</option>
             </Select>
+          </div>
+          <div className={css.filterField}>
             <Select
-              aria-label="筛选思考"
+              label="筛选思考"
               value={filter.effort}
               onChange={(value) => setFilter({ ...filter, effort: value })}
             >
@@ -1468,8 +1604,10 @@ export function Models() {
                 </option>
               ))}
             </Select>
+          </div>
+          <div className={css.filterField}>
             <Select
-              aria-label="筛选价格"
+              label="筛选价格"
               value={filter.price}
               onChange={(value) => setFilter({ ...filter, price: value })}
             >
@@ -1477,132 +1615,134 @@ export function Models() {
               <option value="free">限时免费</option>
               <option value="paid">收费</option>
             </Select>
-            {(filtering || sorting.length > 0) && (
-              <button
-                onClick={() => {
-                  setQuery("");
-                  setFilter(emptyFilter);
-                  setSorting([]);
-                }}
-              >
-                重置
-              </button>
-            )}
-            <ColumnMenu
-              label={t("models.col.toggle")}
-              columns={columns
-                .filter((column) => column.optional)
-                .map(({ id, header }) => ({ id, header }))}
-              hidden={hidden}
-              onToggle={toggleColumn}
-            />
-            <label className={s.enableSwitch}>
-              <input
-                type="checkbox"
-                role="switch"
-                aria-label="表外模型拦截"
-                checked={resource.data?.model_guard !== false}
-                disabled={busy || !resource.data || resource.data.model_guard_locked === true}
-                onChange={(e) => toggleGuard("model_guard", e.target.checked)}
-              />
-              <span>表外拦截：{resource.data?.model_guard === false ? "关闭" : "开启"}</span>
-            </label>
-            <label className={s.enableSwitch}>
-              <input
-                type="checkbox"
-                role="switch"
-                aria-label="模型能力预检"
-                checked={resource.data?.model_capability_guard !== false}
-                disabled={
-                  busy ||
-                  !resource.data ||
-                  resource.data.model_capability_guard === undefined ||
-                  resource.data.model_capability_guard_locked === true
-                }
-                onChange={(e) => toggleGuard("model_capability_guard", e.target.checked)}
-              />
-              <span>
-                能力预检：
-                {resource.data?.model_capability_guard === undefined
-                  ? "未知"
-                  : resource.data.model_capability_guard
-                    ? "开启"
-                    : "关闭"}
-              </span>
-            </label>
           </div>
-        </div>
-        <p className={s.note}>{t("models.select.scope", { count: rows?.length ?? 0 })}</p>
+          {(filtering || sort) && (
+            <Button size="sm" onClick={resetView}>
+              重置
+            </Button>
+          )}
+          <ColumnMenu
+            label={t("models.col.toggle")}
+            columns={columns
+              .filter(
+                (column): column is ModelColumn & { id: ColumnKey } =>
+                  column.optional === true && COLUMN_KEYS.includes(column.id as ColumnKey),
+              )
+              .map(({ id, header }) => ({ id: id as ColumnKey, header }))}
+            hidden={hidden}
+            onToggle={toggleColumn}
+          />
+        </Toolbar>
+        <Toolbar gap="3">
+          <label className={css.switchLine}>
+            <Switch
+              label="表外模型拦截"
+              checked={resource.data?.model_guard !== false}
+              disabled={busy || !resource.data || resource.data.model_guard_locked === true}
+              onChange={(next) => toggleGuard("model_guard", next)}
+            />
+            <span>表外拦截：{resource.data?.model_guard === false ? "关闭" : "开启"}</span>
+          </label>
+          <label className={css.switchLine}>
+            <Switch
+              label="模型能力预检"
+              checked={resource.data?.model_capability_guard !== false}
+              disabled={
+                busy ||
+                !resource.data ||
+                resource.data.model_capability_guard === undefined ||
+                resource.data.model_capability_guard_locked === true
+              }
+              onChange={(next) => toggleGuard("model_capability_guard", next)}
+            />
+            <span>
+              能力预检：
+              {resource.data?.model_capability_guard === undefined
+                ? "未知"
+                : resource.data.model_capability_guard
+                  ? "开启"
+                  : "关闭"}
+            </span>
+          </label>
+        </Toolbar>
+        <p className={css.note}>{t("models.select.scope", { count: catalog.length })}</p>
         {/* Say where the sparklines stop: a row without one means "not loaded",
             not "no traffic", and the two must not be confused. */}
         {sparkKeys.length > 0 && (
-          <p className={s.muted}>{t("models.health.partial", { count: SPARKLINE_LIMIT })}</p>
+          <p className={css.note}>{t("models.health.partial", { count: SPARKLINE_LIMIT })}</p>
         )}
-        <DataTable
-          rows={rows ?? []}
-          columns={columns}
-          hidden={hidden}
-          rowId={(m) => m.id}
-          sorting={sorting}
-          onSortingChange={setSorting}
-          selection={{
-            selected,
-            onChange: setSelected,
-            rowLabel: (m) => t("models.select.row", { name: m.public_id }),
-            selectAllLabel: t("models.select.all"),
-          }}
-          loading={resource.loading}
-          loadingLabel={t("models.loading")}
-          scroll
-          // A failed catalog load must not render the empty catalog under the error.
-          error={resource.error}
-          rowHeight={71}
-          skeletonCells={["text", "text", "badge", "badge", "twoLine", "badge"]}
-          empty={
-            <Empty
-              title={query ? "没有匹配的模型" : "模型目录为空"}
-              tone={filtering ? "filtered" : "initial"}
-              onClear={
-                filtering
-                  ? () => {
-                      setQuery("");
-                      setFilter(emptyFilter);
-                      setSorting([]);
-                    }
-                  : undefined
-              }
-            >
-              可新增模型映射，或添加凭证以同步目录。
-            </Empty>
-          }
-        />
+        {catalog.length ? (
+          <Table
+            className={css.catalog}
+            label="模型目录"
+            columns={visibleColumns}
+            rows={ordered}
+            rowKey={(model) => model.id}
+            sort={sort}
+            onSort={toggleSort}
+            sortName={(label, direction) =>
+              direction === "ascending"
+                ? `${label}（升序）`
+                : direction === "descending"
+                  ? `${label}（降序）`
+                  : label
+            }
+            selection={{
+              selected,
+              onChange: setSelected,
+              rowLabel: (model) => t("models.select.row", { name: model.public_id }),
+              selectAllLabel: t("models.select.all"),
+            }}
+          />
+        ) : resource.error || !resource.data ? null : (
+          <Empty
+            title={query ? "没有匹配的模型" : "模型目录为空"}
+            tone={filtering ? "filtered" : "initial"}
+            action={
+              filtering ? (
+                <Button onClick={resetView}>{t("common.clearFilters")}</Button>
+              ) : undefined
+            }
+          >
+            可新增模型映射，或添加凭证以同步目录。
+          </Empty>
+        )}
       </Panel>
       {/* Portalled: the page shell's enter animation sets a transform, which would turn
           position:fixed into a containing block and pin this bar to the page, not the
           viewport — measured 99px of overflow at the bottom on a 390px viewport. */}
       {selected.size > 0 &&
         createPortal(
-          <div className={s.bulkBar} role="region" aria-label={t("models.bulk.region")}>
-            <span className={s.bulkCount}>{selected.size}</span>
-            <span className={s.bulkDivider} aria-hidden="true" />
-            <button disabled={bulkBusy} onClick={() => setSelected(new Set<string>())}>
+          <div className={css.bulkBar} role="region" aria-label={t("models.bulk.region")}>
+            <span className={css.bulkCount}>{selected.size}</span>
+            <span className={css.bulkDivider} aria-hidden="true" />
+            <Button size="sm" disabled={bulkBusy} onClick={() => setSelected(new Set<string>())}>
               {t("models.bulk.clear")}
-            </button>
-            <span className={s.bulkDivider} aria-hidden="true" />
-            <div className={s.bulkActions}>
-              <button disabled={bulkBusy} onClick={() => openBulk("enable")}>
+            </Button>
+            <span className={css.bulkDivider} aria-hidden="true" />
+            <Cluster gap="2">
+              <Button size="sm" disabled={bulkBusy} onClick={() => openBulk("enable")}>
                 {t("models.bulk.enable")}
-              </button>
-              <button className={s.danger} disabled={bulkBusy} onClick={() => openBulk("disable")}>
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                disabled={bulkBusy}
+                onClick={() => openBulk("disable")}
+              >
                 {t("models.bulk.disable")}
-              </button>
-            </div>
+              </Button>
+            </Cluster>
           </div>,
           document.body,
         )}
       <DrawerPresence>
         {detailed && (
-          <Drawer title={`模型详情 · ${detailed.public_id}`} onClose={() => setDetailsId(null)}>
+          <Drawer
+            title={`模型详情 · ${detailed.public_id}`}
+            closeLabel={t("common.closeDrawer")}
+            onClose={() => setDetailsId(null)}
+          >
             <ModelMetadata model={detailed} totalAccounts={totalAccounts} />
           </Drawer>
         )}
@@ -1613,6 +1753,7 @@ export function Models() {
             title={t("models.bulk.title", {
               action: bulkAction === "enable" ? t("models.bulk.enable") : t("models.bulk.disable"),
             })}
+            closeLabel={t("common.closeDrawer")}
             onClose={() => {
               if (bulkBusy) return;
               setBulkAction(null);
@@ -1621,11 +1762,11 @@ export function Models() {
             }}
             dismissDisabled={bulkBusy}
           >
-            <p className={s.note}>
+            <p className={css.note}>
               {bulkAction === "enable" ? t("models.bulk.enableDesc") : t("models.bulk.disableDesc")}{" "}
               {t("models.bulk.reason")}
             </p>
-            <p className={s.note}>
+            <p className={css.note}>
               {t("models.bulk.affected", {
                 action:
                   bulkAction === "enable"
@@ -1634,38 +1775,40 @@ export function Models() {
                 count: bulkRunnable.length,
               })}
             </p>
-            <ul className={s.bulkList}>
-              {bulkTargets.map((m) => (
-                <li className={s.bulkListItem} key={m.id}>
-                  <code>{m.public_id}</code>
-                  {legacyScope(m) ? (
+            <ul className={css.bulkList}>
+              {bulkTargets.map((model) => (
+                <li className={css.bulkListItem} key={model.id}>
+                  <code>{model.public_id}</code>
+                  {legacyScope(model) ? (
                     <Badge tone="warn">{t("models.bulk.legacy")}</Badge>
-                  ) : m.credential_ids.length ? (
+                  ) : model.credential_ids.length ? (
                     <Badge tone="neutral">
-                      {t("models.bulk.accounts", { count: m.credential_ids.length })}
+                      {t("models.bulk.accounts", { count: model.credential_ids.length })}
                     </Badge>
-                  ) : m.available_credentials === 0 ? (
+                  ) : model.available_credentials === 0 ? (
                     <Badge tone="warn">{t("models.bulk.noAccounts")}</Badge>
                   ) : (
                     <Badge tone="neutral">
-                      {m.region ? profileLabel(m.region) : t("models.bulk.auto")}
+                      {model.region ? profileLabel(model.region) : t("models.bulk.auto")}
                     </Badge>
                   )}
                 </li>
               ))}
             </ul>
             {bulkSkipped > 0 && (
-              <p className={s.warning}>{t("models.bulk.legacySkipped", { count: bulkSkipped })}</p>
+              <p className={css.warning}>
+                {t("models.bulk.legacySkipped", { count: bulkSkipped })}
+              </p>
             )}
             {bulkProgress && (
-              <div className={s.bulkProgress}>
+              <div className={css.bulkProgress}>
                 <span>
                   {t("models.bulk.progress", {
                     done: bulkProgress.done,
                     total: bulkProgress.total,
                   })}
                 </span>
-                <span className={s.bulkProgressBar} aria-hidden="true">
+                <span className={css.bulkProgressBar} aria-hidden="true">
                   <span
                     style={{
                       width: `${bulkProgress.total ? (bulkProgress.done / bulkProgress.total) * 100 : 0}%`,
@@ -1675,9 +1818,9 @@ export function Models() {
               </div>
             )}
             <ErrorNotice message={bulkError} />
-            {bulkError && <p className={s.note}>{t("models.bulk.retryHint")}</p>}
-            <div className={s.actions}>
-              <button
+            {bulkError && <p className={css.note}>{t("models.bulk.retryHint")}</p>}
+            <Cluster gap="2">
+              <Button
                 disabled={bulkBusy}
                 onClick={() => {
                   setBulkAction(null);
@@ -1686,9 +1829,9 @@ export function Models() {
                 }}
               >
                 {t("models.bulk.cancel")}
-              </button>
-              <button
-                className={bulkAction === "disable" ? s.danger : s.primary}
+              </Button>
+              <Button
+                variant={bulkAction === "disable" ? "danger" : "primary"}
                 disabled={bulkBusy || bulkRunnable.length === 0}
                 onClick={() => void runBulk(bulkAction)}
               >
@@ -1700,8 +1843,8 @@ export function Models() {
                           ? t("models.bulk.action.enable")
                           : t("models.bulk.action.disable"),
                     })}
-              </button>
-            </div>
+              </Button>
+            </Cluster>
           </Drawer>
         )}
       </DrawerPresence>
@@ -1725,36 +1868,48 @@ export function Models() {
       </DrawerPresence>
       <DrawerPresence>
         {deleting && resource.data && (
-          <Drawer title="删除自建模型" onClose={() => setDeleting(null)} dismissDisabled={busy}>
-            <p className={s.warning}>
+          <Dialog
+            title="删除自建模型"
+            closeLabel={t("common.closeDrawer")}
+            onClose={() => setDeleting(null)}
+            dismissDisabled={busy}
+            footer={
+              <>
+                <Button disabled={busy} onClick={() => setDeleting(null)}>
+                  {t("common.cancel")}
+                </Button>
+                <Button
+                  variant="danger"
+                  disabled={busy}
+                  onClick={() => {
+                    setBusy(true);
+                    setError(null);
+                    void api
+                      .delete(`/models/${encodeURIComponent(deleting.id)}`, {
+                        data: { revision: resource.data!.revision },
+                      })
+                      .then((response) => {
+                        if (object(response.data).ok !== true)
+                          throw new Error("后端未确认删除，请刷新后核验");
+                        setDeleting(null);
+                        resource.reload();
+                      })
+                      .catch((err: unknown) => setError(errorMessage(err)))
+                      .finally(() => setBusy(false));
+                  }}
+                >
+                  {busy ? "正在删除…" : "确认删除模型"}
+                </Button>
+              </>
+            }
+          >
+            <p className={css.warning}>
               删除 {deleting.public_id} 的本地路由。不会删除上游模型、账号或历史统计。
             </p>
             <ErrorNotice message={error} />
-            <button
-              className={s.danger}
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                setError(null);
-                void api
-                  .delete(`/models/${encodeURIComponent(deleting.id)}`, {
-                    data: { revision: resource.data!.revision },
-                  })
-                  .then((response) => {
-                    if (object(response.data).ok !== true)
-                      throw new Error("后端未确认删除，请刷新后核验");
-                    setDeleting(null);
-                    resource.reload();
-                  })
-                  .catch((err: unknown) => setError(errorMessage(err)))
-                  .finally(() => setBusy(false));
-              }}
-            >
-              {busy ? "正在删除…" : "确认删除模型"}
-            </button>
-          </Drawer>
+          </Dialog>
         )}
       </DrawerPresence>
-    </>
+    </Page>
   );
 }

@@ -122,7 +122,12 @@ describe("concise user-facing copy", () => {
 
   it("keeps configuration source, locks, and pending effective values clear", () => {
     resource(settings);
-    const { container } = render(<Settings />);
+    // Settings reads its tab from the address (P3-1), so it lives under a router.
+    const { container } = render(
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>,
+    );
     // Settings are grouped by domain now; locked keys live in 服务与接入,
     // the pending-value key lives in 存储与审计.
     expect(screen.getByText("环境变量")).toBeTruthy();
@@ -142,7 +147,11 @@ describe("concise user-facing copy", () => {
 
   it("surfaces a session store that could not persist a revocation", () => {
     resource({ ...settings, session: { degraded: true, last_error: "OSError" } });
-    render(<Settings />);
+    render(
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>,
+    );
     expect(screen.getByText("会话存储")).toBeTruthy();
     expect(screen.getByText("撤销未生效")).toBeTruthy();
     expect(screen.getByText(/退出登录可能未真正生效/)).toBeTruthy();
@@ -150,14 +159,22 @@ describe("concise user-facing copy", () => {
 
   it("stays quiet while the session store is healthy", () => {
     resource(settings);
-    render(<Settings />);
+    render(
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>,
+    );
     expect(screen.queryByText("会话存储")).toBeNull();
   });
 
   it("still submits the revision and only edited settings", async () => {
     resource(settings);
     const patch = vi.spyOn(api, "patch").mockResolvedValue({ data: {} });
-    render(<Settings />);
+    render(
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>,
+    );
     fireEvent.click(screen.getByRole("tab", { name: /存储与审计/ }));
     fireEvent.change(screen.getByLabelText("日志保留天数"), { target: { value: "90" } });
     expect(screen.getByText(/1 项待保存/)).toBeTruthy();

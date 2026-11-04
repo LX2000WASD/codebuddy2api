@@ -1,0 +1,32 @@
+/* The confirm form: one column, controls full width, the action at the end. */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+/* A warning keeps its boundary: a status colour without an edge reads as body copy. */
+.warning {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+  border: var(--hairline) solid var(--warning-border);
+  border-radius: var(--radius-block);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.warningText {
+  min-width: 0;
+}
+
+.warningText p {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+}

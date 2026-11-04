@@ -1,5 +1,13 @@
 import { DataValue } from "./values";
+import s from "./Travel.module.scss";
 
+/**
+ * The travel facts a credential card, a drawer or a maintenance toast can state.
+ *
+ * Every line is conditional: a missing field is never rendered as "unknown", because the
+ * backend uses absence to mean "this account never reported it". The wrapper is a column
+ * so the lines read as a list instead of running together on one line.
+ */
 export function TravelSummary({ trip }: { trip: Record<string, unknown> | null }) {
   if (!trip) return null;
   const remaining = trip.remaining_seconds;
@@ -14,7 +22,7 @@ export function TravelSummary({ trip }: { trip: Record<string, unknown> | null }
   const knownInteger = (value: unknown): value is number =>
     typeof value === "number" && Number.isSafeInteger(value);
   return (
-    <>
+    <div className={s.travel}>
       {typeof trip.location_name === "string" && trip.location_name && (
         <small>旅行地点：{trip.location_name}</small>
       )}
@@ -59,6 +67,6 @@ export function TravelSummary({ trip }: { trip: Record<string, unknown> | null }
           {knownInteger(trip.code) && ` · 业务码 ${trip.code}`}
         </small>
       )}
-    </>
+    </div>
   );
 }

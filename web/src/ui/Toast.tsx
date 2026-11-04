@@ -6,7 +6,9 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import { useT } from "../i18n";
 import { Icon, type IconName } from "./Icon";
+import { IconButton } from "./IconButton";
 import s from "./Toast.module.scss";
 
 export type ToastTone = "good" | "warn" | "bad";
@@ -73,6 +75,7 @@ export function clearToasts() {
 }
 
 function ToastItem({ toast }: { toast: ToastRecord }) {
+  const t = useT();
   const [held, setHeld] = useState(false);
   // The clock runs from when the notice was raised, so opening a drawer does not restart
   // it; letting go of a held notice gives it a full life again.
@@ -104,8 +107,19 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
       </span>
       <div className={s.text}>
         <strong className={s.title}>{toast.title}</strong>
-        {toast.body === undefined ? null : <div className={s.body}>{toast.body}</div>}
+        {/* Rendered as given, not wrapped: call sites and their tests read the notice as
+            "title, then the body node". */}
+        {toast.body === undefined ? null : toast.body}
       </div>
+      {/* Pointer users dismiss by clicking the notice; this button is what the keyboard gets. */}
+      <IconButton
+        icon="close"
+        label={t("common.dismissNotice")}
+        onClick={(event) => {
+          event.stopPropagation();
+          dismiss(toast.id);
+        }}
+      />
     </div>
   );
 }

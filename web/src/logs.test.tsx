@@ -67,7 +67,7 @@ describe("runtime event labels", () => {
       reload: vi.fn(),
     });
     render(<Logs />);
-    fireEvent.click(screen.getByRole("tab", { name: "运行事件" }));
+    fireEvent.click(screen.getByRole("button", { name: "运行事件" }));
     expect(screen.getByTitle("credential.sync").textContent).toBe("凭证同步");
     expect(screen.getByTitle("runtime").textContent).toBe("运行事件");
     expect(screen.getByText("mystery.action")).toBeTruthy();
@@ -161,7 +161,7 @@ describe("credit changes tab", () => {
       reload: vi.fn(),
     });
     render(<Logs />);
-    await act(async () => fireEvent.click(screen.getByRole("tab", { name: "积分变动" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "积分变动" })));
     expect(get).toHaveBeenCalledWith("/credentials", expect.anything());
     expect(screen.getByTitle("credit.income").textContent).toBe("积分入账");
     expect(screen.getByTitle(account).textContent).toBe("主账号.info");
@@ -261,7 +261,7 @@ describe("log detail request lifetime", () => {
       );
     render(<Logs />);
     open();
-    fireEvent.click(screen.getByRole("tab", { name: "运行事件" }));
+    fireEvent.click(screen.getByRole("button", { name: "运行事件" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     const detail = get.mock.calls.find(([path]) => path === "/logs/request-a")!;
     expect(detail[1]?.signal?.aborted).toBe(true);
@@ -377,8 +377,8 @@ describe("gateway web tool calls", () => {
     });
     render(<Logs />);
     const row = (id: string) => screen.getByText(id).closest("tr")!;
-    expect(within(row("ok")).getByText("联网 2").className).not.toContain("_bad_");
-    expect(within(row("bad")).getByText("联网 2").className).toContain("_bad_");
+    expect(within(row("ok")).getByText("联网 2").getAttribute("data-tone")).toBe("neutral");
+    expect(within(row("bad")).getByText("联网 2").getAttribute("data-tone")).toBe("bad");
     expect(within(row("capped")).getByText("联网 1+")).toBeTruthy();
     expect(within(row("plain")).queryByText(/联网/)).toBeNull();
     expect(within(row("none")).queryByText(/联网/)).toBeNull();
@@ -484,6 +484,6 @@ it("shows the persisted daily Buddy warning from event details", () => {
     reload: vi.fn(),
   });
   render(<Logs />);
-  fireEvent.click(screen.getByRole("tab", { name: "运行事件" }));
+  fireEvent.click(screen.getByRole("button", { name: "运行事件" }));
   expect(screen.getByText("警告")).toBeTruthy();
 });

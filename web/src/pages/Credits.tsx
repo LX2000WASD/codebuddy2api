@@ -2,20 +2,30 @@ import { useMemo, useState } from "react";
 import { metric, number, object, text } from "../api";
 import {
   Badge,
-  Countdown,
+  Button,
   Empty,
   ErrorNotice,
-  Icon,
-  PageTitle,
+  Grid,
+  Page,
   Panel,
   Skeleton,
-} from "../components";
-import { useFusionResource, FUSION_DEVELOPMENT } from "../fusion/client";
+  Stack,
+  Stat,
+  Table,
+  Toolbar,
+  nextSort,
+  sortRows,
+  type SortValue,
+  type TableColumn,
+  type TableSort,
+} from "../ui";
+import { Countdown } from "../components";
+import { useFusionResource } from "../fusion/client";
+import { FUSION_DEVELOPMENT } from "../fusion/client";
 import type { CreditExpiryResponse, CreditSegment } from "../fusion/types";
 import { profileLabel } from "../values";
 import { t, useDateFormat, useT } from "../i18n";
-import { DataTable, type DataTableColumn, type SortingState } from "../dataTable";
-import s from "../ui.module.scss";
+import s from "./Credits.module.scss";
 
 function normalizeExpiry(value: unknown): CreditExpiryResponse {
   const data = object(value, t("fusion.credits.context"));
@@ -26,31 +36,6 @@ function normalizeExpiry(value: unknown): CreditExpiryResponse {
 // Values are day counts; labels resolve through t("fusion.credits.days") at render.
 const WINDOWS = ["7", "14", "30", "90"] as const;
 const BURNS = ["1", "7", "14", "30"] as const;
-
-function StatCard({
-  label,
-  value,
-  hint,
-  icon,
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-  icon: string;
-}) {
-  return (
-    <section className={s.stat}>
-      <div>
-        {label}
-        <span>
-          <Icon name={icon} />
-        </span>
-      </div>
-      <strong>{value}</strong>
-      {hint && <small>{hint}</small>}
-    </section>
-  );
-}
 
 /** Expiry distribution across the displayed items: credits by days-to-expiry band. */
 function distribution(items: CreditExpiryResponse["items"]) {
@@ -80,8 +65,8 @@ function distribution(items: CreditExpiryResponse["items"]) {
  *
  * It is a component of its own because sorting is per-card state: the page shows
  * several accounts side by side, and a sort chosen on one account's batches must
- * not reorder the others. DataTable supplies the header, the sticky row and the
- * empty shell; the ordering the backend returns (soonest expiry first) is what the
+ * not reorder the others. Table supplies the header, the pinned action slot and the
+ * card layout; the ordering the backend returns (soonest expiry first) is what the
  * "batch" column documents, and the two numeric columns are sortable on top of it.
  */
 function SegmentTable({
@@ -92,7 +77,7 @@ function SegmentTable({
   format: ReturnType<typeof useDateFormat>;
 }) {
   const t = useT();
-  const [sorting, setSorting] = useState<SortingState>([]);
+  const [sort, setSort] = useState<TableSort>(null);
   // A segment carries no id of its own, so the row key is derived once here —
   // source + expiry + position, because two batches of the same package can share
   // both source and expiry and only their order tells them apart.
@@ -104,12 +89,17 @@ function SegmentTable({
       })),
     [segments],
   );
-  const columns = useMemo<DataTableColumn<(typeof rows)[number]>[]>(
+  const values: Record<string, SortValue<(typeof rows)[number]>> = {
+    batch: (segment) => segment.source,
+    remaining: (segment) => segment.remaining,
+    expiry: (segment) => segment.expires_at,
+  };
+  const columns = useMemo<TableColumn<(typeof rows)[number]>[]>(
     () => [
       {
         id: "batch",
         header: t("fusion.credits.colBatch"),
-        sortValue: (segment) => segment.source,
+        sortable: true,
         cell: (segment) => (
           <>
             <strong>{text(segment.source)}</strong>
@@ -120,15 +110,13 @@ function SegmentTable({
       {
         id: "remaining",
         header: t("fusion.credits.colRemainingTotal"),
-        sortValue: (segment) => segment.remaining,
-        sortDescFirst: true,
+        sortable: true,
         cell: (segment) => `${metric(segment.remaining)} / ${metric(segment.total)}`,
       },
       {
         id: "expiry",
         header: t("fusion.credits.colExpiry"),
-        sortValue: (segment) => segment.expires_at,
-        sortUndefined: "last",
+        sortable: true,
         cell: (segment) =>
           number(segment.expires_at) === null
             ? t("fusion.common.unknown")
@@ -138,13 +126,13 @@ function SegmentTable({
     [t, format],
   );
   return (
-    <DataTable
-      rows={rows}
+    <Table
+      label={t("fusion.credits.colBatch")}
+      rows={sortRows(rows, values, sort)}
       columns={columns}
-      rowId={(segment) => segment.key}
-      sorting={sorting}
-      onSortingChange={setSorting}
-      empty={<Empty title={t("fusion.credits.noBatches")} />}
+      rowKey={(segment) => segment.key}
+      sort={sort}
+      onSort={(id) => setSort((current) => nextSort(current, id, id === "remaining"))}
     />
   );
 }
@@ -160,25 +148,23 @@ export function Credits() {
   const dist = data ? distribution(data.items) : null;
 
   return (
-    <>
-      <PageTitle
-        title={t("fusion.credits.pageTitle")}
-        description={t("fusion.credits.pageDesc")}
-        actions={
-          <>
-            {FUSION_DEVELOPMENT && <Badge tone="warn">{t("fusion.common.demoData")}</Badge>}
-            <button onClick={resource.reload} disabled={resource.loading}>
-              <Icon name="refresh" />
-              {t("fusion.common.refresh")}
-            </button>
-          </>
-        }
-      />
+    <Page
+      title={t("fusion.credits.pageTitle")}
+      description={t("fusion.credits.pageDesc")}
+      actions={
+        <>
+          {FUSION_DEVELOPMENT && <Badge tone="warn">{t("fusion.common.demoData")}</Badge>}
+          <Button icon="refresh" onClick={resource.reload} disabled={resource.loading}>
+            {t("fusion.common.refresh")}
+          </Button>
+        </>
+      }
+    >
       <Panel
         title={t("fusion.credits.windowPanel")}
         hint={t("fusion.credits.windowHint", { days: data?.threshold_days ?? 3 })}
       >
-        <div className={s.fusionControls}>
+        <Grid min="sm" gap="3">
           <label className={s.field}>
             {t("fusion.credits.displayWindow")}
             <select
@@ -207,35 +193,38 @@ export function Credits() {
               ))}
             </select>
           </label>
-        </div>
+        </Grid>
       </Panel>
 
       {resource.error ? (
-        <ErrorNotice message={resource.error} retry={resource.reload} />
+        <ErrorNotice
+          message={resource.error}
+          retry={{ label: t("common.retry"), onClick: resource.reload }}
+        />
       ) : resource.loading ? (
         <Skeleton variant="card" label={t("fusion.credits.loading")} />
       ) : data ? (
         <>
-          <div className={s.stats}>
-            <StatCard
+          <Grid min="sm" gap="3">
+            <Stat
               label={t("fusion.credits.expiringCredits")}
               value={metric(data.summary.expiring_credits)}
               hint={t("fusion.credits.accountCount", { count: data.summary.expiring_accounts })}
               icon="coin"
             />
-            <StatCard
+            <Stat
               label={t("fusion.credits.urgentAccounts")}
               value={String(data.summary.urgent_accounts)}
               hint={t("fusion.credits.expiringWithin", { days: data.threshold_days })}
               icon="alert"
             />
-            <StatCard
+            <Stat
               label={t("fusion.credits.totalRemaining")}
               value={metric(data.summary.total_credits)}
               hint={t("fusion.credits.allAccounts")}
               icon="leaf"
             />
-            <StatCard
+            <Stat
               label={t("fusion.credits.dailyBurn")}
               value={
                 data.summary.daily_burn_known
@@ -245,7 +234,7 @@ export function Credits() {
               hint={t("fusion.credits.burnEstimate", { days: data.burn_window_days })}
               icon="chart"
             />
-          </div>
+          </Grid>
 
           {dist && dist.total > 0 && (
             <Panel
@@ -254,11 +243,11 @@ export function Credits() {
             >
               <div className={s.distribution}>
                 {dist.bands.map((band) => (
-                  <div key={band.label}>
-                    <div>
+                  <div key={band.label} className={s.band}>
+                    <Toolbar split>
                       <strong>{t(band.label)}</strong>
                       <span>{metric(band.credits)}</span>
-                    </div>
+                    </Toolbar>
                     <progress
                       max={dist.peak || 1}
                       value={band.credits}
@@ -275,18 +264,13 @@ export function Credits() {
           )}
 
           {data.items.length ? (
-            <div className={s.creditCards}>
+            <Stack gap="3">
               {data.items.map((item) => (
-                <section
-                  className={s.creditCard}
+                <Panel
                   key={item.account_id}
-                  data-urgent={item.urgent || undefined}
-                >
-                  <div className={s.creditHead}>
-                    <div>
-                      <strong>{item.name}</strong>
-                      <small>{profileLabel(item.profile)}</small>
-                    </div>
+                  title={item.name}
+                  hint={profileLabel(item.profile)}
+                  action={
                     <Badge tone={item.urgent ? "bad" : "warn"}>
                       {item.urgent
                         ? t("fusion.credits.urgent")
@@ -294,8 +278,9 @@ export function Credits() {
                             days: metric(item.days_remaining),
                           })}
                     </Badge>
-                  </div>
-                  <dl className={s.creditMetrics}>
+                  }
+                >
+                  <dl className={s.metrics}>
                     <div>
                       <dt>{t("fusion.credits.accountRemaining")}</dt>
                       <dd>
@@ -337,9 +322,9 @@ export function Credits() {
                     </div>
                   </dl>
                   <SegmentTable segments={item.segments} format={format} />
-                </section>
+                </Panel>
               ))}
-            </div>
+            </Stack>
           ) : (
             <Panel title={t("fusion.credits.batches")}>
               <Empty title={t("fusion.credits.noBatches")}>
@@ -351,6 +336,6 @@ export function Credits() {
       ) : (
         <Empty title={t("fusion.credits.noSnapshot")} />
       )}
-    </>
+    </Page>
   );
 }

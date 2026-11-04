@@ -13,9 +13,9 @@ import {
   type RefObject,
 } from "react";
 import { metric, number, type RecordValue } from "./api";
-import { Empty } from "./components";
+import { Empty, Stack } from "./ui";
 import { t } from "./i18n";
-import s from "./ui.module.scss";
+import s from "./charts.module.scss";
 
 export type ChartBucket = RecordValue & {
   bucket: number;
@@ -370,12 +370,12 @@ function ChartFrame({
   hintId: string;
 }) {
   return (
-    <div className={s.chartInteractive}>
+    <div className={s.plot}>
       <svg
         ref={frameRef}
         viewBox={`0 0 ${plot.width} ${plot.height}`}
         preserveAspectRatio="xMidYMid meet"
-        className={s.chartWide}
+        className={s.svg}
         role="img"
         tabIndex={0}
         aria-label={label}
@@ -392,7 +392,7 @@ function ChartFrame({
       >
         {children}
       </svg>
-      <p className={s.srOnly} id={hintId}>
+      <p className={s.visuallyHidden} id={hintId}>
         {t("fusion.charts.keyboardHint")}
       </p>
     </div>
@@ -436,7 +436,7 @@ function YTicks({
       {[0, 1, 2, 3, 4].map((step) => {
         const y = plot.top + box.height - (box.height * step) / 4;
         return (
-          <text key={step} x={plot.left - 8} y={y + 4} textAnchor="end" className={s.chartTick}>
+          <text key={step} x={plot.left - 8} y={y + 4} textAnchor="end" className={s.tick}>
             {format((max * step) / 4)}
           </text>
         );
@@ -478,7 +478,7 @@ function XAxis({
             x={Math.max(plot.left, Math.min(plot.width - plot.right, x))}
             y={plot.top + box.height + 17}
             textAnchor={anchor}
-            className={s.chartTick}
+            className={s.tick}
           >
             {granularity === "hour" ? fmtTime(bucket, granularity) : fmtDayLabel(bucket)}
           </text>
@@ -530,7 +530,7 @@ export function StackedBars({
   const errorOn = !hidden.has("error");
 
   return (
-    <>
+    <Stack gap="2">
       <div className={s.legend} role="group" aria-label={t("fusion.charts.legendAria")}>
         {
           // Reuse the outcome labels the tables and the detail row already use, so
@@ -547,7 +547,7 @@ export function StackedBars({
                 key={key}
                 type="button"
                 aria-pressed={!off}
-                className={off ? s.legendOff : s.legendOn}
+                className={s.legendButton}
                 onClick={() => setHidden((old) => toggleSeries(old, key, 2))}
               >
                 <LegendSwatch
@@ -670,7 +670,7 @@ export function StackedBars({
               stroke="var(--strong)"
               strokeDasharray="7 6"
             />
-            <text x={plot.left + 6} y={yOf(mean) - 5} textAnchor="start" className={s.chartMean}>
+            <text x={plot.left + 6} y={yOf(mean) - 5} textAnchor="start" className={s.meanLabel}>
               {t("fusion.charts.mean", { value: metric(mean) })}
             </text>
           </>
@@ -680,7 +680,7 @@ export function StackedBars({
             x={Math.max(plot.left, Math.min(plot.width - plot.right, layout.xOf(peakIndex)))}
             y={Math.max(12, yOf(totals[peakIndex]!) - 6)}
             textAnchor={layout.xOf(peakIndex) > plot.width - plot.right - 90 ? "end" : "middle"}
-            className={s.chartPeak}
+            className={s.peakLabel}
           >
             {t("fusion.charts.peak", { value: metric(totals[peakIndex]!) })}
           </text>
@@ -708,8 +708,8 @@ export function StackedBars({
         <XAxis plot={plot} rows={rows} granularity={granularity} layout={layout} />
       </ChartFrame>
       {selected && active !== null && (
-        <div className={s.chartDetailRow} role="status">
-          <div>
+        <div className={s.detail} role="status">
+          <div className={s.detailRow}>
             <strong>{selected.date}</strong>
             <span>{t("fusion.charts.detail.requests", { value: metric(selected.requests) })}</span>
             <span>{t("fusion.charts.detail.success", { value: metric(selected.success) })}</span>
@@ -721,7 +721,7 @@ export function StackedBars({
           </div>
         </div>
       )}
-    </>
+    </Stack>
   );
 }
 
@@ -788,7 +788,7 @@ export function LineChart({
   };
 
   return (
-    <>
+    <Stack gap="2">
       <div className={s.legend} role="group" aria-label={t("fusion.charts.legendAria")}>
         {metrics.map((metricDef, metricIndex) => {
           const off = hidden.has(metricDef.key);
@@ -798,7 +798,7 @@ export function LineChart({
               key={metricDef.key}
               type="button"
               aria-pressed={!off}
-              className={off ? s.legendOff : s.legendOn}
+              className={s.legendButton}
               onClick={() => setHidden((old) => toggleSeries(old, metricDef.key, metrics.length))}
             >
               {/* Colour + dash + shape: the legend is the key to the redundant encoding. */}
@@ -808,7 +808,9 @@ export function LineChart({
                 dash={dashFor(metricIndex)}
               />
               {metricDef.label}
-              <small>{t("fusion.charts.knownBuckets", { count: known })}</small>
+              <small className={s.legendCount}>
+                {t("fusion.charts.knownBuckets", { count: known })}
+              </small>
             </button>
           );
         })}
@@ -891,8 +893,8 @@ export function LineChart({
         <XAxis plot={plot} rows={rows} granularity={granularity} layout={layout} />
       </ChartFrame>
       {selected && active !== null && (
-        <div className={s.chartDetailRow} role="status">
-          <div>
+        <div className={s.detail} role="status">
+          <div className={s.detailRow}>
             <strong>{selected.date}</strong>
             {metrics.map((metricDef, metricIndex) => {
               const value = values[active]![metricIndex];
@@ -911,6 +913,6 @@ export function LineChart({
           </div>
         </div>
       )}
-    </>
+    </Stack>
   );
 }

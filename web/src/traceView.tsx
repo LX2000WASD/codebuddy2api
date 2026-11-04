@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import { metric, number, type RecordValue } from "./api";
-import { Badge } from "./components";
 import { useT } from "./i18n";
-import s from "./ui.module.scss";
+import { Badge } from "./ui";
+import s from "./traceView.module.scss";
 
 /**
  * One entry of a request's attempt trail, derived from GET /admin/logs/{id}.
@@ -173,7 +173,7 @@ function CopyId({ value, label: ariaLabel }: { value: string; label: string }) {
     void pending.then(() => setState("copied")).catch(() => setState("failed"));
   };
   return (
-    <button type="button" onClick={copy} title={value} aria-label={ariaLabel}>
+    <button type="button" className={s.copy} onClick={copy} title={value} aria-label={ariaLabel}>
       <code>{value}</code>{" "}
       {state === "copied"
         ? t("logs.trace.copied")

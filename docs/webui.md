@@ -20,7 +20,11 @@ Ten pages are grouped into five task areas under two sidebar headings. Pre-conso
 | Configure | Routing & accounts (`/dashboard/routing`) | Model routing, Credentials |
 | Configure | System (`/dashboard/system`) | Settings, Storage, Alerts, Diagnostics |
 
-Areas holding several pages show them as in-page sections, and the breadcrumb names both. The command palette (Ctrl/⌘+K) jumps to any area or section. Each section below describes one of these pages.
+Areas holding several pages show them as in-page sections, and the breadcrumb names both. The command palette (Ctrl/⌘+K) jumps to any area or section.
+
+The sidebar is 248px wide from 1200px up and 216px from 900–1199px, and it can be folded into an icon rail. Below 900px it becomes a drawer: the "Open navigation" button at the left of the header opens it, and clicking the backdrop or pressing Escape closes it. Lists turn into card rows below 900px, each carrying every field and its actions, so nothing needs horizontal scrolling.
+
+Each section below describes one of these pages.
 
 ## Overview
 

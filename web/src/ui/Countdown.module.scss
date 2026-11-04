@@ -1,0 +1,16 @@
+/* Tabular digits so a ticking countdown does not jitter the column it sits in. */
+.countdown {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-strong);
+}
+
+/* Under five minutes is the point at which an operator has to act. */
+.countdown[data-urgent="true"] {
+  color: var(--danger-fg);
+}
+
+/* "数据更新于 …": secondary information, so it reads at the muted weight. */
+.freshness {
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+}

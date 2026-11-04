@@ -1,57 +1,51 @@
 #!/usr/bin/env node
 /**
- * Fail the build when a component asks the CSS module for a class it never defines.
+ * Fail the build when a component asks a CSS module for a class it never defines.
  *
  * A missing class fails silently: `s.skeletonRow` is undefined, React drops the
  * attribute, and the element collapses into an unstyled box. Two of those shipped
- * (appearance.tsx `langDot`, components.tsx `skeletonRow`) because nothing compared both
- * sides of the boundary.
+ * because nothing compared both sides of the boundary. Since the rewrite every page
+ * owns a `.module.scss`, so the check follows each import: one module per file, one
+ * resolution per alias, no assumptions about a single global stylesheet.
  *
  * The SCSS is compiled with sass before parsing. A regex over the source would see
- * mixin parameters (`@include glass(0.42, 26px)`), nested selectors and `#{...}`
- * interpolation as class names; the compiled CSS is flat, so a class can only appear
- * in a selector prelude. Compilation also lets sass resolve nesting for us.
+ * mixin parameters, nested selectors and `#{...}` interpolation as class names; the
+ * compiled CSS is flat, so a class can only appear in a selector prelude.
  *
- * Usage: node scripts/check-classes.mjs [--json] [--unused] [--src DIR] [--scss FILE]
- * Exit code 1 when a class is referenced but not defined, unless it is listed in
- * KNOWN_MISSING below (a documented, owner-assigned gap that another task closes).
+ * Usage: node scripts/check-classes.mjs [--json] [--unused] [--src DIR]
+ *   --json     machine-readable report
+ *   --unused   also list classes no file references (report only, never a failure)
+ * Exit code 1 when a class is referenced but not defined.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join, relative, resolve } from "node:path";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { compileString } from "sass";
 
 const webRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
-/**
- * Gaps that already exist and are being fixed elsewhere. Listing one here keeps the
- * check meaningful for new code without freezing the build on pre-existing debt; the
- * entry is reported on every run so it cannot be forgotten. Remove an entry as soon as
- * the class exists — a stale entry is dead weight, not a safety net.
- *
- * Entries are matched on the class name only: line numbers move whenever the
- * surrounding file is edited, and a check that fails on unrelated edits gets disabled
- * instead of fixed.
- */
-const KNOWN_MISSING = new Map([
-  // I2 adds the .langDot rule (05-视觉语言方案 §6 appearance language selector).
-  ["langDot", "I2"],
-  // I2 adds a .skeletonRow alias next to .skeleton-row; the SCSS is that task's scope.
-  ["skeletonRow", "I2"],
-]);
+/** `import s from "./x.module.scss"` — also `import * as s` and `../` forms. */
+const MODULE_IMPORT = /import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\s+["']([^"']+\.module\.scss)["']/g;
 
 function parseArgs(argv) {
-  const options = { json: false, unused: false, src: join(webRoot, "src"), scss: null };
+  const options = { json: false, unused: false, src: join(webRoot, "src") };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     if (flag === "--json") options.json = true;
     else if (flag === "--unused") options.unused = true;
     else if (flag === "--src") options.src = resolve(argv[(index += 1)]);
-    else if (flag === "--scss") options.scss = resolve(argv[(index += 1)]);
     else throw new Error("unknown option: " + flag);
   }
-  options.scss ??= join(options.src, "ui.module.scss");
   return options;
+}
+
+function walk(directory, files = []) {
+  for (const entry of readdirSync(directory)) {
+    const path = join(directory, entry);
+    if (statSync(path).isDirectory()) walk(path, files);
+    else if (/\.(tsx?|module\.scss)$/.test(path)) files.push(path);
+  }
+  return files;
 }
 
 /**
@@ -92,19 +86,6 @@ function definedClasses(css) {
   return classes;
 }
 
-/** import s from "./ui.module.scss" / import * as s from "../ui.module.scss" */
-const MODULE_IMPORT =
-  /import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\s+["'][^"']*ui\.module\.scss["']/g;
-
-function walk(directory, files = []) {
-  for (const entry of readdirSync(directory)) {
-    const path = join(directory, entry);
-    if (statSync(path).isDirectory()) walk(path, files);
-    else if (path.endsWith(".tsx") || path.endsWith(".ts")) files.push(path);
-  }
-  return files;
-}
-
 /** Offsets of every line start, so a match index maps to a line in O(log n). */
 function lineIndex(source) {
   const starts = [0];
@@ -123,157 +104,114 @@ function lineIndex(source) {
 }
 
 /**
- * Class references in one file, split three ways:
- *  - static:  `s.badge` and `s["skeleton-row"]` — checked against the SCSS
+ * Class references in one file, split two ways:
+ *  - static:  `s.badge` and `s["skeleton-row"]` — checked against that module
  *  - dynamic: `s[tone]`, `s[`${name}`]` — the name only exists at runtime, so it is
  *             reported but never a failure
  */
 function classReferences(source) {
-  const references = { static: [], dynamic: [] };
+  const references = { static: [], dynamic: [], modules: [] };
   const lineOf = lineIndex(source);
-  for (const [, binding] of source.matchAll(MODULE_IMPORT)) {
+  for (const match of source.matchAll(MODULE_IMPORT)) {
+    const [statement, binding, specifier] = match;
     const name = binding.replace(/\$/g, "\\$");
+    references.modules.push({ alias: binding, specifier, offset: match.index });
     const property = new RegExp("\\b" + name + "\\.([A-Za-z_$][\\w$]*)", "g");
-    for (const match of source.matchAll(property))
-      references.static.push({ name: match[1], line: lineOf(match.index) });
+    for (const hit of source.matchAll(property))
+      references.static.push({ name: hit[1], line: lineOf(hit.index) });
     const literal = new RegExp("\\b" + name + "\\[\\s*([\"'])([^\"'\\n]+)\\1\\s*\\]", "g");
-    for (const match of source.matchAll(literal))
-      references.static.push({ name: match[2], line: lineOf(match.index) });
-    // The bracket body is captured so the report can quote the real expression
-    // instead of the two characters that opened it.
+    for (const hit of source.matchAll(literal))
+      references.static.push({ name: hit[2], line: lineOf(hit.index) });
     const computed = new RegExp("\\b" + name + "\\[\\s*([^\\]\\n]+?)\\s*\\]", "g");
-    for (const match of source.matchAll(computed))
-      if (!/^["']/.test(match[1]))
-        references.dynamic.push({
-          line: lineOf(match.index),
-          snippet: name + "[" + match[1] + "]",
-        });
+    for (const hit of source.matchAll(computed))
+      if (!/^["']/.test(hit[1]))
+        references.dynamic.push({ line: lineOf(hit.index), snippet: binding + "[" + hit[1] + "]" });
+    void statement;
   }
   return references;
 }
 
 const options = parseArgs(process.argv.slice(2));
+const files = walk(options.src);
 
-/**
- * The checker exists to fail loudly on a bad class reference, so it must not fail
- * ambiguously on its own inputs: a missing stylesheet or a Sass syntax error would
- * otherwise print a stack trace and be read as "the check is broken, skip it".
- */
-function loadDefinedClasses(path) {
+/** One compile per module, and a hard stop if it cannot be read or parsed. */
+const definitions = new Map();
+const stylesheets = files.filter((file) => file.endsWith(".module.scss"));
+for (const file of stylesheets) {
   let source;
   try {
-    source = readFileSync(path, "utf8");
+    source = readFileSync(file, "utf8");
   } catch {
-    console.error("[check-classes] 读不到样式表：" + path);
+    console.error("[check-classes] 读不到样式表：" + file);
     process.exit(1);
   }
   try {
-    return definedClasses(compileString(source).css);
+    const css = compileString(source, {
+      url: pathToFileURL(file),
+      loadPaths: [dirname(file), join(webRoot, "src")],
+    }).css;
+    definitions.set(file, definedClasses(css));
   } catch (error) {
-    console.error("[check-classes] 样式表编译失败：" + path);
+    console.error("[check-classes] 样式表编译失败：" + file);
     console.error("  " + String(error && error.message ? error.message : error).split("\n")[0]);
     process.exit(1);
   }
 }
 
-const defined = loadDefinedClasses(options.scss);
-
-const missing = [];
-const known = [];
-const dynamic = [];
 const used = new Set();
-const files = walk(options.src);
-for (const file of files) {
-  const references = classReferences(readFileSync(file, "utf8"));
-  const at = relative(webRoot, file);
+const missing = [];
+const dynamic = [];
+for (const file of files.filter((candidate) => /\.[jt]sx?$/.test(candidate))) {
+  const source = readFileSync(file, "utf8");
+  if (!source.includes(".module.scss")) continue;
+  const references = classReferences(source);
+  const imported = references.modules.map((entry) => ({
+    target: resolve(dirname(file), entry.specifier),
+    line: lineIndex(source)(entry.offset),
+    specifier: entry.specifier,
+  }));
+  // A file may import several modules; a name is resolved when *some* imported module
+  // defines it, and reported only when none does.
+  for (const entry of imported)
+    if (!definitions.has(entry.target))
+      missing.push({
+        file: relative(webRoot, file),
+        line: entry.line,
+        name: entry.specifier,
+        reason: "样式表不存在",
+      });
   for (const reference of references.static) {
-    used.add(reference.name);
-    if (!defined.has(reference.name)) {
-      const owner = KNOWN_MISSING.get(reference.name);
-      const entry = { file: at, line: reference.line, className: reference.name };
-      if (owner) known.push({ ...entry, owner });
-      else missing.push(entry);
+    const owner = imported.find((entry) => definitions.get(entry.target)?.has(reference.name));
+    if (!owner) {
+      missing.push({ file: relative(webRoot, file), line: reference.line, name: reference.name });
+      continue;
     }
+    used.add(owner.target + "#" + reference.name);
   }
-  for (const reference of references.dynamic)
-    dynamic.push({ file: at, line: reference.line, snippet: reference.snippet });
+  for (const entry of references.dynamic)
+    dynamic.push({ file: relative(webRoot, file), line: entry.line, snippet: entry.snippet });
 }
-const unused = [...defined]
-  .filter((name) => !used.has(name))
-  .sort((left, right) => left.localeCompare(right));
-
-// A baseline entry whose class now exists is dead weight: it would silently absorb the
-// next regression of the same class instead of failing the build. It is reported on
-// every run, but as a warning rather than a failure — the entry lives in this file, so
-// failing here would mean the task that finally defines the class also has to edit a
-// file outside its scope before its own gate can go green. Deleting the entry is still
-// the only way to silence it, which is what we want; it just must not block anyone.
-const stale = [...KNOWN_MISSING]
-  .filter(([name]) => defined.has(name))
-  .map(([name, owner]) => ({ className: name, owner }));
 
 if (options.json) {
-  console.log(
-    JSON.stringify(
-      {
-        scss: relative(webRoot, options.scss),
-        defined: defined.size,
-        referenced: used.size,
-        files: files.length,
-        missing,
-        known,
-        stale,
-        dynamic,
-        unused,
-      },
-      null,
-      2,
-    ),
-  );
-} else {
-  console.log(
-    "[check-classes] " +
-      defined.size +
-      " 个类（" +
-      relative(webRoot, options.scss) +
-      "），" +
-      files.length +
-      " 个文件引用 " +
-      used.size +
-      " 个",
-  );
-  if (missing.length) {
-    console.error("\n✗ 引用了未定义的类：" + missing.length + " 处");
-    for (const item of missing)
-      console.error("  " + item.file + ":" + item.line + "  s." + item.className);
-  }
-  if (known.length) {
-    console.log("\n· 已知缺失（已登记，不阻塞构建）：" + known.length + " 处");
-    for (const item of known)
-      console.log(
-        "  " + item.file + ":" + item.line + "  s." + item.className + "  → " + item.owner,
-      );
-  }
-  if (stale.length) {
-    console.warn(
-      "\n! 基线里过期的条目（类已存在，请从 KNOWN_MISSING 删除）：" + stale.length + " 个",
-    );
-    for (const item of stale) console.warn("  " + item.className + "  → " + item.owner);
-  }
-  if (dynamic.length) {
-    console.log("\n· 动态类名（运行时才确定，不判错）：" + dynamic.length + " 处");
-    for (const item of dynamic)
-      console.log("  " + item.file + ":" + item.line + "  " + item.snippet);
-  }
-  if (options.unused) {
-    console.log("\n· 未被引用的类：" + unused.length + " 个");
-    console.log("  " + unused.join(", "));
-  }
-  console.log(
-    missing.length ? "\n✗ 类名检查失败：" + missing.length + " 处缺失" : "\n✓ 类名检查通过",
-  );
+  console.log(JSON.stringify({ stylesheets: stylesheets.length, missing, dynamic }, null, 2));
+  process.exit(missing.length ? 1 : 0);
 }
 
-// Only an undefined class fails the build. A stale baseline entry warns, because the
-// task that defines the class owns a different file and must still be able to pass.
-process.exit(missing.length ? 1 : 0);
+for (const entry of dynamic)
+  console.log("· 动态类名（运行时才确定，不判错）：" + entry.file + ":" + entry.line + "  " + entry.snippet);
+if (options.unused) {
+  const unused = [];
+  for (const [file, defined] of definitions)
+    for (const name of defined)
+      if (!used.has(file + "#" + name)) unused.push(relative(webRoot, file) + "  ." + name);
+  unused.sort();
+  console.log("· 无引用的类（" + unused.length + " 个）：");
+  for (const line of unused) console.log("  " + line);
+}
+if (missing.length) {
+  console.error("✗ 类名检查失败：" + missing.length + " 处缺失");
+  for (const entry of missing)
+    console.error("  " + entry.file + ":" + entry.line + "  ." + entry.name + (entry.reason ? "（" + entry.reason + "）" : ""));
+  process.exit(1);
+}
+console.log("✓ 类名检查通过（" + stylesheets.length + " 个模块）");

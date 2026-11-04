@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errorMessage, number, object, text } from "./api";
-import { Drawer, ErrorNotice, Icon } from "./components";
+import { Button, Cluster, Drawer, ErrorNotice, Field, Icon, Select } from "./ui";
+import { useT } from "./i18n";
 import { useExiting } from "./presence";
-import s from "./ui.module.scss";
-import { Select } from "./fields";
+import s from "./OAuth.module.scss";
 
 export function safeOAuthUrl(value: unknown): string {
   if (typeof value !== "string") throw new Error("OAuth 响应缺少验证链接");
@@ -25,6 +25,7 @@ export function safeOAuthUrl(value: unknown): string {
   return url.href;
 }
 export function OAuth({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const t = useT();
   const exiting = useExiting();
   const [site, setSite] = useState("cn");
   const [login, setLogin] = useState<{ id: string; url: string; until: number } | null>(null);
@@ -81,39 +82,43 @@ export function OAuth({ onClose, onDone }: { onClose: () => void; onDone: () => 
     };
   }, [login, onDone, exiting]);
   return (
-    <Drawer title="OAuth 添加凭证" onClose={onClose}>
+    <Drawer title="OAuth 添加凭证" closeLabel={t("common.closeDrawer")} onClose={onClose}>
       <p className={s.note}>
         仅在官方站点完成授权。入库成功后自动关闭此抽屉并刷新列表；官方标签页保持安全隔离，请在授权后手动关闭。
       </p>
-      <label className={s.field}>
-        登录站点
-        <Select value={site} disabled={!!login || busy} onChange={(value) => setSite(value)}>
+      <Field label="登录站点">
+        <Select
+          label="登录站点"
+          value={site}
+          disabled={!!login || busy}
+          onChange={(value) => setSite(value)}
+        >
           <option value="cn">中国大陆 · CN</option>
           <option value="intl">国际 · WorkBuddy</option>
           <option value="intl-codebuddy">国际 · CodeBuddy</option>
         </Select>
-      </label>
+      </Field>
       <ErrorNotice message={error} />
-      <p className={s.oauthStatus} role="status">
+      <p className={s.status} role="status">
         {message}
       </p>
       {login ? (
-        <div className={s.actions}>
-          <a className={s.linkButton} href={login.url} target="_blank" rel="noopener noreferrer">
-            打开官方授权页面 <Icon name="arrow" />
+        <Cluster>
+          <a className={s.link} href={login.url} target="_blank" rel="noopener noreferrer">
+            打开官方授权页面 <Icon name="arrow" size="sm" />
           </a>
-          <button
+          <Button
             onClick={() => {
               setLogin(null);
               setMessage("已停止查询。");
             }}
           >
             停止轮询
-          </button>
-        </div>
+          </Button>
+        </Cluster>
       ) : (
-        <button
-          className={s.primary}
+        <Button
+          variant="primary"
           disabled={busy}
           onClick={() => {
             setError(null);
@@ -144,7 +149,7 @@ export function OAuth({ onClose, onDone }: { onClose: () => void; onDone: () => 
           }}
         >
           {busy ? "正在发起…" : "发起 OAuth 授权"}
-        </button>
+        </Button>
       )}
     </Drawer>
   );

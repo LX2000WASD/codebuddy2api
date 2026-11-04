@@ -1,0 +1,48 @@
+/* The same link button the old drawer used, drawn from the shared control face so it
+   cannot drift from the buttons beside it. */
+.link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  min-height: var(--control-h-md);
+  padding: 0 var(--space-3);
+  color: var(--on-accent);
+  background: var(--accent);
+  border: var(--hairline) solid var(--accent-border);
+  border-radius: var(--radius-control);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  text-align: center;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.link:hover {
+  background: var(--accent-hover);
+}
+
+.link:active {
+  background: var(--accent-pressed);
+}
+
+.note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+/* The poll state is one line that changes in place; it keeps its own height so the
+   buttons below do not jump between "waiting" and "expired". */
+.status {
+  margin: 0;
+  min-height: calc(var(--lh-base) * 1em);
+  color: var(--text);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}

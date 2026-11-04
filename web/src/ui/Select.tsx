@@ -43,10 +43,12 @@ export type SelectProps = {
   /** `<option>` children, written exactly like a native select. */
   children: ReactNode;
   /**
-   * Accessible name. A button is not a labelable element, so a wrapping Field cannot name
-   * it; the name has to come from here.
+   * Accessible name, in either spelling. A button is labelable, so a wrapping `<label>` also
+   * names it — that is how the pre-migration call sites have always worked — but a Select
+   * standing on its own belongs to one of these two props.
    */
-  label: string;
+  label?: string;
+  "aria-label"?: string;
   disabled?: boolean;
   id?: string;
   title?: string;
@@ -60,16 +62,9 @@ export type SelectProps = {
  * trigger near the bottom of the viewport and joins an open dialog's top layer instead of
  * being captured by a panel's transformed ancestor.
  */
-export function Select({
-  value,
-  onChange,
-  children,
-  label,
-  disabled = false,
-  id,
-  title,
-  className = "",
-}: SelectProps) {
+export function Select(props: SelectProps) {
+  const { value, onChange, children, disabled = false, id, title, className = "" } = props;
+  const label = props.label ?? props["aria-label"] ?? "";
   const choices = choicesOf(children);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);

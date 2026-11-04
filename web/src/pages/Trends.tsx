@@ -1,12 +1,25 @@
 import { useEffect, useState } from "react";
-import { list, metric, number, object, text } from "../api";
+import { list, metric, number, object, text, type RecordValue } from "../api";
 import { LineChart, StackedBars, type ChartBucket } from "../charts";
-import { Badge, Empty, ErrorNotice, Icon, PageTitle, Panel, Skeleton } from "../components";
 import { useFusionResource } from "../fusion/client";
 import { FUSION_DEVELOPMENT } from "../fusion/client";
 import type { StatsSeriesResponse } from "../fusion/types";
 import { t, useT } from "../i18n";
-import s from "../ui.module.scss";
+import {
+  Badge,
+  Button,
+  Empty,
+  ErrorNotice,
+  Field,
+  Icon,
+  Page,
+  Panel,
+  Skeleton,
+  Table,
+  type IconName,
+  type TableColumn,
+} from "../ui";
+import s from "./Trends.module.scss";
 
 type Dimension = "global" | "model" | "profile" | "credential";
 type MetricMode = "requests" | "latency" | "rate";
@@ -62,6 +75,38 @@ const rateMetric = () => [
   },
 ];
 
+/** The six per-bucket numbers as table columns, in the order the panel has always shown. */
+function bucketColumns(): TableColumn<RecordValue>[] {
+  return [
+    {
+      id: "bucket",
+      header: t("fusion.trends.colBucket"),
+      cell: (row) => <strong>{text(row.date)}</strong>,
+    },
+    { id: "requests", header: t("fusion.trends.colRequests"), cell: (row) => metric(row.requests) },
+    {
+      id: "outcome",
+      header: t("fusion.trends.colSuccessError"),
+      cell: (row) => `${metric(row.success)} / ${metric(row.error)}`,
+    },
+    {
+      id: "percentiles",
+      header: "P50 / P95 / P99",
+      cell: (row) =>
+        percentiles
+          .map((p) => (number(row[p.key]) === null ? "—" : `${metric(row[p.key])}ms`))
+          .join(" · "),
+    },
+    {
+      id: "rate",
+      header: t("fusion.trends.metric.rate"),
+      cell: (row) =>
+        number(row.tokens_per_s) === null ? "—" : `${metric(row.tokens_per_s)} tok/s`,
+    },
+    { id: "tokens", header: "Token", cell: (row) => metric(row.total_tokens) },
+  ];
+}
+
 export function Trends() {
   const t = useT();
   const [days, setDays] = useState("7");
@@ -100,28 +145,87 @@ export function Trends() {
   const successRate =
     summary && summary.requests ? (summary.success / summary.requests) * 100 : null;
   const selection = dimensions.data?.items.find((item) => item.key === key);
-
+  const objectLabel =
+    dimension === "credential"
+      ? t("fusion.trends.dim.credential")
+      : dimension === "profile"
+        ? t("fusion.trends.dim.profile")
+        : t("fusion.trends.dim.model");
+  // Five stats, keyed by position: the label is the identity the reader needs, and two
+  // localized labels may collide on a long translation.
+  const stats: Array<{
+    label: string;
+    value: string;
+    icon: IconName;
+    hint?: string;
+    title?: string;
+  }> = summary
+    ? [
+        {
+          label: t("fusion.trends.summary.requests"),
+          value: metric(summary.requests),
+          icon: "arrow",
+        },
+        {
+          label: t("fusion.trends.summary.successRate"),
+          value: successRate === null ? t("fusion.common.unknown") : `${successRate.toFixed(1)}%`,
+          icon: "shield",
+        },
+        {
+          label: t("fusion.trends.summary.p95"),
+          value:
+            summary.latency_p95_ms === null
+              ? t("fusion.trends.insufficientSamples")
+              : `${metric(summary.latency_p95_ms)} ms`,
+          icon: "pulse",
+          // The "approximate (histogram)" qualifier used to sit inside the value. It
+          // belongs on the hint line: it explains the number without competing with it
+          // for width, and the value keeps the full, untruncated figure.
+          hint: summary.latency_p95_ms === null ? undefined : t("dash.p95Approx"),
+        },
+        {
+          label: t("fusion.trends.summary.rate"),
+          value:
+            summary.tokens_per_s === null
+              ? t("fusion.common.unknown")
+              : `${metric(summary.tokens_per_s)} tok/s`,
+          icon: "model",
+        },
+        {
+          label: t("fusion.trends.summary.credit"),
+          value: metric(summary.credit),
+          icon: "leaf",
+        },
+      ]
+    : [];
+  // The bucket id is optional in the contract, so the table is keyed by position.
+  const bucketRows: RecordValue[] = rows.map((row, index) => ({ ...row, key: String(index) }));
   return (
-    <>
-      <PageTitle
-        title={t("nav.trends")}
-        description={t("fusion.trends.pageDesc")}
-        actions={
-          <>
-            {FUSION_DEVELOPMENT && <Badge tone="warn">{t("fusion.common.demoData")}</Badge>}
-            <button onClick={() => series.reload()} disabled={series.loading}>
-              <Icon name="refresh" />
-              {t("fusion.common.refresh")}
-            </button>
-          </>
-        }
-      />
+    <Page
+      title={t("nav.trends")}
+      description={t("fusion.trends.pageDesc")}
+      actions={
+        <>
+          {FUSION_DEVELOPMENT && <Badge tone="warn">{t("fusion.common.demoData")}</Badge>}
+          <Button
+            icon={<Icon name="refresh" size="sm" spin={series.loading} />}
+            disabled={series.loading}
+            onClick={() => series.reload()}
+          >
+            {t("fusion.common.refresh")}
+          </Button>
+        </>
+      }
+    >
       <Panel title={t("fusion.trends.dimensionPanel")} hint={t("fusion.trends.dimensionPanelHint")}>
-        <div className={s.fusionControls}>
-          <label className={s.field}>
-            {t("fusion.trends.range")}
+        <div className={s.controls}>
+          {/* Native selects: the platform picker, the keyboard and the change event are
+              worth more here than a drawn listbox, and the shared control face keeps them
+              visually identical to every other field. */}
+          <Field label={t("fusion.trends.range")} className={s.control}>
             <select
               aria-label={t("fusion.trends.rangeAria")}
+              className={s.select}
               value={days}
               onChange={(e) => setDays(e.target.value)}
             >
@@ -131,11 +235,11 @@ export function Trends() {
                 </option>
               ))}
             </select>
-          </label>
-          <label className={s.field}>
-            {t("fusion.trends.granularity")}
+          </Field>
+          <Field label={t("fusion.trends.granularity")} className={s.control}>
             <select
               aria-label={t("fusion.trends.granularityAria")}
+              className={s.select}
               value={granularity}
               onChange={(e) => setGranularity(e.target.value)}
             >
@@ -143,11 +247,11 @@ export function Trends() {
               <option value="hour">{t("fusion.trends.grain.hour")}</option>
               <option value="day">{t("fusion.trends.grain.day")}</option>
             </select>
-          </label>
-          <label className={s.field}>
-            {t("fusion.trends.dimension")}
+          </Field>
+          <Field label={t("fusion.trends.dimension")} className={s.control}>
             <select
               aria-label={t("fusion.trends.dimensionAria")}
+              className={s.select}
               value={dimension}
               onChange={(e) => {
                 setDimension(e.target.value as Dimension);
@@ -159,21 +263,17 @@ export function Trends() {
               <option value="profile">{t("fusion.trends.dim.profile")}</option>
               <option value="credential">{t("fusion.trends.dim.credential")}</option>
             </select>
-          </label>
+          </Field>
           {dimension !== "global" && (
-            <label className={s.field}>
-              {dimension === "credential"
-                ? t("fusion.trends.dim.credential")
-                : dimension === "profile"
-                  ? t("fusion.trends.dim.profile")
-                  : t("fusion.trends.dim.model")}
+            <Field label={objectLabel} className={s.control}>
               {dimensions.loading ? (
-                <select aria-label={t("fusion.trends.objectAria")} disabled>
+                <select aria-label={t("fusion.trends.objectAria")} className={s.select} disabled>
                   <option>{t("fusion.common.loading")}</option>
                 </select>
               ) : (
                 <select
                   aria-label={t("fusion.trends.objectAria")}
+                  className={s.select}
                   value={key}
                   onChange={(e) => setKey(e.target.value)}
                   disabled={!dimensions.data?.items.length}
@@ -188,8 +288,10 @@ export function Trends() {
                   ))}
                 </select>
               )}
-            </label>
+            </Field>
           )}
+          {/* A tablist: it switches which chart is drawn. aria-selected is the state, and
+              the button paints it (colour + underline) — no separate highlight layer. */}
           <div className={s.tabs} role="tablist" aria-label={t("fusion.trends.metricAria")}>
             {(
               [
@@ -200,9 +302,10 @@ export function Trends() {
             ).map(([value, label]) => (
               <button
                 key={value}
+                type="button"
                 role="tab"
                 aria-selected={metricMode === value}
-                className={metricMode === value ? s.selectedTab : ""}
+                className={s.tab}
                 onClick={() => setMetricMode(value)}
               >
                 {label}
@@ -215,49 +318,24 @@ export function Trends() {
             {t("fusion.trends.dimensionsSkipped", { n: skipped })}
           </p>
         )}
-        <ErrorNotice message={dimensions.error} retry={dimensions.reload} />
+        <ErrorNotice
+          message={dimensions.error}
+          retry={{ label: t("common.retry"), onClick: dimensions.reload }}
+        />
       </Panel>
 
-      {summary && (
+      {stats.length > 0 && (
         <div className={s.stats}>
-          {[
-            [t("fusion.trends.summary.requests"), metric(summary.requests), "arrow"],
-            [
-              t("fusion.trends.summary.successRate"),
-              successRate === null ? t("fusion.common.unknown") : `${successRate.toFixed(1)}%`,
-              "shield",
-            ],
-            [
-              t("fusion.trends.summary.p95"),
-              summary.latency_p95_ms === null
-                ? t("fusion.trends.insufficientSamples")
-                : `${metric(summary.latency_p95_ms)} ms`,
-              "pulse",
-              // The "approximate (histogram)" qualifier used to sit inside the value.
-              // That pushed 410px of content into a 219px cell, so the number rendered
-              // as "6,519.71 ms · …". It belongs on the hint line: it explains the
-              // number without competing with it for width.
-              summary.latency_p95_ms === null ? undefined : t("dash.p95Approx"),
-            ],
-            [
-              t("fusion.trends.summary.rate"),
-              summary.tokens_per_s === null
-                ? t("fusion.common.unknown")
-                : `${metric(summary.tokens_per_s)} tok/s`,
-              "model",
-            ],
-            [t("fusion.trends.summary.credit"), metric(summary.credit), "leaf"],
-          ].map(([label, value, icon, hint]) => (
-            <section className={s.stat} key={label}>
-              <div>
-                {label}
-                <span>
-                  <Icon name={icon} />
+          {stats.map((stat) => (
+            <section className={s.stat} key={stat.label}>
+              <div className={s.statHead}>
+                <span className={s.statLabel}>{stat.label}</span>
+                <span className={s.statIcon} aria-hidden="true">
+                  <Icon name={stat.icon} size="sm" />
                 </span>
               </div>
-              {/* title keeps the full value reachable when the cell is narrow. */}
-              <strong title={value}>{value}</strong>
-              {hint ? <small>{hint}</small> : null}
+              <strong className={s.statValue}>{stat.value}</strong>
+              {stat.hint ? <small className={s.statHint}>{stat.hint}</small> : null}
             </section>
           ))}
         </div>
@@ -278,7 +356,10 @@ export function Trends() {
         }
       >
         {series.error ? (
-          <ErrorNotice message={series.error} retry={series.reload} />
+          <ErrorNotice
+            message={series.error}
+            retry={{ label: t("common.retry"), onClick: series.reload }}
+          />
         ) : series.loading ? (
           <Skeleton variant="chart" label={t("fusion.trends.chartLoading")} />
         ) : !rows.length ? (
@@ -310,48 +391,20 @@ export function Trends() {
             {t("fusion.trends.bucketsUnavailableHint")}
           </Empty>
         ) : rows.length ? (
-          <div className={s.tableWrap}>
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">{t("fusion.trends.colBucket")}</th>
-                  <th scope="col">{t("fusion.trends.colRequests")}</th>
-                  <th scope="col">{t("fusion.trends.colSuccessError")}</th>
-                  <th scope="col">P50 / P95 / P99</th>
-                  <th scope="col">{t("fusion.trends.metric.rate")}</th>
-                  <th scope="col">Token</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row, index) => (
-                  <tr key={index}>
-                    <td>
-                      <strong>{text(row.date)}</strong>
-                    </td>
-                    <td>{metric(row.requests)}</td>
-                    <td>
-                      {metric(row.success)} / {metric(row.error)}
-                    </td>
-                    <td>
-                      {percentiles
-                        .map((p) => (number(row[p.key]) === null ? "—" : `${metric(row[p.key])}ms`))
-                        .join(" · ")}
-                    </td>
-                    <td>
-                      {number(row.tokens_per_s) === null
-                        ? "—"
-                        : `${metric(row.tokens_per_s)} tok/s`}
-                    </td>
-                    <td>{metric(row.total_tokens)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          // Six columns is more than a phone can show side by side, so the shared table
+          // takes over: sticky header, card rows below 900px, no clipped P50/P95 column
+          // (P1-2 on this page).
+          <Table
+            columns={bucketColumns()}
+            rows={bucketRows}
+            rowKey={(row) => String(row.key)}
+            label={t("fusion.trends.buckets")}
+            scroll
+          />
         ) : (
           <Empty title={t("fusion.trends.noBuckets")} />
         )}
       </Panel>
-    </>
+    </Page>
   );
 }

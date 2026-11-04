@@ -1,10 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { create } from "zustand";
 import { api, object } from "./api";
-import { Drawer, DrawerPresence, Icon } from "./components";
-import { IconButton } from "./ui";
 import { chooseLanguage, languagePreference, useT, type LangPref } from "./i18n";
-import s from "./ui.module.scss";
+import { Drawer, DrawerPresence, Icon, IconButton } from "./ui";
+import s from "./appearance.module.scss";
 import "./theme.scss";
 
 export type Mode = "system" | "light" | "dark";
@@ -80,8 +79,7 @@ function persistLanguage(value: LangPref) {
       }),
     )
     .catch(() => undefined);
-}
-/** One click moves to the next interface language: system, Chinese, English. */
+} /** One click moves to the next interface language: system, Chinese, English. */
 export function LanguageToggle({ onChoose }: { onChoose?: () => void } = {}) {
   const t = useT();
   const [pref, setPref] = useState(languagePreference);
@@ -107,7 +105,19 @@ export function LanguageToggle({ onChoose }: { onChoose?: () => void } = {}) {
     />
   );
 }
+
+/**
+ * The two independent appearance axes: mode (system / light / dark) and the light-mode palette.
+ *
+ * The swatches are the four palette seeds from theme.scss. CSS cannot resolve another
+ * element's accent, so the seed hue is the one value that has to be repeated here; the
+ * lightness and chroma still come from the theme tokens, so a change to either moves every
+ * swatch with the real theme.
+ */
+const SWATCH_HUE: Record<Palette, number> = { green: 145, blue: 255, rose: 350, amber: 70 };
+
 export function Appearance({ onOpen }: { onOpen?: () => void } = {}) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const { mode, palette, dark, persisted } = useAppearance();
   useEffect(initializeAppearance, []);
@@ -125,8 +135,12 @@ export function Appearance({ onOpen }: { onOpen?: () => void } = {}) {
       />
       <DrawerPresence>
         {open && (
-          <Drawer title="外观设置" className={s.appearanceDrawer} onClose={() => setOpen(false)}>
-            <fieldset className={s.appearanceChoices}>
+          <Drawer
+            title="外观设置"
+            closeLabel={t("common.closeDrawer")}
+            onClose={() => setOpen(false)}
+          >
+            <fieldset className={s.choices}>
               <legend>显示模式</legend>
               {(
                 [
@@ -135,7 +149,7 @@ export function Appearance({ onOpen }: { onOpen?: () => void } = {}) {
                   ["dark", "深色", "moon"],
                 ] as const
               ).map(([value, label, icon]) => (
-                <label key={value}>
+                <label key={value} className={s.choice}>
                   <input
                     type="radio"
                     name="appearance-mode"
@@ -143,22 +157,22 @@ export function Appearance({ onOpen }: { onOpen?: () => void } = {}) {
                     checked={mode === value}
                     onChange={() => chooseAppearance({ mode: value })}
                   />
-                  <Icon name={icon} />
+                  <Icon name={icon} size="sm" />
                   <span>{label}</span>
                 </label>
               ))}
             </fieldset>
-            <fieldset className={s.paletteChoices} disabled={dark}>
+            <fieldset className={s.choices} disabled={dark}>
               <legend>浅色配色</legend>
               {(
                 [
-                  ["green", "青叶", "#6c9852"],
-                  ["blue", "雾蓝", "#527cab"],
-                  ["rose", "蔷薇", "#aa617b"],
-                  ["amber", "暖砂", "#a7804b"],
+                  ["green", "青叶"],
+                  ["blue", "雾蓝"],
+                  ["rose", "蔷薇"],
+                  ["amber", "暖砂"],
                 ] as const
-              ).map(([value, label, color]) => (
-                <label key={value}>
+              ).map(([value, label]) => (
+                <label key={value} className={s.choice}>
                   <input
                     type="radio"
                     name="appearance-palette"
@@ -166,7 +180,11 @@ export function Appearance({ onOpen }: { onOpen?: () => void } = {}) {
                     checked={palette === value}
                     onChange={() => chooseAppearance({ palette: value })}
                   />
-                  <span style={{ background: color }} />
+                  <span
+                    className={s.swatch}
+                    style={{ "--swatch-hue": SWATCH_HUE[value] } as CSSProperties}
+                    aria-hidden="true"
+                  />
                   <span>{label}</span>
                 </label>
               ))}

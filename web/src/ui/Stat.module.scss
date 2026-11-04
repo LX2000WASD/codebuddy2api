@@ -1,0 +1,83 @@
+/* One metric card. Level 1 of the box budget: a surface + one border. The card is its own
+   container, so the value scales with the card width (not the viewport) when the row holds
+   four or five of them. */
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-5);
+  background: var(--surface);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-card);
+  container-type: inline-size;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.label {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  color: var(--accent-text-strong);
+  background: var(--accent-subtle);
+  border-radius: var(--radius-block);
+}
+
+/* Shrinks with the card (cqi), then wraps. Never ellipsis — see the note in Stat.tsx. */
+.value {
+  display: block;
+  min-width: 0;
+  color: var(--text);
+  font-size: clamp(var(--fs-20), 4.6cqi, var(--fs-28));
+  font-weight: var(--fw-strong);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-tight);
+  letter-spacing: -0.01em;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.stat[data-tone="good"] .value {
+  color: var(--success-fg);
+}
+
+.stat[data-tone="warn"] .value {
+  color: var(--warning-fg);
+}
+
+.stat[data-tone="bad"] .value {
+  color: var(--danger-fg);
+}
+
+.hint {
+  min-width: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.extra {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}

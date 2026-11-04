@@ -1,0 +1,47 @@
+/* Release notes read as prose, not as UI: real paragraphs, real lists, a code chip that is
+   recognisably code. */
+.markdown {
+  color: var(--text);
+  font-size: var(--fs-13);
+  line-height: var(--lh-relaxed);
+  overflow-wrap: anywhere;
+}
+
+.markdown h3,
+.markdown h4 {
+  margin: var(--space-4) 0 var(--space-1);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-strong);
+}
+
+.markdown h3:first-child,
+.markdown h4:first-child {
+  margin-top: 0;
+}
+
+.markdown p,
+.markdown ul {
+  margin: 0 0 var(--space-2);
+}
+
+.markdown ul {
+  padding-inline-start: var(--space-5);
+}
+
+.markdown li + li {
+  margin-top: var(--space-1);
+}
+
+.markdown code {
+  padding: 0 var(--space-1);
+  background: var(--surface-sunken);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-tag);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+}
+
+.markdown a {
+  color: var(--accent-text-strong);
+  text-underline-offset: 0.2em;
+}

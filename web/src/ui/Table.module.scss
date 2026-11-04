@@ -38,6 +38,11 @@
 
 .table {
   width: 100%;
+  /* The floor that makes the difference between "the columns squeeze until every chip is on
+     its own line" and "the table scrolls": below this width the box scrolls horizontally (the
+     strip at the top) instead of compressing eight columns into 700px. A wide window still
+     fits, because the table never grows past its content. */
+  min-width: var(--table-min-width);
   color: var(--text);
   border-collapse: separate;
   border-spacing: 0;
@@ -51,6 +56,48 @@
   vertical-align: top;
   background: var(--surface);
   border-bottom: var(--hairline) solid var(--line);
+}
+
+/* Table copy is one line per cell: the table then takes its content width and really does
+   overflow, which is what the scroll strip at the top and the pinned actions column exist
+   for. Free wrapping turned a dense 8-column table into three lines per cell, so a row could
+   not be read across. A deliberately long value caps at --table-cell-max and ellipsizes with
+   a tooltip carrying the value; a column that must wrap overrides this from its className. */
+.cell {
+  /* The single line comes from .clip, not from the cell: nowrap on the cell itself makes the
+     cell's min-content as wide as its whole text, which is what stopped the table from ever
+     fitting a wide window. The cell stays shrinkable, the clip does the ellipsis.
+     The two layout primitives a page composes cells from read these: a cell is a row, and its
+     chips do not wrap. A column that needs the stacked form sets either variable from its own
+     className. */
+  --stack-direction: row;
+  --cluster-wrap: nowrap;
+}
+
+.clip {
+  display: block;
+  /* The single line is the point; the cap keeps one long value from owning the viewport.
+     overflow-wrap: anywhere lowers the cell's *min-content* contribution to a single
+     character without allowing a visual break (white-space: nowrap still wins), which is what
+     lets a wide window fit the eight columns while a narrow one scrolls instead of squeezing
+     them (see the table's min-width below). */
+  max-width: var(--table-cell-max);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The app shell makes every <small> inside a table cell a block, which is how a cell grew a
+   second line ("自动选择" over "按账号能力选择"). The primitive's default is one line, so a
+   clipped cell puts it back inline; a column that really wants the second line re-declares
+   it from its own className, which outranks this :where() selector. */
+/* .cell is in the selector so this still wins over a page's own `.muted { display: block }`,
+   which is how a "secondary line" was smuggled into a cell. A column that wants that line back
+   uses two classes of its own (`.cell .myColumn small`) and outranks this rule. */
+.cell .clip :where(small) {
+  display: inline;
+  margin: 0;
 }
 
 .headCell {

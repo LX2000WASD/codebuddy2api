@@ -1,0 +1,266 @@
+@use "./design/breakpoints.scss" as bp;
+
+/* ── Page enter ───────────────────────────────────────────────────────────────
+   The shell replays this transition on every navigation: the content mounts with a small
+   rise instead of snapping in. Geometry and timing come from tokens, and reduced motion
+   turns it off entirely. It also owns the vertical rhythm between sibling blocks, so a
+   page that renders several panels does not have to space them itself. */
+.enter {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.enter > * + * {
+  margin-top: var(--space-4);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .enter {
+    animation: pageIn var(--duration-panel) var(--ease-standard) both;
+  }
+}
+
+@keyframes pageIn {
+  from {
+    opacity: 0;
+    transform: translateY(var(--space-1));
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Sign in ──────────────────────────────────────────────────────────────────
+   The first screen the user sees: one card, the brand, and the two fields that matter.
+   The decorative orbit is aria-hidden and purely visual. */
+.login {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  place-items: center;
+  align-content: center;
+  gap: var(--space-6);
+  min-height: 100dvh;
+  padding: var(--space-6) var(--space-4);
+  background: var(--page);
+}
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 15% 85%, var(--accent-subtle), transparent 60%),
+    radial-gradient(ellipse at 85% 15%, var(--accent-subtle), transparent 55%);
+}
+
+/* Language and appearance belong to the sign-in screen too: a user who opened the app in
+   the wrong theme should not have to sign in before fixing it. */
+.appearance {
+  position: fixed;
+  top: var(--space-4);
+  inset-inline-end: var(--space-4);
+  z-index: var(--z-chrome);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.intro {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  text-align: center;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text);
+  font-size: var(--fs-15);
+  font-weight: var(--fw-strong);
+}
+
+.brandIcon {
+  display: grid;
+  place-items: center;
+  width: var(--control-h-md);
+  height: var(--control-h-md);
+  color: var(--accent-text-strong);
+  background: var(--accent-subtle);
+  border-radius: var(--radius-block);
+}
+
+.intro h1 {
+  max-width: 34ch;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-base);
+}
+
+.orbit {
+  display: grid;
+  place-items: center;
+  width: calc(var(--space-12) + var(--space-6));
+  height: calc(var(--space-12) + var(--space-6));
+  color: var(--accent-text-strong);
+  background: var(--accent-subtle);
+  border: var(--hairline) solid var(--accent-border);
+  border-radius: var(--radius-full);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: min(var(--dialog-w), 100%);
+  max-width: 28rem;
+  padding: var(--space-6);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-overlay);
+  box-shadow: var(--shadow-3);
+}
+
+.card > :global(svg) {
+  color: var(--accent-text-strong);
+}
+
+.card h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-20);
+  font-weight: var(--fw-strong);
+  line-height: var(--lh-tight);
+}
+
+/* A rejected sign-in shakes the card once: the pointer is still on the button, so the
+   movement is the only thing that says "that attempt failed". */
+.loginShake {
+  animation: shake var(--duration-panel) var(--ease-standard) both;
+}
+
+@keyframes shake {
+  10%,
+  90% {
+    transform: translateX(calc(var(--space-1) * -1));
+  }
+
+  30%,
+  70% {
+    transform: translateX(var(--space-2));
+  }
+
+  50% {
+    transform: translateX(calc(var(--space-2) * -1));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loginShake {
+    animation: none;
+  }
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* An icon inside the field and an action at its trailing edge. */
+.inputGroup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-inline-start: var(--space-2);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+.inputGroup:focus-within {
+  border-color: var(--accent-border);
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.inputGroup > :global(svg) {
+  flex: none;
+  color: var(--text-subtle);
+}
+
+/* The input itself draws no frame: the group is the frame. */
+.inputGroup input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-2) 0;
+  color: var(--text);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+}
+
+.inputGroup input:focus-visible {
+  outline: none;
+}
+
+.inputGroup input::placeholder {
+  color: var(--text-subtle);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+}
+
+.capsHint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--warning-fg);
+  font-size: var(--fs-11);
+}
+
+@include bp.md-down {
+  .login {
+    gap: var(--space-4);
+    padding: var(--space-4);
+  }
+
+  .card {
+    padding: var(--space-4);
+  }
+
+  .orbit {
+    display: none;
+  }
+}
+/* Centred status states (checking the session, a session error with its way back). */
+.center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  min-height: 100dvh;
+  padding: var(--space-6);
+  color: var(--text-muted);
+  text-align: center;
+  font-size: var(--fs-12);
+}

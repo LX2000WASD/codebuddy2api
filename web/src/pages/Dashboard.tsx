@@ -12,19 +12,26 @@ import {
 } from "../api";
 import {
   Badge,
+  Button,
+  Cluster,
   Drawer,
   DrawerPresence,
   Empty,
   ErrorNotice,
-  Fields,
   Icon,
-  RefreshIcon,
-  PageTitle,
+  Page,
   Panel,
-  ResourceState,
-  profileLabel,
-} from "../components";
-import s from "../ui.module.scss";
+  Select,
+  Skeleton,
+  Table,
+  type TableColumn,
+} from "../ui";
+import { Fields, profileLabel } from "../values";
+import s from "./Dashboard.module.scss";
+import { CostCards } from "../insights";
+import { KpiCards, UsageTrend } from "../UsageOverview";
+import { t, useDateFormat, useT } from "../i18n";
+
 function normalize(value: unknown): RecordValue & {
   summary: RecordValue;
   previous: RecordValue | null;
@@ -58,21 +65,28 @@ function normalize(value: unknown): RecordValue & {
         : object(d.config_notice, t("dash.configNoticeTitle")),
   };
 }
+
+/** "启用/手动停用 + 健康状态" as one badge tone, shared by both credential panels. */
+function healthTone(c: RecordValue): "good" | "warn" | "neutral" {
+  if (c.enabled === false) return "neutral";
+  return c.health === "ready" ? "good" : "warn";
+}
+
 function Health({ data }: { data: RecordValue }) {
   const t = useT();
   if (!Array.isArray(data.credentials)) return <Fields data={data} />;
   const credentials = list(data.credentials);
   if (!credentials.length) return <Empty title={t("dash.credentialHealthEmpty")} />;
   return (
-    <div className={`${s.healthList} ${s.panelScroll}`}>
+    <ul className={s.healthList}>
       {credentials.map((c, i) => (
-        <div key={i}>
-          <div>
+        <li key={i} className={s.healthRow}>
+          <div className={s.healthIdentity}>
             <strong>{text(c.name ?? c.filename)}</strong>
             <small>{profileLabel(text(c.profile))}</small>
           </div>
-          <div>
-            <Badge tone={c.enabled === false ? "neutral" : c.health === "ready" ? "good" : "warn"}>
+          <div className={s.healthState}>
+            <Badge tone={healthTone(c)}>
               {c.enabled === false
                 ? t("dash.status.manual")
                 : c.health === "ready"
@@ -83,61 +97,67 @@ function Health({ data }: { data: RecordValue }) {
               <small>{t("dash.modelCooldowns", { n: c.cooldowns.length })}</small>
             )}
           </div>
-        </div>
+        </li>
       ))}
-    </div>
+    </ul>
   );
 }
+
+/** One balance row, with the account name already resolved for the table. */
+type BalanceRow = { key: string; name: string; credits: RecordValue | null; row: RecordValue };
+
 function OfficialCredits({ value }: { value: unknown }) {
   const t = useT();
   const format = useDateFormat();
-  const rows = Object.entries(object(value));
-  if (!rows.length) return <Empty title={t("dash.balanceSnapshotEmpty")} />;
+  const entries = Object.entries(object(value));
+  if (!entries.length) return <Empty title={t("dash.balanceSnapshotEmpty")} />;
+  const rows: BalanceRow[] = entries.map(([key, entry], index) => {
+    const row = object(entry);
+    return {
+      key: String(index),
+      name: typeof row.name === "string" ? row.name : (key.split(/[\\/]/).at(-1) ?? key),
+      credits: row.credits ? object(row.credits) : null,
+      row,
+    };
+  });
+  const columns: TableColumn<BalanceRow>[] = [
+    { id: "name", header: t("dash.credentials"), cell: (row) => row.name },
+    {
+      id: "balance",
+      header: t("dash.balance"),
+      cell: (row) =>
+        row.credits?.unlimited && row.credits?.enterprise
+          ? t("dash.unlimited")
+          : metric(row.credits?.credits ?? row.credits?.remaining),
+    },
+    {
+      id: "sync",
+      header: t("dash.syncStatus"),
+      cell: (row) =>
+        row.row.error ? (
+          <Badge tone="warn">{t("dash.status.syncError")}</Badge>
+        ) : (
+          <span>
+            {typeof row.row.fetched_at === "number"
+              ? format.dateTime(new Date(row.row.fetched_at * 1000))
+              : t("dash.syncTimeUnknown")}
+          </span>
+        ),
+    },
+  ];
   return (
-    <div className={`${s.tableWrap} ${s.panelScroll}`}>
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">{t("dash.credentials")}</th>
-            <th scope="col">{t("dash.balance")}</th>
-            <th scope="col">{t("dash.syncStatus")}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(([key, value]) => {
-            const row = object(value);
-            const credits = row.credits ? object(row.credits) : null;
-            return (
-              <tr key={key}>
-                <td>{typeof row.name === "string" ? row.name : key.split(/[\\/]/).at(-1)}</td>
-                <td>
-                  {credits?.unlimited && credits?.enterprise
-                    ? t("dash.unlimited")
-                    : metric(credits?.credits ?? credits?.remaining)}
-                </td>
-                <td>
-                  {row.error ? (
-                    <Badge tone="warn">{t("dash.status.syncError")}</Badge>
-                  ) : (
-                    <span>
-                      {typeof row.fetched_at === "number"
-                        ? format.dateTime(new Date(row.fetched_at * 1000))
-                        : t("dash.syncTimeUnknown")}
-                    </span>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+    <Table
+      columns={columns}
+      rows={rows}
+      rowKey={(row) => row.key}
+      label={t("dash.balanceTitle")}
+      scroll
+    />
   );
 }
-import { CostCards } from "../insights";
-import { KpiCards, UsageTrend } from "../UsageOverview";
-import { t, useDateFormat, useT } from "../i18n";
-import { Select } from "../fields";
+
+/** One row of the model ranking: the resolved name plus the numbers it is ranked by. */
+type RankRow = { key: string; model: string; row: RecordValue };
 
 function ConfigNotice({ notice, onDismiss }: { notice: RecordValue; onDismiss: () => void }) {
   const t = useT();
@@ -147,17 +167,15 @@ function ConfigNotice({ notice, onDismiss }: { notice: RecordValue; onDismiss: (
   const command = text(notice.command);
   const count = number(notice.count) ?? items.length;
   return (
-    <div className={s.warning} role="status">
-      <Icon name="alert" />
-      <div>
+    <div className={s.notice} role="status">
+      <Icon name="alert" size="sm" />
+      <div className={s.noticeBody}>
         <strong>{t("dash.configNoticeTitle")}</strong>
         <p>{t("dash.configNoticeBody", { count: String(count), keys })}</p>
-        <p className={s.note}>
-          <code>{command}</code>
-        </p>
-        <div className={s.actions}>
-          <button
-            type="button"
+        <code className={s.noticeCommand}>{command}</code>
+        <Cluster gap="2">
+          <Button
+            size="sm"
             onClick={() => {
               const clipboard = navigator.clipboard;
               if (!clipboard) return;
@@ -168,11 +186,11 @@ function ConfigNotice({ notice, onDismiss }: { notice: RecordValue; onDismiss: (
             }}
           >
             {copied ? t("dash.configNoticeCopied") : t("dash.configNoticeCopy")}
-          </button>
-          <button type="button" onClick={onDismiss}>
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onDismiss}>
             {t("dash.configNoticeDismiss")}
-          </button>
-        </div>
+          </Button>
+        </Cluster>
       </div>
     </div>
   );
@@ -192,38 +210,46 @@ function ConfigNoticeConfirm({
   const [error, setError] = useState<string | null>(null);
   const count = number(notice.count) ?? list(notice.items).length;
   return (
-    <Drawer title={t("dash.configNoticeConfirmTitle")} onClose={onClose} dismissDisabled={busy}>
-      <div className={s.warning}>
-        <Icon name="alert" />
-        <div>
+    <Drawer
+      title={t("dash.configNoticeConfirmTitle")}
+      onClose={onClose}
+      dismissDisabled={busy}
+      closeLabel={t("common.closeDrawer")}
+      footer={
+        <Cluster gap="2">
+          <Button disabled={busy} onClick={onClose}>
+            {t("dash.configNoticeCancel")}
+          </Button>
+          <Button
+            variant="primary"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              setError(null);
+              void api
+                .post("/config-notice/dismiss", {})
+                .then(() => onDismissed())
+                .catch((err: unknown) => setError(errorMessage(err)))
+                .finally(() => setBusy(false));
+            }}
+          >
+            {busy ? t("dash.configNoticeConfirming") : t("dash.configNoticeConfirm")}
+          </Button>
+        </Cluster>
+      }
+    >
+      <div className={s.notice}>
+        <Icon name="alert" size="sm" />
+        <div className={s.noticeBody}>
           <strong>{t("dash.configNoticeConfirmStrong", { count: String(count) })}</strong>
           <p>{t("dash.configNoticeConfirmBody", { count: String(count) })}</p>
         </div>
       </div>
       <ErrorNotice message={error} />
-      <div className={s.actions}>
-        <button type="button" disabled={busy} onClick={onClose}>
-          {t("dash.configNoticeCancel")}
-        </button>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => {
-            setBusy(true);
-            setError(null);
-            void api
-              .post("/config-notice/dismiss", {})
-              .then(() => onDismissed())
-              .catch((err: unknown) => setError(errorMessage(err)))
-              .finally(() => setBusy(false));
-          }}
-        >
-          {busy ? t("dash.configNoticeConfirming") : t("dash.configNoticeConfirm")}
-        </button>
-      </div>
     </Drawer>
   );
 }
+
 export { Trend } from "../Trend";
 
 /**
@@ -269,42 +295,78 @@ export function Dashboard() {
   // range, or an explicit granularity=hour) a second, identical request would
   // download the same payload twice for the same chart.
   const wantsHourly = hourlyWanted && actualGrain !== "hour";
+  const profiles = d?.profiles ?? [];
+  const profileTotal = profiles.reduce((sum, row) => sum + (number(row.requests) ?? 0), 0);
+  // The ranking table reads the ten busiest models of the window; the row key is the
+  // position, because two rules may report the same public name.
+  const rankRows: RankRow[] = [...(d?.models ?? [])]
+    .sort((a, b) => (number(b.requests) ?? -1) - (number(a.requests) ?? -1))
+    .slice(0, 10)
+    .map((row, index) => ({
+      key: String(index),
+      model: text(row.model) || t("dash.unknownModel"),
+      row,
+    }));
+  const rankColumns: TableColumn<RankRow>[] = [
+    {
+      id: "model",
+      header: t("dash.models"),
+      cell: (row) => (
+        <span className={s.modelCell}>
+          <span className={s.rank}>{String(Number(row.key) + 1).padStart(2, "0")}</span>
+          <strong>{row.model}</strong>
+        </span>
+      ),
+    },
+    { id: "requests", header: t("dash.requests"), cell: (row) => metric(row.row.requests) },
+    { id: "tokens", header: "Token", cell: (row) => metric(row.row.total_tokens) },
+    { id: "credit", header: "Credit", cell: (row) => metric(row.row.credit) },
+  ];
   return (
-    <>
-      <PageTitle
-        title={t("dash.runtime")}
-        actions={
-          <>
-            <Select aria-label={t("dash.range")} value={days} onChange={(value) => setDays(value)}>
-              {["1", "7", "30", "90"].map((n) => (
-                <option value={n} key={n}>
-                  {t("dash.lastNDays", { n })}
-                </option>
-              ))}
-            </Select>
-            <Select
-              aria-label={t("dash.granularity")}
-              value={granularity}
-              onChange={(value) => setGranularity(value)}
-            >
-              <option value="auto">{t("dash.granularityAuto")}</option>
-              <option value="hour">{t("dash.granularityHour")}</option>
-              <option value="day">{t("dash.granularityDay")}</option>
-            </Select>
-            <button
-              onClick={() => {
-                resource.reload();
-                // Refetch the lazy hourly series too, if it is in play.
-                setHourlyReload((v) => v + 1);
-              }}
-            >
-              <RefreshIcon spinning={resource.refreshing} />
-              {t("dash.refresh")}
-            </button>
-          </>
-        }
+    <Page
+      title={t("dash.runtime")}
+      actions={
+        <>
+          <Select
+            className={s.range}
+            label={t("dash.range")}
+            value={days}
+            onChange={(value) => setDays(value)}
+          >
+            {["1", "7", "30", "90"].map((n) => (
+              <option value={n} key={n}>
+                {t("dash.lastNDays", { n })}
+              </option>
+            ))}
+          </Select>
+          <Select
+            className={s.range}
+            label={t("dash.granularity")}
+            value={granularity}
+            onChange={(value) => setGranularity(value)}
+          >
+            <option value="auto">{t("dash.granularityAuto")}</option>
+            <option value="hour">{t("dash.granularityHour")}</option>
+            <option value="day">{t("dash.granularityDay")}</option>
+          </Select>
+          <Button
+            icon={<Icon name="refresh" size="sm" spin={resource.refreshing} />}
+            onClick={() => {
+              resource.reload();
+              // Refetch the lazy hourly series too, if it is in play.
+              setHourlyReload((v) => v + 1);
+            }}
+          >
+            {t("dash.refresh")}
+          </Button>
+        </>
+      }
+    >
+      {resource.loading && <Skeleton variant="card" label={t("common.loading")} />}
+      <ErrorNotice
+        message={resource.error}
+        retry={{ label: t("common.retry"), onClick: resource.reload }}
       />
-      <ResourceState {...resource} />
       {d?.config_notice && !noticeHidden && (
         <ConfigNotice notice={d.config_notice} onDismiss={() => setConfirmingNotice(true)} />
       )}
@@ -323,7 +385,7 @@ export function Dashboard() {
       {d && (
         <>
           {(d.degraded === true || d.storage.degraded === true) && (
-            <div className={s.warning} role="alert">
+            <div className={s.notice} role="alert">
               {t("dash.storageDegraded")}
             </div>
           )}
@@ -360,21 +422,20 @@ export function Dashboard() {
               />
             )}
           </Panel>
-          <div className={s.dashboardGrid}>
+          <div className={s.grid}>
             <Panel title={t("dash.profileUsage")} hint={t("dash.granularityByRequests")}>
-              {d.profiles.length ? (
+              {profiles.length ? (
                 <div className={s.distribution}>
-                  {d.profiles.map((p, i) => {
-                    const total = d.profiles.reduce((sum, r) => sum + (number(r.requests) ?? 0), 0);
+                  {profiles.map((p, i) => {
                     const count = number(p.requests);
                     return (
-                      <div key={i}>
-                        <div>
+                      <div key={i} className={s.distributionRow}>
+                        <div className={s.distributionHead}>
                           <strong>{profileLabel(text(p.profile))}</strong>
                           <span>{metric(p.requests)}</span>
                         </div>
                         <progress
-                          max={total || 1}
+                          max={profileTotal || 1}
                           value={count ?? 0}
                           aria-label={`${profileLabel(text(p.profile))} ${t("dash.shareOfRequests")}`}
                         />
@@ -387,35 +448,14 @@ export function Dashboard() {
               )}
             </Panel>
             <Panel title={t("dash.modelRank")}>
-              {d.models.length ? (
-                <div className={`${s.tableWrap} ${s.panelScroll}`}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th scope="col">{t("dash.models")}</th>
-                        <th scope="col">{t("dash.requests")}</th>
-                        <th scope="col">Token</th>
-                        <th scope="col">Credit</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[...d.models]
-                        .sort((a, b) => (number(b.requests) ?? -1) - (number(a.requests) ?? -1))
-                        .slice(0, 10)
-                        .map((m, i) => (
-                          <tr key={i}>
-                            <td>
-                              <span className={s.rank}>{String(i + 1).padStart(2, "0")}</span>
-                              <strong>{text(m.model) || t("dash.unknownModel")}</strong>
-                            </td>
-                            <td>{metric(m.requests)}</td>
-                            <td>{metric(m.total_tokens)}</td>
-                            <td>{metric(m.credit)}</td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
+              {rankRows.length ? (
+                <Table
+                  columns={rankColumns}
+                  rows={rankRows}
+                  rowKey={(row) => row.key}
+                  label={t("dash.modelRank")}
+                  scroll
+                />
               ) : (
                 <Empty title={t("dash.modelRankEmpty")} />
               )}
@@ -440,6 +480,6 @@ export function Dashboard() {
           </p>
         </>
       )}
-    </>
+    </Page>
   );
 }

@@ -1,4 +1,4 @@
-import type { SVGProps } from "react";
+import { useEffect, useState, type SVGProps } from "react";
 import s from "./Icon.module.scss";
 
 /**
@@ -77,6 +77,25 @@ export type IconProps = {
   spin?: boolean;
   className?: string;
 } & Omit<SVGProps<SVGSVGElement>, "name" | "children" | "ref">;
+
+/** A refresh glyph that turns while `spinning` and always finishes the turn it is in. */
+export function RefreshIcon({ spinning }: { spinning: boolean }) {
+  const [turning, setTurning] = useState(false);
+  useEffect(() => {
+    if (spinning) setTurning(true);
+  }, [spinning]);
+  return (
+    <span
+      className={s.turn}
+      data-spinning={turning ? "true" : undefined}
+      onAnimationIteration={() => {
+        if (!spinning) setTurning(false);
+      }}
+    >
+      <Icon name="refresh" />
+    </span>
+  );
+}
 
 export function Icon({
   name = "grid",

@@ -1,0 +1,542 @@
+@use "./design/breakpoints.scss" as bp;
+
+/* The model-routing page group: pages/Models.tsx, modelMetadata.tsx, modelRates.tsx.
+ *
+ * Everything structural comes from web/src/ui — Table for the catalog, Segmented/Field/
+ * Input/Select/Switch for the filter bar, Drawer/Dialog for the editor, Panel/Badge for
+ * the sections. What is left here is the copy rhythm (notes, muted lines, warnings) and
+ * the few layouts that belong to this page only (the metadata dl, the editor's
+ * fieldsets, the bulk bar, the column-visibility popover).
+ *
+ * Contract §3.1: no colour, font-size or spacing literal — every value below is a token
+ * from theme.scss or design/base.scss. */
+
+/* ── Copy ───────────────────────────────────────────────────────────────────── */
+.note {
+  margin: 0;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.muted {
+  display: block;
+  min-width: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.mono {
+  display: block;
+  min-width: 0;
+  color: var(--text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.warning {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+  border: var(--hairline) solid var(--warning-border);
+  border-radius: var(--radius-block);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.successNotice {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  color: var(--success-fg);
+  background: var(--success-bg);
+  border: var(--hairline) solid var(--success-border);
+  border-radius: var(--radius-block);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+/* ── Filter bar ─────────────────────────────────────────────────────────────── */
+/* The search field takes the free space of a wrapping toolbar but never shrinks below
+   the token width that keeps its placeholder readable (P2-4 measured 59px for 132px). */
+.search {
+  flex: 1 1 var(--grid-min-md);
+  min-width: var(--control-min-w);
+}
+
+/* One filter control. A Select's trigger is width:100%, so it fills whatever box it is
+   given: that box is this one. Inline while there is room; full width on a phone, where
+   two 148px triggers side by side would only truncate their labels. */
+.filterField {
+  flex: 1 1 var(--grid-min-sm);
+  min-width: var(--control-min-w);
+}
+
+@include bp.md-down {
+  .search,
+  .filterField {
+    flex-basis: 100%;
+  }
+}
+
+/* The visibility trigger's positioning anchor; the popover itself is fixed. */
+.menuAnchor {
+  display: inline-flex;
+  min-width: 0;
+}
+
+/* ── Cells ──────────────────────────────────────────────────────────────────── */
+/* One line per table cell. ui/Table clips every data cell to a single line (Table.module.scss
+   .clip) and keeps the row's actions out of the clip, so a rich cell has to fit on one line;
+   anything that does not fit belongs in the column's tooltip. In the card layout the same
+   content is a block again, where wrapping is the point. */
+.cellLine {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* The copy classes set display:block for stacked contexts; here they are inline words of the
+   same line. Two classes beat the single-class rule regardless of bundle order. */
+.cellLine > small {
+  display: inline;
+  min-width: 0;
+}
+
+@include bp.md-down {
+  .cellLine {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+}
+
+/* Identities are upstream ids as often as short names (us.anthropic.claude-…-v1:0). They
+   wrap instead of widening the table past its container (contract §3.2). */
+.modelName {
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-strong);
+  overflow-wrap: anywhere;
+}
+
+/* Numbers read as one column across rows; the figure never wraps mid-digit. */
+.specNum {
+  color: var(--text);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+/* An output-limit probe verdict next to the claimed window (modelRates.tsx). */
+.probeNote {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+  margin-top: var(--space-1);
+}
+
+.probeNote > strong {
+  font-size: var(--fs-11);
+  font-weight: var(--fw-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.probeNote > small {
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+}
+
+.probeClamped {
+  color: var(--warning-fg);
+}
+
+.probeOk {
+  color: var(--success-fg);
+}
+
+.probeMuted {
+  color: var(--text-subtle);
+}
+
+/* ── Metadata (modelMetadata.tsx) ───────────────────────────────────────────── */
+/* A two-column definition list: label column hugs its text, value column takes the
+   rest and is the only one allowed to wrap. */
+.metadataFields {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  min-width: 0;
+  font-size: var(--fs-12);
+}
+
+.metadataFields > dt {
+  min-width: 0;
+  color: var(--text-subtle);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.metadataFields > dd {
+  min-width: 0;
+  margin: 0;
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+@include bp.md-down {
+  .metadataFields {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
+  }
+
+  .metadataFields > dd {
+    margin-bottom: var(--space-2);
+  }
+}
+
+/* Raw upstream JSON: collapsed by default, and never allowed to widen the drawer. */
+.rawData {
+  min-width: 0;
+}
+
+.rawData > summary {
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  cursor: pointer;
+}
+
+.rawData > pre {
+  max-height: var(--listbox-max-height);
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  overflow: auto;
+  color: var(--text-muted);
+  background: var(--surface-sunken);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-block);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+}
+
+/* ── Editor form ────────────────────────────────────────────────────────────── */
+/* The form's own fieldset keeps the grouping/disabling semantics but no browser chrome:
+   the fields inside bring their own spacing. */
+.formStack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* One candidate account in the routing preview. */
+.candidate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) 0;
+  border-bottom: var(--hairline) solid var(--line);
+}
+
+.candidate > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.candidate > div > strong {
+  color: var(--text);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--control-min-w)), 1fr));
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.formGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-4);
+  background: var(--surface-sunken);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-block);
+}
+
+.formGroup > legend {
+  padding-inline: var(--space-2);
+  color: var(--text);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+}
+
+/* One row of the route list: upstream id, weight, enabled, remove. */
+.routeRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.routeRow > :first-child {
+  flex: 1 1 var(--control-min-w);
+  min-width: 0;
+}
+
+.routeRow > input[type="number"] {
+  flex: 0 1 var(--space-12);
+  min-width: var(--space-12);
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+}
+
+/* A switch and its state word: the word is the value, the switch is the control. */
+.switchLine {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  cursor: pointer;
+}
+
+/* Route mode picker: native radios (keyboard + form semantics) with our paint. */
+.modeGroup {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--grid-min-sm)), 1fr));
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.modeOption {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-block);
+  cursor: pointer;
+}
+
+.modeOption > span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.modeOption > span > strong {
+  color: var(--text);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+}
+
+.modeOption > span > small {
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+}
+
+/* The selected mode is the option's own background, never a block painted over it. */
+.modeSelected {
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+}
+
+/* An account the rule may bind to. */
+.choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.choice:hover {
+  background: var(--surface-hover);
+}
+
+.choice > span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.choice > span > strong {
+  color: var(--text);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+
+.choice > span > small {
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+}
+
+/* ── Bulk bar ───────────────────────────────────────────────────────────────── */
+/* Portalled to <body> by the page: the shell's enter animation sets a transform, which
+   would turn this bar's position:fixed into a containing block. */
+.bulkBar {
+  position: fixed;
+  z-index: var(--z-floating);
+  inset-inline: 0;
+  bottom: var(--space-3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  width: min(calc(100% - var(--space-6)), var(--dialog-w));
+  margin-inline: auto;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-3);
+}
+
+.bulkCount {
+  min-width: var(--space-6);
+  color: var(--accent-text-strong);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-strong);
+  text-align: center;
+}
+
+.bulkDivider {
+  width: var(--hairline);
+  height: var(--space-4);
+  background: var(--border);
+}
+
+.bulkList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: var(--listbox-max-height);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.bulkListItem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-1) 0;
+  border-bottom: var(--hairline) solid var(--line);
+}
+
+.bulkListItem > code {
+  min-width: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  overflow-wrap: anywhere;
+}
+
+.bulkProgress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+}
+
+.bulkProgressBar {
+  display: block;
+  height: var(--space-1);
+  overflow: hidden;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-full);
+}
+
+.bulkProgressBar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width var(--duration-standard) var(--ease-standard);
+}
+
+/* ── Column visibility popover ──────────────────────────────────────────────── */
+/* Positioned by popover.ts (fixed, flips above the trigger near the bottom edge), so it
+   cannot open off-screen the way an absolutely-positioned menu did (P3-2). */
+.menu {
+  position: fixed;
+  z-index: var(--z-popup);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: var(--listbox-max-height);
+  margin: 0;
+  padding: var(--space-2);
+  overflow-y: auto;
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-3);
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* The catalog is the page's only scrolling table; the shell supplies the frame. */
+.catalog {
+  min-width: 0;
+}

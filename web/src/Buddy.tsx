@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errorMessage, list, object, text, type Credential } from "./api";
-import { Drawer, ErrorNotice } from "./components";
+import { Button, Cluster, Drawer, ErrorNotice } from "./ui";
+import { useT } from "./i18n";
 import { TravelSummary } from "./Travel";
-import s from "./ui.module.scss";
+import s from "./Buddy.module.scss";
 
 type Confirmation = {
   can_claim: boolean;
@@ -45,6 +46,7 @@ export function Buddy({
   onClose: () => void;
   onDone: (result: Record<string, unknown>) => void;
 }) {
+  const t = useT();
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [attempted, setAttempted] = useState(false);
@@ -90,14 +92,21 @@ export function Buddy({
     }
   };
   return (
-    <Drawer title="首次领取猫猫并派遣" onClose={onClose} dismissDisabled={busy}>
-      <p>
+    <Drawer
+      title="首次领取猫猫并派遣"
+      closeLabel={t("common.closeDrawer")}
+      dismissDisabled={busy}
+      onClose={onClose}
+    >
+      <p className={s.lead}>
         <strong>{credential.name ?? credential.id}</strong>
       </p>
-      <p role="status">{text(status.message)}</p>
+      <p className={s.status} role="status">
+        {text(status.message)}
+      </p>
       <TravelSummary trip={status} />
       <p className={s.note}>{confirmation.authorization}</p>
-      <h3>{confirmation.title}</h3>
+      <h3 className={s.title}>{confirmation.title}</h3>
       {confirmation.terms.map((term, index) => (
         <p key={index} className={s.note}>
           {term}
@@ -113,7 +122,9 @@ export function Buddy({
         </a>
         。首次领猫任务通过实际对话自动生效，无需单独接取；不执行其他奖励任务或切换猫猫。
       </p>
-      <label>
+      {/* A native checkbox, not a switch: the agreement is a one-shot consent with a
+          sentence for a label, and the switch paint reads as an on/off preference. */}
+      <label className={s.consent}>
         <input
           type="checkbox"
           checked={accepted}
@@ -125,12 +136,16 @@ export function Buddy({
         我已阅读并同意上述协议，自动完成新手任务、领取并派遣
       </label>
       <ErrorNotice message={error} />
-      {busy && <p role="status">正在核验并申请，请勿重复点击…</p>}
-      <div className={s.actions}>
-        <button disabled={busy} onClick={onClose}>
+      {busy && (
+        <p className={s.status} role="status">
+          正在核验并申请，请勿重复点击…
+        </p>
+      )}
+      <Cluster>
+        <Button disabled={busy} onClick={onClose}>
           {attempted ? "关闭" : "取消"}
-        </button>
-      </div>
+        </Button>
+      </Cluster>
       <p className={s.note}>
         勾选即保存同意并自动办理。官方状态更新延迟时，由已开启的自动旅行继续查询，不重复发送对话；关闭自动旅行可停止自动续办，关闭页面不撤销已发请求。
       </p>

@@ -1,0 +1,52 @@
+/* Drawer copy for the first-buddy consent: lead line, state line, the terms, then the
+   consent itself. Every block wraps; none of them may widen the sheet. */
+.lead {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.status {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.title {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-strong);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+
+/* The consent row: the box stays on the first line, the sentence takes the rest of
+   the width and wraps. */
+.consent {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
+  color: var(--text);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.consent > input {
+  margin: var(--space-1) 0 0;
+}

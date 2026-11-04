@@ -54,13 +54,18 @@
 
 .stack {
   display: flex;
-  flex-direction: column;
+  /* A vertical flow by default. A container that wants the same children in one line — a
+     table cell, which must stay single-line (see Table.module.scss) — sets the variable
+     instead of fighting this rule with a more specific selector. */
+  flex-direction: var(--stack-direction, column);
   min-width: 0;
 }
 
 .cluster {
   display: flex;
-  flex-wrap: wrap;
+  /* Wraps by default (a filter row must), but a container that needs one line — a table cell
+     — sets the variable rather than fighting this rule with a more specific selector. */
+  flex-wrap: var(--cluster-wrap, wrap);
   min-width: 0;
 }
 

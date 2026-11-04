@@ -1,0 +1,503 @@
+@use "../design/breakpoints.scss" as bp;
+
+/* Presentation shared by the three system-area pages (settings, storage, alerts).
+ *
+ * One module for the three, not one each: they draw the same tile, card, note, code and
+ * list shapes, and three copies would drift the first time one of them changed.
+ *
+ * Only tokens are read here. No colour, size or spacing literal, because theme.scss owns
+ * the palettes and design/base.scss owns the geometry; a px value here would be a second
+ * source of truth for something the palette already decides.
+ */
+
+/* ---------- top-level tile (storage KPI) ---------- */
+
+/* A tile sits on the page, not inside a panel, so it is its own bordered box. */
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-4);
+  background: var(--surface);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+.tileHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+}
+
+.tileGlyph {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: var(--space-1);
+  color: var(--accent-text-strong);
+  background: var(--accent-subtle);
+  border-radius: var(--radius-block);
+}
+
+.tileValue {
+  color: var(--text);
+  font-size: var(--fs-20);
+  font-weight: var(--fw-strong);
+  line-height: var(--lh-tight);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* P2-5: the note wraps. It used to be nowrap + ellipsis inside a fixed two-column grid,
+   so "请求 1196 条 · 事件 34 条 · 保留 30 天" became "请求 1196 条 · 事…" at 390 and the
+   retention window — the one number that explains the row — was unreadable. */
+.tileNote {
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- card inside a panel ---------- */
+
+/* Sunken and borderless: a panel is the only rectangle in a section. */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-control);
+}
+
+.cardHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* ---------- text ---------- */
+
+.note {
+  margin: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.key {
+  color: var(--text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+/* A command the reader copies. It wraps instead of scrolling: the aside column is the
+   width of a phone, and a sideways scroll box there hides half of every command. Wrapping
+   is visual only — the element's text content, and therefore the copy, is unchanged. */
+.code {
+  margin: 0;
+  padding: var(--space-3);
+  color: var(--text-muted);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-control);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.link {
+  color: var(--accent-text-strong);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- lists ---------- */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.listItem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-control);
+}
+
+.rowActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* A switch and its visible label on one line; the control keeps its own aria-label, so
+   the row is readable without the label being tied to the glyph. */
+.switchRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.switchLabel {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- settings: the domain switcher ---------- */
+
+/* An in-page navigation bar (aria-selected), so it is not a Segmented: that primitive
+   expresses aria-pressed and owns no tablist semantics. The selected tab paints its own
+   background and border — no indicator block is layered over the label (P1-1). */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-1);
+  background: var(--surface-sunken);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-card);
+}
+
+.tab {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  color: var(--text-muted);
+  background: transparent;
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-control);
+  font: inherit;
+  font-size: var(--fs-12);
+  line-height: var(--lh-tight);
+  text-align: start;
+  cursor: pointer;
+  transition:
+    background var(--duration-micro) var(--ease-standard),
+    border-color var(--duration-micro) var(--ease-standard),
+    color var(--duration-micro) var(--ease-standard);
+}
+
+.tab:hover:not([aria-selected="true"]) {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.tab[aria-selected="true"] {
+  color: var(--text);
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+}
+
+.dirty {
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+}
+
+.tab[aria-selected="true"] .dirty {
+  color: var(--accent-text-strong);
+}
+
+/* The search field in a toolbar: it takes the free space but never shrinks below the
+   width at which its placeholder stops being readable (P2-4 measured 59px inputs). */
+.search {
+  flex: 1 1 var(--control-min-w);
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* A short form under a panel heading: label+control on one line with the action, and a
+   wrap instead of a squeeze on a narrow viewport. */
+.formRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.formField {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* ---------- settings: one row ---------- */
+
+/* Two columns while there is room: what the key does on the left, the control on the
+   right. Proportional tracks instead of a fixed width, so the control cannot push the
+   page sideways at any viewport. */
+.setting {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--space-2) var(--space-5);
+  align-items: start;
+  min-width: 0;
+  padding: var(--space-4) 0;
+  border-top: var(--hairline) solid var(--line);
+}
+
+.describe {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.name {
+  color: var(--text);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+
+.help {
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.sectionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-top: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+}
+
+/* ---------- settings: pending restart ---------- */
+
+.pending {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-4);
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+  border: var(--hairline) solid var(--warning-border);
+  border-radius: var(--radius-card);
+}
+
+.danger {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-4);
+  color: var(--danger-fg);
+  background: var(--danger-bg);
+  border: var(--hairline) solid var(--danger-border);
+  border-radius: var(--radius-card);
+}
+
+.pendingHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* ---------- settings: save bar ---------- */
+
+/* In flow, not sticky: a bar pinned over a long form covers the last row at 390, and the
+   form is submitted from the end of the panel anyway. */
+.saveBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+/* ---------- alerts ---------- */
+
+/* A toggle chip for the event-kind filter: many can be pressed at once, so this is not a
+   Segmented (single value). Pressed state is the button's own fill, never an overlay. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--control-h-sm);
+  margin: 0;
+  padding: 0 var(--space-3);
+  color: var(--text-muted);
+  background: var(--surface-sunken);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-full);
+  font: inherit;
+  font-size: var(--fs-11);
+  line-height: var(--lh-tight);
+  cursor: pointer;
+  transition:
+    background var(--duration-micro) var(--ease-standard),
+    border-color var(--duration-micro) var(--ease-standard),
+    color var(--duration-micro) var(--ease-standard);
+}
+
+.chip:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.chip[aria-pressed="true"] {
+  color: var(--text);
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+}
+
+/* The severity stripe is the only colour on the row; the text stays readable. */
+.event {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-3);
+  background: var(--surface-sunken);
+  border-inline-start: calc(var(--hairline) * 3) solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+.event[data-severity="critical"] {
+  border-inline-start-color: var(--danger-fg);
+}
+
+.event[data-severity="warning"] {
+  border-inline-start-color: var(--warning-fg);
+}
+
+.event[data-severity="info"] {
+  border-inline-start-color: var(--accent);
+}
+
+.eventHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.eventTitle {
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+
+.eventMeta {
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.eventBody {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+/* The severity filter stays a native select on purpose: three suites drive it with
+   fireEvent.change / Playwright selectOption, and it is a compact filter in a chip bar
+   rather than a form field. It is styled with the same control geometry as ui/Select. */
+.filter {
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  font: inherit;
+  font-size: var(--fs-12);
+  line-height: var(--lh-tight);
+}
+
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+@include bp.md-down {
+  .setting {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .saveBar {
+    padding: var(--space-3);
+  }
+}

@@ -1,6 +1,7 @@
 import { metric, type RecordValue } from "./api";
 import { t as translate, type MessageKey } from "./i18n";
-import s from "./ui.module.scss";
+import { Badge } from "./ui";
+import s from "./values.module.scss";
 
 const labels: Record<string, string> = {
   id: "标识",
@@ -397,10 +398,10 @@ export function DataValue({
   name?: string;
   depth?: number;
 }) {
-  if (value === null || value === undefined) return <span className={s.valueMuted}>—</span>;
+  if (value === null || value === undefined) return <span className={s.muted}>—</span>;
   if (typeof value === "string" && Object.hasOwn(valueKeys, value)) {
     return (
-      <span className={s.valueMuted} title={value}>
+      <span className={s.muted} title={value}>
         {translate(valueKeys[value] as string)}
       </span>
     );
@@ -408,13 +409,13 @@ export function DataValue({
   if (typeof value === "boolean") {
     const warning = ["partial", "degraded", "token_expired", "closed"].includes(name);
     return (
-      <span className={`${s.badge} ${value ? (warning ? s.warn : s.good) : s.neutral}`}>
+      <Badge tone={value ? (warning ? "warn" : "good") : "neutral"}>
         {name === "enabled" ? (value ? "已启用" : "已停用") : value ? "是" : "否"}
-      </span>
+      </Badge>
     );
   }
   if (typeof value === "number") {
-    if (!Number.isFinite(value)) return <span className={s.valueMuted}>—</span>;
+    if (!Number.isFinite(value)) return <span className={s.muted}>—</span>;
     if (times.has(name)) {
       if (value === 0) return <>未设置</>;
       const date = new Date(value > 1e11 ? value : value * 1000);
@@ -435,7 +436,7 @@ export function DataValue({
         }
       }
       return (
-        <details className={s.rawData}>
+        <details className={s.raw}>
           <summary>查看原始诊断</summary>
           <pre>{formatted}</pre>
         </details>
@@ -456,23 +457,23 @@ export function DataValue({
               : name === "consent_source"
                 ? ownLabel({ manual: "手动确认", environment: "环境变量预授权" }, value)
                 : undefined;
-    return <span className={s.valueText}>{label ?? (value || "—")}</span>;
+    return <span className={s.text}>{label ?? (value || "—")}</span>;
   }
-  if (typeof value !== "object") return <span className={s.valueMuted}>未知</span>;
+  if (typeof value !== "object") return <span className={s.muted}>未知</span>;
   if (depth >= 4)
     return (
-      <details className={s.rawData}>
+      <details className={s.raw}>
         <summary>查看深层诊断</summary>
         <pre>{JSON.stringify(value, null, 2)}</pre>
       </details>
     );
   if (Array.isArray(value)) {
-    if (!value.length) return <span className={s.valueMuted}>无</span>;
+    if (!value.length) return <span className={s.muted}>无</span>;
     const simple = value.every((item) => item === null || typeof item !== "object");
     return (
-      <div className={simple ? s.valueChips : s.valueList}>
+      <div className={simple ? s.chips : s.list}>
         {value.map((item, i) => (
-          <div className={simple ? s.valueChip : s.valueCard} key={i}>
+          <div className={simple ? s.chip : s.card} key={i}>
             <DataValue value={item} depth={depth + 1} />
           </div>
         ))}
@@ -483,7 +484,7 @@ export function DataValue({
 }
 export function Fields({ data, depth = 0 }: { data: RecordValue; depth?: number }) {
   return (
-    <dl className={`${s.details} ${depth ? s.nestedDetails : ""}`}>
+    <dl className={depth ? `${s.details} ${s.nested}` : s.details}>
       {Object.entries(data).map(([key, value]) => (
         <div key={key}>
           <dt title={key}>{ownLabel(labels, key) ?? key.replaceAll("_", " ")}</dt>

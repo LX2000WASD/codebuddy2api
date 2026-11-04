@@ -11,7 +11,8 @@ import {
 } from "./api";
 import { fusionGet, useFusionResource } from "./fusion/client";
 import { t, useT } from "./i18n";
-import s from "./ui.module.scss";
+import { Badge, type BadgeTone } from "./ui";
+import s from "./insights.module.scss";
 
 /**
  * E3 insight surfaces: the cost tiles on the overview, the 7-day health column on
@@ -264,11 +265,12 @@ export function healthTone(health: ModelHealth | undefined): HealthTone {
   return (health.errorRate ?? 0) >= 0.2 ? "bad" : "degraded";
 }
 
-function toneClass(tone: HealthTone): string {
-  if (tone === "good") return s.availGood;
-  if (tone === "bad") return s.availBad;
-  if (tone === "degraded") return s.availWarn;
-  return s.availMuted;
+/** The badge's tone triple for each health grade; "none" is the neutral tag. */
+function toneOf(tone: HealthTone): BadgeTone {
+  if (tone === "good") return "good";
+  if (tone === "bad") return "bad";
+  if (tone === "degraded") return "warn";
+  return "neutral";
 }
 
 /**
@@ -290,8 +292,8 @@ export function ModelHealthCell({
   const tone = healthTone(health);
   if (tone === "none")
     return (
-      <div className={s.availStack}>
-        <span className={s.availBadge + " " + s.availMuted}>{t("models.health.empty")}</span>
+      <div className={s.healthCell} data-model={name}>
+        <Badge tone="neutral">{t("models.health.empty")}</Badge>
         {spark}
       </div>
     );
@@ -303,11 +305,15 @@ export function ModelHealthCell({
     pct,
   });
   return (
-    <div className={s.availStack}>
-      <span className={s.availBadge + " " + toneClass(tone)} title={title} data-model={name}>
+    <div className={s.healthCell} data-model={name}>
+      {/* The tone is the semantic triple, not a hue: one failure in three requests and one
+          in three thousand must not look the same, and greyscale keeps them distinct. */}
+      <Badge tone={toneOf(tone)} title={title}>
         {t("models.health.errorRate", { pct })}
-      </span>
-      <small>{t("models.health.requests", { requests: compact(health?.requests ?? 0) })}</small>
+      </Badge>
+      <small className={s.healthMeta}>
+        {t("models.health.requests", { requests: compact(health?.requests ?? 0) })}
+      </small>
       {spark}
     </div>
   );
@@ -316,7 +322,7 @@ export function ModelHealthCell({
 /**
  * Daily request counts for one model as bars, one bar per day.
  *
- * Bars are plain spans (ui.module.scss .sparkline), not a chart library: seven
+ * Bars are plain spans (insights.module.scss .sparkline), not a chart library: seven
  * bars carry "did this model keep serving" and nothing more.
  */
 export function HealthSparkline({ name, rows }: { name: string; rows: RecordValue[] }) {

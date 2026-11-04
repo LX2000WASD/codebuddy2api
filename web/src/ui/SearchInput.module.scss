@@ -1,0 +1,64 @@
+/* A field that looks recessed rather than raised: it filters an existing list instead of
+   entering new data. */
+.search {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: var(--control-min-w);
+  max-width: 100%;
+  padding: 0 var(--space-2);
+  background: var(--surface-sunken);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+.search:focus-within {
+  border-color: var(--accent-border);
+}
+
+.icon {
+  flex: none;
+  color: var(--text-subtle);
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-1) 0;
+  color: var(--text);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+}
+
+.input:focus-visible {
+  outline: none;
+}
+
+.input::placeholder {
+  color: var(--text-subtle);
+}
+
+.clear {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  margin: 0;
+  padding: 0;
+  color: var(--text-muted);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.clear:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}

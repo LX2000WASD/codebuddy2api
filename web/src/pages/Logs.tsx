@@ -10,22 +10,35 @@ import {
   useResource,
   type RecordValue,
 } from "../api";
+import { ClearLogs } from "../components";
 import {
   Badge,
-  ClearLogs,
+  Button,
+  Cluster,
   Drawer,
   DrawerPresence,
   Empty,
   ErrorNotice,
-  Fields,
-  RefreshIcon,
-  SegmentThumb,
-  PageTitle,
+  Grid,
+  Input,
+  Page,
   Panel,
-  ResourceState,
-} from "../components";
-import { DataTable, writeUrlParams, type DataTableColumn, type SortingState } from "../dataTable";
+  Segmented,
+  Select,
+  Skeleton,
+  Stack,
+  Table,
+  Toolbar,
+  nextSort,
+  sortRows,
+  writeUrlParams,
+  type SkeletonCell,
+  type SortValue,
+  type TableColumn,
+  type TableSort,
+} from "../ui";
 import { RequestTrace } from "../traceView";
+import { Fields } from "../values";
 import { eventActionLabel, eventKindLabel, webToolLabel } from "../values";
 import { serverToolSummary } from "../serverTools";
 import {
@@ -36,9 +49,8 @@ import {
   useAccountNames,
 } from "../CreditChanges";
 import { profiles } from "./Models";
-import s from "../ui.module.scss";
 import { t, useT } from "../i18n";
-import { SearchInput, Select } from "../fields";
+
 function normalize(value: unknown) {
   const data = object(value);
   if (typeof data.has_more !== "boolean" || (data.has_more && typeof data.next_cursor !== "string"))
@@ -66,31 +78,35 @@ const outcomeLabels: Record<string, string> = {
   cancelled: "logs.outcome.cancelled",
   warning: "logs.outcome.warning",
 };
+
 function ServerToolSummary({ attempts }: { attempts: unknown }) {
   const t = useT();
   const summary = serverToolSummary(attempts);
   if (!summary) return null;
   return (
     <>
-      <div className={s.toolSummary} role="group" aria-label={t("logs.tool.summary")}>
-        {(
-          [
-            [t("logs.tool.searches"), metric(summary.search), false],
-            [t("logs.tool.fetches"), metric(summary.fetch), false],
-            [t("logs.tool.failed"), metric(summary.failed), summary.failed > 0],
-            [t("logs.tool.time"), `${metric(summary.durationMs)} ms`, false],
-          ] as const
-        ).map(([label, value, failed]) => (
-          <div className={`${s.kpiCard} ${failed ? s.toolFailed : ""}`} key={label}>
-            <small>{label}</small>
-            <strong>{value}</strong>
-          </div>
-        ))}
+      <div role="group" aria-label={t("logs.tool.summary")}>
+        <Grid min="sm" gap="2">
+          {(
+            [
+              [t("logs.tool.searches"), metric(summary.search), false],
+              [t("logs.tool.fetches"), metric(summary.fetch), false],
+              [t("logs.tool.failed"), metric(summary.failed), summary.failed > 0],
+              [t("logs.tool.time"), `${metric(summary.durationMs)} ms`, false],
+            ] as const
+          ).map(([label, value, failed]) => (
+            <div key={label}>
+              <small>{label}</small>
+              {failed ? <Badge tone="bad">{value}</Badge> : <strong>{value}</strong>}
+            </div>
+          ))}
+        </Grid>
       </div>
-      {summary.truncated && <p className={s.note}>{t("logs.tool.truncated")}</p>}
+      {summary.truncated && <small>{t("logs.tool.truncated")}</small>}
     </>
   );
 }
+
 export function Logs() {
   const t = useT();
   const [kind, setKind] = useState("request");
@@ -98,7 +114,7 @@ export function Logs() {
   const [filters, setFilters] = useState(emptyFilters);
   const names = useAccountNames(kind === "credit");
   const [cursors, setCursors] = useState<string[]>([]);
-  const [sorting, setSorting] = useState<SortingState>([]);
+  const [sort, setSort] = useState<TableSort>(null);
   // Live filter: typing debounces and re-fetches on its own; the Apply button stays
   // for an immediate submit. Each new filter resets pagination to the first page.
   // The effect fires only when the debounced value actually changes, not when it
@@ -113,11 +129,6 @@ export function Logs() {
     setFilters(debouncedDraft);
     setCursors([]);
   }, [debouncedDraft]);
-  /**
-   * The applied filters live in the address bar, so a refresh keeps them and a
-   * pasted link reproduces the view. Only the applied set is written (not the
-   * draft): a half-typed search box must not churn the URL on every keystroke.
-   */
   useEffect(() => {
     writeUrlParams({ ...filters, kind: kind === "request" ? "" : kind });
   }, [filters, kind]);
@@ -209,13 +220,12 @@ export function Logs() {
   /**
    * A cursor page has no single unique field (runtime events may repeat an id), so
    * the row key stays "id + position" exactly as the hand-written table had it.
-   * Sorting is applied by DataTable on top of this fixed order.
    */
-  const rows = (resource.data?.items ?? []).map((item, index) => ({
+  const rows: RecordValue[] = (resource.data?.items ?? []).map((item, index) => ({
     ...item,
     __key: text(item.id) + index,
   }));
-  const columns = useMemo<DataTableColumn<RecordValue>[]>(() => {
+  const columns = useMemo<TableColumn<RecordValue>[]>(() => {
     const outcomeOf = (item: RecordValue) =>
       kind === "request" ? item.outcome : object(item.details ?? {}).outcome;
     const toolOf = (item: RecordValue) =>
@@ -225,7 +235,7 @@ export function Logs() {
      * "web-fetch"). The list shows the localized name and keeps the raw id on hover,
      * because that id is what an operator greps for in the audit trail.
      */
-    const subject: DataTableColumn<RecordValue> = {
+    const subject: TableColumn<RecordValue> = {
       id: "subject",
       header: kind === "request" ? t("logs.col.modelProfile") : t("logs.col.action"),
       cell: (item) => {
@@ -253,30 +263,28 @@ export function Logs() {
                     : item.kind,
               )}
               {kind === "request" && (item.protocol === "images" || item.protocol === "videos") && (
-                <span className={s.toolBadge}>
-                  <Badge tone="neutral">
-                    {t(item.protocol === "images" ? "val.protocol.images" : "val.protocol.videos")}
-                  </Badge>
-                </span>
+                <Badge tone="neutral">
+                  {t(item.protocol === "images" ? "val.protocol.images" : "val.protocol.videos")}
+                </Badge>
               )}
               {tools && (
-                <span className={s.toolBadge}>
-                  <Badge tone={tools.failed ? "bad" : "neutral"}>
-                    {t("logs.tool.badge", {
-                      n: tools.truncated ? `${tools.total}+` : tools.total,
-                    })}
-                  </Badge>
-                </span>
+                <Badge tone={tools.failed ? "bad" : "neutral"}>
+                  {t("logs.tool.badge", {
+                    n: tools.truncated ? `${tools.total}+` : tools.total,
+                  })}
+                </Badge>
               )}
             </small>
             {kind === "request" && item.client_ip ? (
-              <small className={s.mono}>{text(item.client_ip)}</small>
+              <small>
+                <code>{text(item.client_ip)}</code>
+              </small>
             ) : null}
           </>
         );
       },
     };
-    const status: DataTableColumn<RecordValue> = {
+    const status: TableColumn<RecordValue> = {
       id: "status",
       header: t("logs.col.status"),
       cell: (item) => {
@@ -302,25 +310,25 @@ export function Logs() {
         );
       },
     };
-    const list: DataTableColumn<RecordValue>[] = [
+    const result: TableColumn<RecordValue>[] = [
       {
         id: "time",
         header: t("logs.col.time"),
-        sortValue: (item) => (typeof item.started_at === "number" ? item.started_at : undefined),
-        sortDescFirst: true,
-        sortUndefined: "last",
+        sortable: true,
         cell: (item) => (
           <>
             {typeof item.started_at === "number"
               ? new Date(item.started_at * 1000).toLocaleString("zh-CN")
               : text(item.started_at)}
-            <small className={s.mono}>{text(item.id)}</small>
+            <small>
+              <code>{text(item.id)}</code>
+            </small>
           </>
         ),
       },
     ];
     if (kind === "credit") {
-      list.push(
+      result.push(
         {
           id: "change",
           header: t("logs.col.changeAccount"),
@@ -338,9 +346,9 @@ export function Logs() {
         },
       );
     } else {
-      list.push(subject, status);
+      result.push(subject, status);
       if (kind === "request") {
-        list.push(
+        result.push(
           {
             id: "apiKey",
             header: t("logs.col.apiKey"),
@@ -349,19 +357,13 @@ export function Logs() {
           {
             id: "duration",
             header: t("logs.col.duration"),
-            sortValue: (item) =>
-              typeof item.duration_ms === "number" ? item.duration_ms : undefined,
-            sortDescFirst: true,
-            sortUndefined: "last",
+            sortable: true,
             cell: (item) => `${metric(item.duration_ms)} ms`,
           },
           {
             id: "tokens",
             header: "Token / Credit",
-            sortValue: (item) =>
-              typeof item.total_tokens === "number" ? item.total_tokens : undefined,
-            sortDescFirst: true,
-            sortUndefined: "last",
+            sortable: true,
             cell: (item) => (
               <>
                 {metric(item.total_tokens)}
@@ -372,58 +374,95 @@ export function Logs() {
         );
       }
     }
-    list.push({
+    // The one entry point of the list: Table pins this column to the right edge, and in
+    // the card layout it becomes the last pair, so the action never scrolls away (P1-2).
+    result.push({
       id: "actions",
       header: t("logs.col.actions"),
+      actions: true,
       cell: (item) => (
-        <button disabled={detailLoading} onClick={() => openDetail(item)}>
+        <Button size="sm" disabled={detailLoading} onClick={() => openDetail(item)}>
           {t("logs.viewDetail")}
-        </button>
+        </Button>
       ),
     });
-    return list;
+    return result;
     // `keyNames` is the data the api-key cell formats; without it a late /keys
     // response would leave the column showing every id as "deleted".
   }, [kind, t, detailLoading, names, keyNames]);
-  return (
-    <>
-      <PageTitle
-        title={t("logs.title")}
-        actions={
-          <>
-            <button onClick={resource.reload}>
-              <RefreshIcon spinning={resource.refreshing} />
-              {t("logs.refresh")}
-            </button>
-            <button onClick={() => setClear(true)}>{t("logs.clear")}</button>
-          </>
-        }
+  // The comparable value of each sortable column; a column without an entry is not sortable.
+  const sortValues: Record<string, SortValue<RecordValue>> = {
+    time: (item) => (typeof item.started_at === "number" ? item.started_at : undefined),
+    duration: (item) => (typeof item.duration_ms === "number" ? item.duration_ms : undefined),
+    tokens: (item) => (typeof item.total_tokens === "number" ? item.total_tokens : undefined),
+  };
+  const DESC_FIRST = new Set(["time", "duration", "tokens"]);
+  const sortedRows = sortRows(rows, sortValues, sort);
+  const skeletonCells: SkeletonCell[] =
+    kind === "request"
+      ? ["twoLine", "twoLine", "badge", "text", "text", "twoLine", "badge"]
+      : kind === "credit"
+        ? ["twoLine", "twoLine", "badge", "text", "badge"]
+        : ["twoLine", "twoLine", "badge", "badge"];
+  const resetFilters = () => {
+    setFilters(emptyFilters);
+    setDraft(emptyFilters);
+    setCursors([]);
+  };
+  const kindLabels = [
+    { value: "request", label: t("logs.tab.request") },
+    { value: "runtime", label: t("logs.tab.runtime") },
+    { value: "admin", label: t("logs.kind.admin") },
+    { value: "credit", label: t("logs.tab.credit") },
+  ];
+  const tableBody =
+    resource.error && !rows.length ? null : resource.loading && !rows.length ? (
+      <Skeleton variant="table" label={t("common.loading")} cells={skeletonCells} rowHeight={87} />
+    ) : rows.length ? (
+      <Table
+        label={t("logs.title")}
+        columns={columns}
+        rows={sortedRows}
+        rowKey={(item) => text(item.__key)}
+        sort={sort}
+        onSort={(id) => setSort((current) => nextSort(current, id, DESC_FIRST.has(id)))}
       />
-      <div className={s.tabs} role="tablist" aria-label={t("logs.logTypes")}>
-        <SegmentThumb />
-        {[
-          ["request", t("logs.tab.request")],
-          ["runtime", t("logs.tab.runtime")],
-          ["admin", t("logs.kind.admin")],
-          ["credit", t("logs.tab.credit")],
-        ].map(([value, label]) => (
-          <button
-            key={value}
-            role="tab"
-            aria-selected={kind === value}
-            className={kind === value ? s.selectedTab : ""}
-            onClick={() => {
-              closeDetail();
-              setKind(value);
-              setCursors([]);
-              setFilters(emptyFilters);
-              setDraft(emptyFilters);
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+    ) : (
+      <Empty
+        title={t("logs.noMatch")}
+        tone="filtered"
+        action={<Button onClick={resetFilters}>{t("common.clearFilters")}</Button>}
+      >
+        {t("logs.adjustFilters")}
+      </Empty>
+    );
+  return (
+    <Page
+      title={t("logs.title")}
+      actions={
+        <>
+          <Button icon="refresh" onClick={resource.reload}>
+            {t("logs.refresh")}
+          </Button>
+          <Button variant="danger" onClick={() => setClear(true)}>
+            {t("logs.clear")}
+          </Button>
+        </>
+      }
+    >
+      <Segmented
+        label={t("logs.logTypes")}
+        value={kind}
+        onChange={(value) => {
+          closeDetail();
+          setKind(value);
+          setCursors([]);
+          setSort(null);
+          setFilters(emptyFilters);
+          setDraft(emptyFilters);
+        }}
+        options={kindLabels}
+      />
       <Panel
         title={
           kind === "request"
@@ -437,142 +476,112 @@ export function Logs() {
         hint={t("logs.perPage")}
       >
         <form
-          className={s.filters}
           onSubmit={(e) => {
             e.preventDefault();
             setFilters(draft);
             setCursors([]);
           }}
         >
-          {kind === "request" && (
-            <>
-              <input
-                aria-label={t("logs.filter.model")}
-                placeholder={t("logs.placeholder.model")}
-                value={draft.model}
-                onChange={(e) => setDraft({ ...draft, model: e.target.value })}
+          <Stack gap="3">
+            <Grid min="sm" gap="2">
+              {kind === "request" && (
+                <>
+                  <Input
+                    aria-label={t("logs.filter.model")}
+                    placeholder={t("logs.placeholder.model")}
+                    value={draft.model}
+                    onChange={(e) => setDraft({ ...draft, model: e.target.value })}
+                  />
+                  <Input
+                    aria-label={t("logs.filter.credential")}
+                    placeholder={t("logs.placeholder.credential")}
+                    value={draft.credential}
+                    onChange={(e) => setDraft({ ...draft, credential: e.target.value })}
+                  />
+                  <Input
+                    aria-label={t("logs.filter.clientIp")}
+                    placeholder={t("logs.placeholder.clientIp")}
+                    value={draft.client_ip}
+                    onChange={(e) => setDraft({ ...draft, client_ip: e.target.value })}
+                  />
+                  <Select
+                    label={t("logs.filter.apiKey")}
+                    value={draft.api_key}
+                    onChange={(value) => setDraft({ ...draft, api_key: value })}
+                  >
+                    <option value="">{t("logs.allApiKeys")}</option>
+                    {keyOptions.map((id) => (
+                      <option key={id} value={id}>
+                        {apiKeyLabel(id)}
+                      </option>
+                    ))}
+                  </Select>
+                  <Select
+                    label={t("logs.filter.profile")}
+                    value={draft.profile}
+                    onChange={(value) => setDraft({ ...draft, profile: value })}
+                  >
+                    <option value="">{t("logs.allProfiles")}</option>
+                    {profiles.map((p) => (
+                      <option key={p}>{p}</option>
+                    ))}
+                  </Select>
+                  <Select
+                    label={t("logs.filter.status")}
+                    value={draft.status}
+                    onChange={(value) => setDraft({ ...draft, status: value })}
+                  >
+                    <option value="">{t("logs.allStatuses")}</option>
+                    <option value="success">{t("logs.outcome.success")}</option>
+                    <option value="error">{t("logs.outcome.error")}</option>
+                    <option value="cancelled">{t("logs.outcome.cancelled")}</option>
+                    <option value="429">{t("logs.http429")}</option>
+                  </Select>
+                </>
+              )}
+              {kind === "credit" && (
+                <CreditFilters
+                  credential={draft.credential}
+                  type={draft.type}
+                  names={names}
+                  onChange={(patch) => setDraft({ ...draft, ...patch })}
+                />
+              )}
+              <Input
+                aria-label={t("logs.filter.search")}
+                placeholder={t("logs.placeholder.search")}
+                value={draft.search}
+                onChange={(e) => setDraft({ ...draft, search: e.target.value })}
               />
-              <input
-                aria-label={t("logs.filter.credential")}
-                placeholder={t("logs.placeholder.credential")}
-                value={draft.credential}
-                onChange={(e) => setDraft({ ...draft, credential: e.target.value })}
-              />
-              <input
-                aria-label={t("logs.filter.clientIp")}
-                placeholder={t("logs.placeholder.clientIp")}
-                value={draft.client_ip}
-                onChange={(e) => setDraft({ ...draft, client_ip: e.target.value })}
-              />
-              <Select
-                aria-label={t("logs.filter.apiKey")}
-                value={draft.api_key}
-                onChange={(value) => setDraft({ ...draft, api_key: value })}
-              >
-                <option value="">{t("logs.allApiKeys")}</option>
-                {keyOptions.map((id) => (
-                  <option key={id} value={id}>
-                    {apiKeyLabel(id)}
-                  </option>
-                ))}
-              </Select>
-              <Select
-                aria-label={t("logs.filter.profile")}
-                value={draft.profile}
-                onChange={(value) => setDraft({ ...draft, profile: value })}
-              >
-                <option value="">{t("logs.allProfiles")}</option>
-                {profiles.map((p) => (
-                  <option key={p}>{p}</option>
-                ))}
-              </Select>
-              <Select
-                aria-label={t("logs.filter.status")}
-                value={draft.status}
-                onChange={(value) => setDraft({ ...draft, status: value })}
-              >
-                <option value="">{t("logs.allStatuses")}</option>
-                <option value="success">{t("logs.outcome.success")}</option>
-                <option value="error">{t("logs.outcome.error")}</option>
-                <option value="cancelled">{t("logs.outcome.cancelled")}</option>
-                <option value="429">{t("logs.http429")}</option>
-              </Select>
-            </>
-          )}
-          {kind === "credit" && (
-            <CreditFilters
-              credential={draft.credential}
-              type={draft.type}
-              names={names}
-              onChange={(patch) => setDraft({ ...draft, ...patch })}
-            />
-          )}
-          <SearchInput
-            aria-label={t("logs.filter.search")}
-            placeholder={t("logs.placeholder.search")}
-            value={draft.search}
-            onChange={(search) => setDraft({ ...draft, search })}
-          />
-          <button type="submit">{t("logs.apply")}</button>
-          <button
-            type="button"
-            onClick={() => {
-              setFilters(emptyFilters);
-              setDraft(emptyFilters);
-              setCursors([]);
-            }}
-          >
-            {t("logs.reset")}
-          </button>
+            </Grid>
+            <Toolbar gap="2">
+              <Button type="submit" variant="primary">
+                {t("logs.apply")}
+              </Button>
+              <Button onClick={resetFilters}>{t("logs.reset")}</Button>
+            </Toolbar>
+          </Stack>
         </form>
-        <ResourceState {...resource} />
+        <ErrorNotice
+          message={resource.error}
+          retry={{ label: t("common.retry"), onClick: resource.reload }}
+        />
         {resource.data?.degraded && (
-          <div className={s.warning} role="alert">
-            {t("logs.degraded")}
+          <div role="alert">
+            <Badge tone="warn">{t("logs.degraded")}</Badge>
           </div>
         )}
-        <DataTable
-          rows={rows}
-          columns={columns}
-          rowId={(item) => text(item.__key)}
-          sorting={sorting}
-          onSortingChange={setSorting}
-          loading={resource.loading}
-          // A 500 used to paint "没有匹配的日志" under the error banner: the failed
-          // fetch also leaves rows empty, so the table could not tell the two apart.
-          error={resource.error}
-          rowHeight={87}
-          // Mirrors the real columns: duration and tokens exist only on the request
-          // tab, so the runtime/admin tabs get four skeleton cells, not six.
-          skeletonCells={
-            kind === "request"
-              ? ["twoLine", "twoLine", "badge", "text", "twoLine", "badge"]
-              : ["twoLine", "twoLine", "badge", "badge"]
-          }
-          empty={
-            <Empty
-              title={t("logs.noMatch")}
-              tone="filtered"
-              onClear={() => {
-                setFilters(emptyFilters);
-                setDraft(emptyFilters);
-                setCursors([]);
-              }}
-            >
-              {t("logs.adjustFilters")}
-            </Empty>
-          }
-        />
-        <div className={s.pagination}>
-          <span>第 {cursors.length + 1} 页</span>
-          <div className={s.actions}>
-            <button
+        {tableBody}
+        <Toolbar split>
+          <Badge>第 {cursors.length + 1} 页</Badge>
+          <Cluster gap="2">
+            <Button
               disabled={!cursors.length || resource.loading}
               onClick={() => setCursors((old) => old.slice(0, -1))}
             >
               {t("logs.prevPage")}
-            </button>
-            <button
+            </Button>
+            <Button
               disabled={!resource.data?.has_more || resource.loading}
               onClick={() => {
                 if (resource.data?.next_cursor)
@@ -580,13 +589,17 @@ export function Logs() {
               }}
             >
               {t("logs.nextPage")}
-            </button>
-          </div>
-        </div>
+            </Button>
+          </Cluster>
+        </Toolbar>
       </Panel>
       <DrawerPresence>
         {detail && (
-          <Drawer title={t("logs.detailTitle")} onClose={closeDetail}>
+          <Drawer
+            title={t("logs.detailTitle")}
+            onClose={closeDetail}
+            closeLabel={t("common.closeDrawer")}
+          >
             <ErrorNotice message={detailError} />
             {detailLoading ? (
               <p role="status">{t("logs.detailLoading")}</p>
@@ -608,7 +621,7 @@ export function Logs() {
                         did the backend store" — including keys the timeline has no slot
                         for, with the recorded stage and model values localized. */}
                     {list(detail.attempts).length > 0 && (
-                      <details className={s.rawData}>
+                      <details>
                         <summary>{t("logs.attempts")}</summary>
                         {list(detail.attempts).map((attempt, index) => (
                           <div key={index}>
@@ -636,6 +649,6 @@ export function Logs() {
           />
         )}
       </DrawerPresence>
-    </>
+    </Page>
   );
 }

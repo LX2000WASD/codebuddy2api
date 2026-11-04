@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { list, object, type RecordValue } from "./api";
-import s from "./ui.module.scss";
+import { JobBanner as UiJobBanner, type JobProgress } from "./ui";
+
+/**
+ * Server-side jobs: the model, the response normaliser and the polling hook stay here (they
+ * are logic, and four modules share them); the banner markup moved to ui/Progress.tsx, which
+ * is copy-free, so the two labels the old component hard-coded are supplied by this adapter.
+ */
 
 /** A server-side job: it keeps running when the drawer or the page that started it closes. */
 export type Job = {
@@ -40,8 +46,8 @@ export function jobResponse(value: unknown): Job {
 }
 
 /**
- * Poll a job source while anything runs; `onFinished` fires once per job that this page
- * saw running and that has since finished, so the page can reload what the job changed.
+ * Poll a job source while anything runs; `onFinished` fires once per job that this page saw
+ * running and that has since finished, so the page can reload what the job changed.
  */
 export function useJobPolling(
   load: () => Promise<Job[]>,
@@ -80,56 +86,25 @@ export function useJobPolling(
   return { jobs, accept };
 }
 
-/**
- * A progress banner for work in flight. Without a `total` the bar is indeterminate, for a request
- * that reports no progress of its own.
- */
-export function ProgressBanner({
-  title,
-  completed = 0,
-  total,
-  children,
-}: {
-  title: string;
-  completed?: number;
-  total?: number;
-  children: ReactNode;
-}) {
-  return (
-    <div className={s.jobBanner} role="status">
-      <div className={s.jobBannerHead}>
-        <strong>{title}</strong>
-        {total !== undefined && (
-          <span>
-            {completed}/{total}
-          </span>
-        )}
-      </div>
-      {total !== undefined ? <progress value={completed} max={Math.max(total, 1)} /> : <progress />}
-      {children}
-    </div>
-  );
-}
+export { ProgressBanner } from "./ui";
 
-/** A progress banner for one running job: what it is, how far along, and what it is doing now. */
+/** The running-job banner, with the two fixed phrases the page-facing signature implies. */
 export function JobBanner({
   title,
   job,
   describe,
 }: {
   title: string;
-  job: Job;
+  job: JobProgress;
   describe: (item: RecordValue, step: string | null) => string;
 }) {
   return (
-    <ProgressBanner title={title} completed={job.completed} total={job.total}>
-      {job.current.length ? (
-        job.current.map((row, index) => (
-          <small key={index}>正在{describe(row.item, row.step)}</small>
-        ))
-      ) : (
-        <small>正在准备…</small>
-      )}
-    </ProgressBanner>
+    <UiJobBanner
+      title={title}
+      job={job}
+      describe={describe}
+      preparingLabel="正在准备…"
+      runningPrefix="正在"
+    />
   );
 }

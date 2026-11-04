@@ -1,0 +1,289 @@
+@use "./design/breakpoints.scss" as bp;
+
+/* Package category is a hue from the theme's series ramp, never a literal colour: the
+   bar segment, the legend dot and the package frame all read the same --cat. */
+.package[data-category="plan"],
+.legend > li[data-category="plan"],
+.mixBar > i[data-category="plan"] {
+  --cat: var(--series-requests);
+}
+
+.package[data-category="activity"],
+.legend > li[data-category="activity"],
+.mixBar > i[data-category="activity"] {
+  --cat: var(--series-credit);
+}
+
+.package[data-category="welcome"],
+.legend > li[data-category="welcome"],
+.mixBar > i[data-category="welcome"] {
+  --cat: var(--series-tokens);
+}
+
+.package[data-category="enterprise"],
+.legend > li[data-category="enterprise"],
+.mixBar > i[data-category="enterprise"] {
+  --cat: var(--accent);
+}
+
+.package[data-category="other"],
+.legend > li[data-category="other"],
+.mixBar > i[data-category="other"] {
+  --cat: var(--muted);
+}
+
+/* A snapshot problem is stated once, above the numbers it invalidates. */
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+  border: var(--hairline) solid var(--warning-border);
+  border-radius: var(--radius-block);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+}
+
+.notice > div {
+  min-width: 0;
+}
+
+.notice p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Four figures. Two columns on a phone: four 59px cells was P2-1. */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-block);
+}
+
+@include bp.above(900px) {
+  .tiles {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.tiles > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.tiles span {
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+}
+
+.tiles strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--fs-13);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.tiles small {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.warn {
+  color: var(--warning);
+}
+
+/* Composition: a stacked bar plus the same categories as text, so the bar is never the
+   only way to read the split. */
+.mix {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.mixBar {
+  display: flex;
+  gap: var(--hairline);
+  height: var(--space-2);
+  overflow: hidden;
+  background: var(--line);
+  border-radius: var(--radius-full);
+}
+
+.mixBar > i {
+  display: block;
+  min-width: var(--space-1);
+  background: var(--cat);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-12);
+}
+
+.legend > li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.legend strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.legend small {
+  color: var(--text-muted);
+}
+
+.dot {
+  flex: none;
+  width: var(--space-2);
+  height: var(--space-2);
+  background: var(--cat);
+  border-radius: var(--radius-full);
+}
+
+.packages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* One package: a folded row that expands into its expiry segments. */
+.package {
+  min-width: 0;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-block);
+}
+
+.summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  list-style: none;
+  cursor: pointer;
+}
+
+.summary::-webkit-details-marker {
+  display: none;
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.name {
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.category {
+  padding: 0 var(--space-2);
+  color: var(--text-muted);
+  background: var(--surface);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-tag);
+  font-size: var(--fs-11);
+}
+
+.amount {
+  margin-inline-start: auto;
+  color: var(--text);
+  font-size: var(--fs-13);
+  font-variant-numeric: tabular-nums;
+}
+
+.amount small {
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+}
+
+.track {
+  height: var(--space-1);
+  overflow: hidden;
+  background: var(--line);
+  border-radius: var(--radius-full);
+}
+
+.track > i {
+  display: block;
+  height: 100%;
+  background: var(--cat);
+  border-radius: var(--radius-full);
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+}
+
+.meta > small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The affordance names what expanding does; the marker is decorative. */
+.toggle {
+  margin-inline-start: auto;
+  color: var(--accent-text-strong);
+  font-size: var(--fs-11);
+}
+
+.toggle::after {
+  content: " ▾";
+}
+
+.package[open] .toggle::after {
+  content: " ▴";
+}
+
+/* The segment table sits inside the folded row, so it gets the panel's own inset. */
+.package > :not(summary) {
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+/* The caption under a balance: only the date itself refuses to wrap, so a long
+   "最近到期 …" line still breaks at the space instead of widening the column. */
+.expiry {
+  display: block;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+}
+
+.expiry > span {
+  white-space: nowrap;
+}

@@ -1,0 +1,136 @@
+/* The update job's progress block: a headline, the bar, the byte counter, the step list
+ * and the backup note. It is a sunken block inside ui/Panel — the panel owns the border, so
+ * this one does not draw a second rectangle (see the level budget in ui/Panel.module.scss). */
+
+.progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-4);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-block);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.title {
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.percent {
+  flex: none;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.track {
+  position: relative;
+  min-width: 0;
+  height: var(--space-2);
+  overflow: hidden;
+  background: var(--surface-active);
+  border-radius: var(--radius-full);
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width var(--duration-standard) var(--ease-standard);
+}
+
+/* No total reported yet: the bar says "working" without inventing a percentage. */
+.fill[data-indeterminate="true"] {
+  width: 40%;
+  animation: indeterminate calc(var(--duration-panel) * 6) var(--ease-standard) infinite;
+}
+
+@keyframes indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fill[data-indeterminate="true"] {
+    width: 100%;
+    opacity: 0.4;
+    animation: none;
+  }
+}
+
+.subtle {
+  min-width: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+/* The seven steps wrap instead of being cut: on a phone the list takes two or three lines,
+   which is cheaper than hiding the sequence behind a scroll. */
+.steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+}
+
+.marker {
+  flex: none;
+  width: var(--space-2);
+  height: var(--space-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-full);
+}
+
+.step[data-state="done"] {
+  color: var(--text-muted);
+}
+
+.step[data-state="done"] .marker {
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+}
+
+.step[data-state="current"] {
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
+.step[data-state="current"] .marker {
+  background: var(--accent);
+  border-color: var(--accent);
+}

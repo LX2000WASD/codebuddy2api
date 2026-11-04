@@ -1,9 +1,9 @@
 import { Fragment, useState } from "react";
 import type { ModelRule, RecordValue } from "./api";
-import { Badge, DataValue, Empty, Panel, profileLabel } from "./components";
 import { t } from "./i18n";
-import s from "./ui.module.scss";
-import { Select } from "./fields";
+import m from "./models.module.scss";
+import { Badge, Cluster, Empty, Field, Panel, Select, Stack, type BadgeTone } from "./ui";
+import { DataValue, profileLabel } from "./values";
 
 type Facts = Pick<ModelRule, "capabilities" | "limits" | "metadata_by_profile">;
 /** Routing scope shown next to the account count in the detail drawer. */
@@ -109,35 +109,39 @@ const groups: [string, string[]][] = [
   ],
 ];
 
+/** A declared capability as a badge: the tone is the state, the text says it too. */
+const stateTone: Record<string, BadgeTone> = {
+  supported: "good",
+  mixed: "warn",
+  unsupported: "neutral",
+  unknown: "neutral",
+};
+
+/** Every declaration carries the shared-directory marker, so it is computed once. */
+function inheritsShared(metadata: unknown): boolean {
+  return variants(metadata).some(([, rows]) =>
+    rows.some((entry) => record(entry.catalog_source).kind === "shared"),
+  );
+}
+
 export function CapabilityBadges({ model, full = false }: { model: Facts; full?: boolean }) {
   const declared = record(model.capabilities);
   return (
-    <div className={s.badgeStack}>
+    <Cluster gap="1">
       {(full ? Object.keys(names) : ["images", "tools", "reasoning"]).map((key) => {
         const raw = declared[key];
         const state = typeof raw === "string" && Object.hasOwn(states, raw) ? raw : "unknown";
         return (
-          <Badge
-            key={key}
-            tone={state === "supported" ? "good" : state === "mixed" ? "warn" : "neutral"}
-          >
+          <Badge key={key} tone={stateTone[state]}>
             {names[key]}：{states[state]}
           </Badge>
         );
       })}
-      {variants(model.metadata_by_profile).some(([, rows]) =>
-        rows.some((entry) => record(entry.catalog_source).kind === "shared"),
-      ) && <Badge tone="neutral">国际共享目录</Badge>}
-    </div>
+      {inheritsShared(model.metadata_by_profile) && <Badge tone="neutral">国际共享目录</Badge>}
+    </Cluster>
   );
 }
 
-const chipTones: Record<string, string> = {
-  supported: s.capSupported,
-  mixed: s.capMixed,
-  unsupported: s.capUnsupported,
-  unknown: s.capUnknown,
-};
 const chipNames: Record<string, string> = {
   images: "视觉",
   tools: "工具",
@@ -220,68 +224,60 @@ export function CapabilityChips({ model }: { model: Facts }) {
   const declared = record(model.capabilities);
   const notes: string[] = [];
   return (
-    <div className={s.specStack}>
-      <div className={s.chipRow}>
-        {(["images", "tools", "reasoning"] as const).map((key) => {
-          const raw = declared[key];
-          const state = typeof raw === "string" && Object.hasOwn(states, raw) ? raw : "unknown";
-          if (state === "mixed") notes.push(`${names[key]}${states[state]}`);
-          return (
-            <span
-              className={`${s.capChip} ${chipTones[state]}`}
-              key={key}
-              title={`${names[key]}：${states[state]}`}
-            >
-              {chipNames[key]}
-            </span>
-          );
-        })}
-      </div>
+    <span className={m.cellLine}>
+      {(["images", "tools", "reasoning"] as const).map((key) => {
+        const raw = declared[key];
+        const state = typeof raw === "string" && Object.hasOwn(states, raw) ? raw : "unknown";
+        if (state === "mixed") notes.push(`${names[key]}${states[state]}`);
+        return (
+          <Badge key={key} tone={stateTone[state]} title={`${names[key]}：${states[state]}`}>
+            {chipNames[key]}
+          </Badge>
+        );
+      })}
       {notes.map((note) => (
-        <small className={s.specNote} key={note}>
+        <small className={m.muted} key={note}>
           {note}
         </small>
       ))}
-      {variants(model.metadata_by_profile).some(([, rows]) =>
-        rows.some((entry) => record(entry.catalog_source).kind === "shared"),
-      ) && <small className={s.specNote}>国际共享目录</small>}
-    </div>
+      {inheritsShared(model.metadata_by_profile) && <small className={m.muted}>国际共享目录</small>}
+    </span>
   );
 }
 export function EffortChips({ model }: { model: Facts }) {
   const { options, defaults, closable, only } = effortSummary(model);
   const state = record(model.capabilities).reasoning;
-  if (state === "unsupported") return <span className={s.specMuted}>不支持思考</span>;
+  if (state === "unsupported") return <span className={m.muted}>不支持思考</span>;
   if (!options.length && !closable && !only) {
     if (state === "supported")
       return (
-        <span className={s.specMuted}>
+        <span className={m.muted}>
           固定档{defaults.length === 1 ? ` · 默认 ${defaults[0]}` : ""}
         </span>
       );
-    return <span className={s.specMuted}>—</span>;
+    return <span className={m.muted}>—</span>;
   }
   return (
-    <div className={s.chipRow}>
+    <span className={m.cellLine}>
       {options.map((value) => (
-        <span
-          className={`${s.effortChip} ${defaults.includes(value) ? s.effortDefault : ""}`}
+        <Badge
           key={value}
+          tone={defaults.includes(value) ? "good" : "neutral"}
           title={defaults.includes(value) ? "默认档" : undefined}
         >
           {value}
-        </span>
+        </Badge>
       ))}
-      {only && <span className={`${s.effortChip} ${s.effortNote}`}>仅思考</span>}
-      {closable && <span className={`${s.effortChip} ${s.effortNote}`}>可关闭</span>}
-    </div>
+      {only && <Badge tone="neutral">仅思考</Badge>}
+      {closable && <Badge tone="neutral">可关闭</Badge>}
+    </span>
   );
 }
 export function SpecValue({ model, kind }: { model: Facts; kind: "input" | "output" }) {
   const values = specRange(model, kind === "input" ? "maxInputTokens" : "maxOutputTokens");
-  if (!values.length) return <span className={s.specMuted}>—</span>;
+  if (!values.length) return <span className={m.muted}>—</span>;
   return (
-    <span className={s.specNum}>
+    <span className={m.specNum}>
       {values.length === 1
         ? formatTokens(values[0])
         : `${formatTokens(values[0])}–${formatTokens(values[values.length - 1])}`}
@@ -303,7 +299,7 @@ export function modelSearchText(
 
 function MetaFields({ data, depth = 0 }: { data: RecordValue; depth?: number }) {
   return (
-    <dl className={s.metadataFields}>
+    <dl className={m.metadataFields}>
       {Object.entries(data).map(([key, value]) => (
         <Fragment key={key}>
           <dt title={key}>{Object.hasOwn(labels, key) ? labels[key] : key}</dt>
@@ -330,7 +326,7 @@ export function modelDisplayName(model: Facts): string {
   const values = [
     ...new Set(
       variants(model.metadata_by_profile)
-        .flatMap(([, rows]) => rows.map((m) => m.name))
+        .flatMap(([, rows]) => rows.map((row) => row.name))
         .filter((name): name is string => typeof name === "string" && name.length > 0),
     ),
   ];
@@ -339,7 +335,7 @@ export function modelDisplayName(model: Facts): string {
 
 function CatalogSource({ entry }: { entry: RecordValue }) {
   const source = record(entry.catalog_source);
-  if (source.kind === "direct") return <p className={s.note}>目录来源：当前产品直接声明。</p>;
+  if (source.kind === "direct") return <p className={m.note}>目录来源：当前产品直接声明。</p>;
   if (source.kind !== "shared") return null;
   const profiles = Array.isArray(source.profiles)
     ? source.profiles.filter(
@@ -350,21 +346,19 @@ function CatalogSource({ entry }: { entry: RecordValue }) {
   const originals = Array.isArray(entry.source_variants) ? entry.source_variants.map(record) : [];
   return (
     <Panel title="共享目录来源">
-      <p className={s.note}>
+      <p className={m.note}>
         继承自{profiles.length ? profiles.map(profileLabel).join("、") : "未注明来源"}
         ；当前账号未直接声明此模型，权限与实际扣费以上游为准。
       </p>
-      <div className={s.modelMetadata}>
-        {originals.map((original, index) => (
-          <details className={s.rawData} key={index}>
-            <summary>
-              {profileLabel(typeof original.profile === "string" ? original.profile : "")} ·
-              来源版本 {index + 1}
-            </summary>
-            <MetaFields data={record(original.metadata)} />
-          </details>
-        ))}
-      </div>
+      {originals.map((original, index) => (
+        <details className={m.rawData} key={index}>
+          <summary>
+            {profileLabel(typeof original.profile === "string" ? original.profile : "")} · 来源版本{" "}
+            {index + 1}
+          </summary>
+          <MetaFields data={record(original.metadata)} />
+        </details>
+      ))}
     </Panel>
   );
 }
@@ -377,7 +371,7 @@ function CatalogSource({ entry }: { entry: RecordValue }) {
 function AvailableAccounts({ model, total }: { model: RoutingFacts; total: number | null }) {
   const available = model.available_credentials;
   const bindings = model.credential_ids ?? [];
-  const tone = available === undefined ? s.availMuted : available > 0 ? s.availGood : s.availBad;
+  const tone: BadgeTone = available === undefined ? "neutral" : available > 0 ? "good" : "bad";
   const scope = bindings.length
     ? t("models.detail.strictBinding", { count: bindings.length })
     : model.region
@@ -385,23 +379,25 @@ function AvailableAccounts({ model, total }: { model: RoutingFacts; total: numbe
       : t("models.detail.autoRoute");
   return (
     <Panel title={t("models.detail.accounts")}>
-      <div className={s.availStack}>
-        <span className={`${s.availBadge} ${tone}`}>
-          {available === undefined
-            ? t("models.avail.unknown")
-            : total === null
-              ? t("models.avail.accountsOnly", { available })
-              : t("models.avail.accounts", { available, total })}
-        </span>
-        <small className={s.availDetail}>{scope}</small>
-        <small className={s.availDetail}>
+      <Stack gap="1">
+        <Cluster gap="2">
+          <Badge tone={tone}>
+            {available === undefined
+              ? t("models.avail.unknown")
+              : total === null
+                ? t("models.avail.accountsOnly", { available })
+                : t("models.avail.accounts", { available, total })}
+          </Badge>
+          <small className={m.muted}>{scope}</small>
+        </Cluster>
+        <small className={m.muted}>
           {available === undefined
             ? t("models.avail.reason.unknown")
             : available > 0
               ? t("models.detail.accountsHint")
               : t("models.detail.noAccounts")}
         </small>
-      </div>
+      </Stack>
     </Panel>
   );
 }
@@ -419,50 +415,47 @@ export function ModelMetadata({
   const limits = record(model.limits);
   return (
     <>
-      <p className={s.note}>
+      <p className={m.note}>
         以下为上游声明，不代表模型原生模态或实测保证；目录参数不会自动覆盖客户端请求。
       </p>
       <AvailableAccounts model={model as Facts & RoutingFacts} total={totalAccounts} />
       <Panel title="能力概要">
-        <div className={s.modelMetadata}>
-          <CapabilityBadges model={model} full />
-          <dl className={s.metadataFields}>
-            {["maxInputTokens", "maxOutputTokens"].map((key) => {
-              const limit = record(limits[key]);
-              return (
-                <Fragment key={key}>
-                  <dt>{labels[key]}</dt>
-                  <dd>
-                    {limit.state === "mixed" ? (
-                      "因路由而异"
-                    ) : limit.state === "known" ? (
-                      <DataValue value={limit.value} />
-                    ) : (
-                      "未知"
-                    )}
-                  </dd>
-                </Fragment>
-              );
-            })}
-          </dl>
-        </div>
+        <CapabilityBadges model={model} full />
+        <dl className={m.metadataFields}>
+          {["maxInputTokens", "maxOutputTokens"].map((key) => {
+            const limit = record(limits[key]);
+            return (
+              <Fragment key={key}>
+                <dt>{labels[key]}</dt>
+                <dd>
+                  {limit.state === "mixed" ? (
+                    "因路由而异"
+                  ) : limit.state === "known" ? (
+                    <DataValue value={limit.value} />
+                  ) : (
+                    "未知"
+                  )}
+                </dd>
+              </Fragment>
+            );
+          })}
+        </dl>
       </Panel>
       {!active ? (
         <Empty title="尚无模型元数据">未知不等于不支持；请等待账号目录同步。</Empty>
       ) : (
         <>
-          <label className={s.field}>
-            查看产品声明
-            <Select value={active[0]} onChange={(value) => setSelected(value)}>
+          <Field label="查看产品声明">
+            <Select label="查看产品声明" value={active[0]} onChange={(value) => setSelected(value)}>
               {sources.map(([profile]) => (
                 <option key={profile} value={profile}>
                   {profileLabel(profile)}
                 </option>
               ))}
             </Select>
-          </label>
+          </Field>
           {active[1].length > 1 && (
-            <p className={s.note}>同一产品的账号声明存在差异；以下保留各版本，不公开账号身份。</p>
+            <p className={m.note}>同一产品的账号声明存在差异；以下保留各版本，不公开账号身份。</p>
           )}
           {active[1].map((entry, index) => (
             <section
@@ -479,14 +472,12 @@ export function ModelMetadata({
                 return (
                   Object.keys(data).length > 0 && (
                     <Panel title={title} key={title}>
-                      <div className={s.modelMetadata}>
-                        <MetaFields data={data} />
-                      </div>
+                      <MetaFields data={data} />
                     </Panel>
                   )
                 );
               })}
-              <details className={s.rawData}>
+              <details className={m.rawData}>
                 <summary>查看安全元数据 JSON</summary>
                 <pre>{JSON.stringify(entry, null, 2)}</pre>
               </details>

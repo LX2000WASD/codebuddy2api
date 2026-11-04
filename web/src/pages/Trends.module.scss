@@ -1,0 +1,171 @@
+@use "../design/breakpoints.scss" as bp;
+
+/* The trends page: the control bar, the metric switch and the five-tile summary.
+ *
+ * The summary grid is the one place where the column count is pinned per breakpoint
+ * instead of following the width. Five tiles over four tracks leaves one card alone on
+ * a row — P2-3 measured exactly that at 1024, 3/4 of the row blank — so the steps are
+ * 5 / 3 / 2 / 1 and never produce a single-tile row. */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+/* 3 + 2: the last row keeps two tiles, so no card sits alone. */
+@include bp.lg-down {
+  .stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@include bp.md-down {
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@include bp.below(480px) {
+  .stats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.stat {
+  display: grid;
+  grid-template-rows: auto auto auto;
+  gap: var(--space-2);
+  align-content: start;
+  min-width: 0;
+  padding: var(--space-4) var(--space-5);
+  background: var(--surface);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-card);
+  /* The value is sized in cqi so the number follows the card width, which is what
+     actually varies between the 5-, 3- and 2-column layouts. */
+  container-type: inline-size;
+}
+
+.statHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+}
+
+.statLabel {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.statIcon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  inline-size: var(--control-h-sm);
+  block-size: var(--control-h-sm);
+  color: var(--accent-text-strong);
+  background: var(--accent-subtle);
+  border-radius: var(--radius-block);
+}
+
+/* No ellipsis on a KPI number: P2-2 rendered "6,519.7…" at 1024, which is a different
+ * (and unreadable) number. It shrinks with the card and wraps if it still does not fit. */
+.statValue {
+  color: var(--text);
+  font-size: clamp(var(--fs-20), 5.4cqi, var(--fs-28));
+  font-weight: var(--fw-strong);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.statHint {
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+/* ── Control bar ──────────────────────────────────────────────────────────── */
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* A field is as wide as its content until the row has to wrap; below 900 it takes the
+ * whole row so a long option label cannot squeeze the neighbour. */
+.control {
+  flex: 0 1 auto;
+  min-width: var(--control-min-w);
+}
+
+@include bp.md-down {
+  .control {
+    flex: 1 1 100%;
+  }
+}
+
+/* Native selects keep their own element (the keyboard, the platform picker and the
+ * native change event are all worth more than a drawn listbox here), but they wear the
+ * shared control face so they cannot drift from an Input. */
+.select {
+  @include bp.control-face;
+}
+
+/* ── Metric switch ──────────────────────────────────────────────────────────
+ * A tablist, not a segmented bar: it selects which chart is drawn, and the label itself
+ * carries the selection through colour and an underline. Nothing is layered over the
+ * text (the shape that made P1-1 unreadable). */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+  margin-inline-start: auto;
+  border-block-end: var(--hairline) solid var(--line);
+}
+
+.tab {
+  min-height: var(--control-h-md);
+  padding: 0 var(--space-3);
+  color: var(--text-muted);
+  background: none;
+  border: 0;
+  border-block-end: calc(var(--hairline) * 2) solid transparent;
+  border-radius: 0;
+  font: inherit;
+  font-size: var(--fs-12);
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab[aria-selected="true"] {
+  color: var(--accent-text-strong);
+  border-block-end-color: var(--accent);
+  font-weight: var(--fw-medium);
+}
+
+@include bp.md-down {
+  .tabs {
+    margin-inline-start: 0;
+  }
+}
+
+.muted {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+}

@@ -12,6 +12,12 @@ export type TableColumn<T> = {
   label?: string;
   /** Extra class for the header cell and every body cell of the column. */
   className?: string;
+  /**
+   * Tooltip for a truncated cell. Optional: a cell that does not fit its column always gets
+   * the value it is showing, derived from its own text, so this is only for cells whose text
+   * is not the value worth reading (an id hidden behind a label).
+   */
+  title?: (row: T) => string | undefined;
   /** Render the heading as a sort toggle. Needs `onSort`. */
   sortable?: boolean;
   /**
@@ -189,6 +195,39 @@ export function Table<T>({
     selection.onChange(next);
   };
 
+  /**
+   * A nowrap cell that does not fit its column ends in an ellipsis, and an ellipsis without a
+   * tooltip throws the value away (contract §3.2). A column may name the tooltip itself;
+   * otherwise the cell's own text is the value, so it is filled in here — only for cells that
+   * actually overflow, so a cell that fits carries no redundant hover text.
+   */
+  useLayoutEffect(() => {
+    const element = table.current;
+    if (!element) return;
+    const fill = () => {
+      for (const node of element.querySelectorAll<HTMLElement>("[data-clip]")) {
+        if (node.dataset.derivedTitle === "true") {
+          node.removeAttribute("title");
+          delete node.dataset.derivedTitle;
+        }
+        if (node.title || node.scrollWidth <= node.clientWidth + 1) continue;
+        const text = (node.textContent ?? "").trim();
+        if (!text) continue;
+        node.title = text;
+        node.dataset.derivedTitle = "true";
+      }
+    };
+    // Setting a title cannot change layout, so this observer cannot feed itself.
+    fill();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fill);
+    observer?.observe(element);
+    window.addEventListener("resize", fill);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", fill);
+    };
+  }, [rows, columns]);
+
   const directionOf = (column: TableColumn<T>): "ascending" | "descending" | "none" =>
     sort?.id === column.id ? (sort.desc ? "descending" : "ascending") : "none";
   const arrow = (column: TableColumn<T>) =>
@@ -325,7 +364,13 @@ export function Table<T>({
                       className={join(s.cell, column.actions && s.actionsCell, column.className)}
                       data-column={column.id}
                     >
-                      {column.cell(row)}
+                      {column.actions ? (
+                        column.cell(row)
+                      ) : (
+                        <span className={s.clip} data-clip="" title={column.title?.(row)}>
+                          {column.cell(row)}
+                        </span>
+                      )}
                     </td>
                   ))}
                 </tr>

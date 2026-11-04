@@ -1,0 +1,49 @@
+/* The language button shows the active language as a glyph when it is not "system". */
+.langGlyph {
+  display: grid;
+  place-items: center;
+  width: var(--icon-md);
+  height: var(--icon-md);
+  color: var(--accent-text-strong);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-strong);
+}
+
+/* Two radio groups: mode, then the light palette. */
+.choices {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-block);
+}
+
+.choices legend {
+  padding: 0 var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  cursor: pointer;
+}
+
+.swatch {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  border-radius: var(--radius-tag);
+  /* The seed hue travels in as --swatch-hue; L and C stay the theme's own tokens. */
+  background: oklch(var(--accent-l) var(--accent-c) var(--swatch-hue));
+}
+
+.note {
+  margin: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-relaxed);
+}

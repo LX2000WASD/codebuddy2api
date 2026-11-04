@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, credentialResponse, metric, number, object, text, type RecordValue } from "./api";
-import { Badge } from "./components";
+import { Badge, Select } from "./ui";
 import { useT } from "./i18n";
 import { eventActionLabel } from "./values";
-import { Select } from "./fields";
 
 export const creditChangeTypes = ["income", "consume", "expire", "adjust"] as const;
 const tones: Record<string, "good" | "neutral" | "warn"> = {
@@ -57,7 +56,7 @@ export function CreditFilters({
   return (
     <>
       <Select
-        aria-label={t("logs.filter.account")}
+        label={t("logs.filter.account")}
         value={credential}
         onChange={(value) => onChange({ credential: value })}
       >
@@ -69,7 +68,7 @@ export function CreditFilters({
         ))}
       </Select>
       <Select
-        aria-label={t("logs.filter.changeType")}
+        label={t("logs.filter.changeType")}
         value={type}
         onChange={(value) => onChange({ type: value })}
       >
@@ -85,7 +84,7 @@ export function CreditFilters({
 }
 
 // Three cells rather than one row fragment: the log table renders its columns through
-// DataTable, which asks for one cell per column and owns the <tr> itself.
+// the Table primitive, which asks for one cell per column and owns the <tr> itself.
 export function CreditAction({
   item,
   names,

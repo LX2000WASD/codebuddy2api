@@ -1,0 +1,122 @@
+@use "./design/breakpoints.scss" as bp;
+
+/* The overview's single-series trend: a 780x200 viewBox stretched to the container
+ * width (preserveAspectRatio="none"), so the geometry in Trend.tsx is absolute and the
+ * stylesheet only positions the frame, the tooltip and the axis labels.
+ */
+
+/* The anchor for the tooltip. It is the element the pointer maths measures against, so
+ * it must be the SVG's own box and nothing else. */
+.frame {
+  position: relative;
+  min-width: 0;
+}
+
+/* 210px is chart geometry, not layout spacing: the viewBox is 200 units tall and the
+ * extra 10 keep the axis baseline off the panel edge. */
+.svg {
+  display: block;
+  width: 100%;
+  block-size: 210px;
+  touch-action: pan-y;
+  cursor: crosshair;
+}
+
+.svg text {
+  font-size: var(--fs-11);
+  fill: var(--text-subtle);
+}
+
+/* Anchored to the hovered bucket; the caller supplies `left` as a percentage and
+ * `data-edge` decides which side of the point the box grows towards, so it cannot
+ * leave the plot on either end. */
+.tooltip {
+  position: absolute;
+  top: var(--space-2);
+  z-index: var(--z-raised);
+  width: min(210px, calc(100% - var(--space-4)));
+  padding: var(--space-3);
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-overlay);
+  box-shadow: var(--shadow-2);
+  font-size: var(--fs-11);
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.tooltip[data-edge="left"] {
+  transform: none;
+}
+
+.tooltip[data-edge="right"] {
+  transform: translateX(-100%);
+}
+
+.tooltip strong {
+  display: block;
+  font-size: var(--fs-11);
+}
+
+.tooltip dl {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+}
+
+.tooltip dl > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.tooltip dt {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.tooltip dd {
+  margin: 0;
+  font-size: var(--fs-13);
+  font-weight: var(--fw-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.legendDot {
+  display: inline-block;
+  inline-size: var(--space-2);
+  block-size: var(--space-2);
+  margin-inline-end: var(--space-1);
+  border-radius: var(--radius-full);
+}
+
+/* The first/last bucket, under the plot. Two spans on purpose (see Trend.tsx): a single
+ * bucket is centred rather than claiming both ends. */
+.axis {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.axis > span:only-child {
+  margin-inline: auto;
+}
+
+/* The same numbers as a table, for anyone who cannot use the plot. The disclosure is a
+ * native <details>, so it is keyboard-operable without a handler. */
+.data summary {
+  margin-block-end: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  cursor: pointer;
+}
+
+.visuallyHidden {
+  @include bp.visually-hidden;
+}

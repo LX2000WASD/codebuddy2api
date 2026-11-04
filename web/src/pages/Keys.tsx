@@ -1,19 +1,26 @@
 import { useState } from "react";
 import { api, errorMessage, list, metric, object, useResource, type RecordValue } from "../api";
+import { t } from "../i18n";
 import {
   Badge,
+  Button,
+  Cluster,
   Drawer,
   DrawerPresence,
   Empty,
   ErrorNotice,
-  Icon,
-  PageTitle,
+  Field,
+  Input,
+  Page,
   Panel,
   ResourceState,
-} from "../components";
-import s from "../ui.module.scss";
-import { t } from "../i18n";
-import { notify } from "../toast";
+  Stack,
+  Table,
+  Textarea,
+  notify,
+  type TableColumn,
+} from "../ui";
+import s from "./Keys.module.scss";
 
 type KeyRow = {
   id: string;
@@ -235,22 +242,106 @@ export function Keys() {
   const modelLabel = (id: string) =>
     modelResource.data?.find((item) => item.id === id)?.label ?? id;
 
+  const columns: TableColumn<KeyRow>[] = [
+    {
+      id: "name",
+      header: t("keys.name"),
+      cell: (item) => item.name,
+    },
+    {
+      id: "type",
+      header: t("keys.type"),
+      cell: (item) => <Badge>{item.type === "admin" ? t("keys.admin") : t("keys.standard")}</Badge>,
+    },
+    {
+      id: "secret",
+      header: t("keys.secret"),
+      cell: (item) => <span className={s.mono}>{item.masked ?? item.prefix}</span>,
+    },
+    {
+      id: "status",
+      header: t("keys.status"),
+      cell: (item) => {
+        const expired = item.expires_at !== null && item.expires_at <= Date.now() / 1000;
+        const status = item.overridden
+          ? "keys.overridden"
+          : !item.enabled
+            ? "keys.disabled"
+            : expired
+              ? "keys.expired"
+              : "keys.enabled";
+        return <Badge tone={status === "keys.enabled" ? "good" : "warn"}>{t(status)}</Badge>;
+      },
+    },
+    {
+      id: "expiry",
+      header: t("keys.expiry"),
+      cell: (item) => (item.expires_at === null ? t("keys.never") : formatTime(item.expires_at)),
+    },
+    {
+      id: "ip",
+      header: "IP",
+      cell: (item) => item.ip_allow?.join("、") || t("keys.unlimited"),
+    },
+    { id: "rpm", header: "RPM", cell: (item) => item.rpm ?? t("keys.unlimited") },
+    {
+      id: "models",
+      header: t("keys.models"),
+      cell: (item) =>
+        item.models === null
+          ? t("keys.all")
+          : item.models.map((id) => modelLabel(id)).join("、") || t("keys.all"),
+    },
+    { id: "usage", header: t("keys.usage24h"), cell: (item) => metric(item.usage?.requests) },
+    { id: "lastUsed", header: t("keys.lastUsed"), cell: (item) => formatTime(item.last_used_at) },
+    {
+      id: "actions",
+      header: t("keys.actions"),
+      actions: true,
+      cell: (item) => (
+        <Cluster gap="1">
+          {!item.overridden && (
+            <>
+              <Button size="sm" onClick={() => openEditor(item)}>
+                {t("keys.edit")}
+              </Button>
+              <Button size="sm" onClick={() => rotate(item)}>
+                {t("keys.rotate")}
+              </Button>
+              {item.type === "standard" && (
+                <>
+                  <Button size="sm" onClick={() => reveal(item)}>
+                    {t("keys.reveal")}
+                  </Button>
+                  <Button size="sm" onClick={() => reveal(item, true)}>
+                    {t("keys.copy")}
+                  </Button>
+                </>
+              )}
+            </>
+          )}
+          <Button size="sm" variant="danger" onClick={() => remove(item)}>
+            {t("keys.delete")}
+          </Button>
+        </Cluster>
+      ),
+    },
+  ];
+
   return (
-    <>
-      <PageTitle
-        title={t("keys.title")}
-        description={t("keys.description")}
-        actions={
-          <button className={s.primary} disabled={!data} onClick={() => openEditor(null)}>
-            <Icon name="plus" />
-            {t("keys.create")}
-          </button>
-        }
-      />
+    <Page
+      title={t("keys.title")}
+      description={t("keys.description")}
+      actions={
+        <Button variant="primary" icon="plus" disabled={!data} onClick={() => openEditor(null)}>
+          {t("keys.create")}
+        </Button>
+      }
+    >
       {!editor && <ErrorNotice message={error} />}
       <ResourceState loading={resource.loading} error={resource.error} reload={resource.reload} />
       {data && (
-        <div className={s.stack}>
+        <Stack gap="4">
           {data.external && (
             <Panel title={t("keys.externalTitle")}>
               <p className={s.note}>
@@ -262,117 +353,38 @@ export function Keys() {
             {!data.items.length ? (
               <Empty title={t("keys.empty")} />
             ) : (
-              <div className={s.tableWrap}>
-                <table className={s.keysTable}>
-                  <thead>
-                    <tr>
-                      <th>{t("keys.name")}</th>
-                      <th>{t("keys.type")}</th>
-                      <th>{t("keys.secret")}</th>
-                      <th>{t("keys.status")}</th>
-                      <th>{t("keys.expiry")}</th>
-                      <th>IP</th>
-                      <th>RPM</th>
-                      <th>{t("keys.models")}</th>
-                      <th>{t("keys.usage24h")}</th>
-                      <th>{t("keys.lastUsed")}</th>
-                      <th>{t("keys.actions")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.items.map((item) => {
-                      const expired =
-                        item.expires_at !== null && item.expires_at <= Date.now() / 1000;
-                      const status = item.overridden
-                        ? "keys.overridden"
-                        : !item.enabled
-                          ? "keys.disabled"
-                          : expired
-                            ? "keys.expired"
-                            : "keys.enabled";
-                      return (
-                        <tr key={item.id}>
-                          <td className={s.wrapCell}>{item.name}</td>
-                          <td>
-                            <Badge>
-                              {item.type === "admin" ? t("keys.admin") : t("keys.standard")}
-                            </Badge>
-                          </td>
-                          <td className={s.mono}>{item.masked ?? item.prefix}</td>
-                          <td>
-                            <Badge tone={status === "keys.enabled" ? "good" : "warn"}>
-                              {t(status)}
-                            </Badge>
-                          </td>
-                          <td>
-                            {item.expires_at === null
-                              ? t("keys.never")
-                              : formatTime(item.expires_at)}
-                          </td>
-                          <td className={s.wrapCell}>
-                            {item.ip_allow?.join("、") || t("keys.unlimited")}
-                          </td>
-                          <td>{item.rpm ?? t("keys.unlimited")}</td>
-                          <td className={s.wrapCell}>
-                            {item.models === null
-                              ? t("keys.all")
-                              : item.models.map((id) => modelLabel(id)).join("、") || t("keys.all")}
-                          </td>
-                          <td>{metric(item.usage?.requests)}</td>
-                          <td>{formatTime(item.last_used_at)}</td>
-                          <td>
-                            <div className={s.rowActions}>
-                              {!item.overridden && (
-                                <>
-                                  <button onClick={() => openEditor(item)}>{t("keys.edit")}</button>
-                                  <button onClick={() => rotate(item)}>{t("keys.rotate")}</button>
-                                  {item.type === "standard" && (
-                                    <>
-                                      <button onClick={() => reveal(item)}>
-                                        {t("keys.reveal")}
-                                      </button>
-                                      <button onClick={() => reveal(item, true)}>
-                                        {t("keys.copy")}
-                                      </button>
-                                    </>
-                                  )}
-                                </>
-                              )}
-                              <button onClick={() => remove(item)}>{t("keys.delete")}</button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <Table
+                label={t("keys.title")}
+                columns={columns}
+                rows={data.items}
+                rowKey={(item) => item.id}
+              />
             )}
           </Panel>
-        </div>
+        </Stack>
       )}
       <DrawerPresence>
         {editor && (
           <Drawer
             title={editor.item ? t("keys.editTitle") : t("keys.create")}
+            closeLabel={t("common.closeDrawer")}
             onClose={() => setEditor(null)}
             dismissDisabled={busy}
           >
-            <form className={s.drawerForm} onSubmit={submit}>
-              <label className={s.field}>
-                {t("keys.name")}
-                <input
+            <form className={s.form} onSubmit={submit}>
+              <Field label={t("keys.name")}>
+                <Input
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   maxLength={64}
                   required
                   autoFocus
                 />
-              </label>
+              </Field>
               {!editor.item && (
-                <label className={s.field}>
-                  {t("keys.type")}
+                <Field label={t("keys.type")}>
                   <select
+                    className={s.control}
                     value={type}
                     onChange={(event) => setType(event.target.value as "standard" | "admin")}
                   >
@@ -381,7 +393,7 @@ export function Keys() {
                       {t("keys.adminFull")}
                     </option>
                   </select>
-                </label>
+                </Field>
               )}
               {adminUnavailable && !editor.item && (
                 <p className={s.note}>{t("keys.adminUnavailable")}</p>
@@ -398,9 +410,12 @@ export function Keys() {
               )}
               {(editor.item?.type ?? type) === "standard" && (
                 <>
-                  <label className={s.field}>
-                    {t("keys.expiry")}
-                    <select value={expiry} onChange={(event) => setExpiry(event.target.value)}>
+                  <Field label={t("keys.expiry")}>
+                    <select
+                      className={s.control}
+                      value={expiry}
+                      onChange={(event) => setExpiry(event.target.value)}
+                    >
                       <option value="never">{t("keys.never")}</option>
                       <option value="1">{t("keys.expiryDays", { n: 1 })}</option>
                       <option value="7">{t("keys.expiryDays", { n: 7 })}</option>
@@ -408,30 +423,27 @@ export function Keys() {
                       <option value="90">{t("keys.expiryDays", { n: 90 })}</option>
                       <option value="custom">{t("keys.customExpiry")}</option>
                     </select>
-                  </label>
+                  </Field>
                   {expiry === "custom" && (
-                    <label className={s.field}>
-                      {t("keys.customExpiryLabel")}
-                      <input
+                    <Field label={t("keys.customExpiryLabel")}>
+                      <Input
                         type="datetime-local"
                         value={customExpiry}
                         onChange={(event) => setCustomExpiry(event.target.value)}
                         required
                       />
-                    </label>
+                    </Field>
                   )}
-                  <label className={s.field}>
-                    {t("keys.ipAllow")}
-                    <textarea
+                  <Field label={t("keys.ipAllow")}>
+                    <Textarea
                       value={ipAllow}
                       onChange={(event) => setIpAllow(event.target.value)}
                       placeholder={t("keys.ipHint")}
                       rows={4}
                     />
-                  </label>
-                  <label className={s.field}>
-                    RPM
-                    <input
+                  </Field>
+                  <Field label="RPM">
+                    <Input
                       type="number"
                       min={1}
                       max={100000}
@@ -440,10 +452,10 @@ export function Keys() {
                       onChange={(event) => setRpm(event.target.value)}
                       placeholder={t("keys.rpmHint")}
                     />
-                  </label>
+                  </Field>
                   <fieldset className={s.fieldset}>
                     <legend>{t("keys.models")}</legend>
-                    <p>{t("keys.modelsHint")}</p>
+                    <p className={s.hint}>{t("keys.modelsHint")}</p>
                     {(modelResource.data ?? []).map((option) => (
                       <label className={s.check} key={option.id}>
                         <input
@@ -464,14 +476,19 @@ export function Keys() {
                 </>
               )}
               <ErrorNotice message={error} />
-              <div className={s.actions}>
-                <button type="button" disabled={busy} onClick={() => setEditor(null)}>
+              <Cluster>
+                <Button type="button" disabled={busy} onClick={() => setEditor(null)}>
                   {t("common.cancel")}
-                </button>
-                <button className={s.primary} disabled={busy || !name.trim()} aria-busy={busy}>
+                </Button>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  disabled={busy || !name.trim()}
+                  aria-busy={busy}
+                >
                   {editor.item ? t("keys.saveChanges") : t("keys.createSubmit")}
-                </button>
-              </div>
+                </Button>
+              </Cluster>
             </form>
           </Drawer>
         )}
@@ -480,19 +497,20 @@ export function Keys() {
         {secret && (
           <Drawer
             title={secret.oneTime ? t("keys.secretOnce") : t("keys.secretFull")}
+            closeLabel={t("common.closeDrawer")}
             onClose={() => setSecret(null)}
           >
             {secret.oneTime && <p className={s.warning}>{t("keys.secretWarning")}</p>}
-            <code className={s.secretValue}>{secret.value}</code>
-            <div className={s.actions}>
-              <button onClick={copySecret}>{t("keys.copy")}</button>
-              <button className={s.primary} onClick={() => setSecret(null)}>
+            <code className={s.secret}>{secret.value}</code>
+            <Cluster>
+              <Button onClick={copySecret}>{t("keys.copy")}</Button>
+              <Button variant="primary" onClick={() => setSecret(null)}>
                 {t("keys.close")}
-              </button>
-            </div>
+              </Button>
+            </Cluster>
           </Drawer>
         )}
       </DrawerPresence>
-    </>
+    </Page>
   );
 }

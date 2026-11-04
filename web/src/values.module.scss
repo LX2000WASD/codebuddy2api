@@ -1,0 +1,117 @@
+@use "./design/breakpoints.scss" as bp;
+
+/* Structured values (DataValue / Fields): one definition list per object, one dt/dd
+   pair per key. The label column is capped by the same token Table's card layout uses,
+   so a long key shortens instead of pushing the value off the row. */
+.details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+}
+
+.details > div {
+  display: grid;
+  grid-template-columns: minmax(0, var(--table-card-label)) minmax(0, 1fr);
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.details dt {
+  min-width: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.details dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+/* A nested object is separated by a rule instead of a second border. */
+.nested {
+  padding-top: var(--space-2);
+  border-top: var(--hairline) solid var(--line);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.text {
+  overflow-wrap: anywhere;
+}
+
+/* A folded raw payload: the summary is the only affordance, the pre owns its own scroll. */
+.raw {
+  min-width: 0;
+}
+
+.raw > summary {
+  color: var(--accent-text-strong);
+  font-size: var(--fs-11);
+  cursor: pointer;
+}
+
+.raw > pre {
+  max-height: var(--listbox-max-height);
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  overflow: auto;
+  color: var(--text);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-block);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Scalar arrays read as chips, object arrays as stacked blocks. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.chip {
+  padding: 0 var(--space-2);
+  color: var(--text);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-tag);
+  font-size: var(--fs-11);
+  line-height: var(--lh-relaxed);
+  overflow-wrap: anywhere;
+}
+
+.card {
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-block);
+  overflow-wrap: anywhere;
+}
+
+@include bp.md-down {
+  /* On a phone the label column would leave the value about half a line wide: the pair
+     stacks instead, label above value. */
+  .details > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+}

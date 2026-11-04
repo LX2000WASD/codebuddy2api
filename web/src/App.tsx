@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, Navigate, Outlet, Route, Routes, useLocation } from "react-router";
 import { api, establishSession, errorMessage, list, object, useSession } from "./api";
-import { ErrorNotice, Icon, IconButton } from "./ui";
+import { Button, ErrorNotice, Field, Icon, IconButton } from "./ui";
 import { CommandPalette, SIDEBAR_TOGGLE_EVENT, signOut } from "./commandPalette";
 import { useCreditsAlert } from "./insights";
 import { areaForPath, navAreas, sectionFor, sectionTarget } from "./navigation";
@@ -15,7 +15,7 @@ import { NavigationDrawer } from "./shell/NavigationDrawer";
 import { SidebarNav } from "./shell/SidebarNav";
 import { useNarrowViewport } from "./shell/useNarrowViewport";
 import sh from "./shell/shell.module.scss";
-import s from "./ui.module.scss";
+import s from "./app.module.scss";
 import { LanguageProvider, chooseLanguage, serverPreference, useT } from "./i18n";
 
 /** The five task areas are the navigation; the ten former pages are sections inside them. */
@@ -172,10 +172,9 @@ function Shell() {
                 </button>
               </div>
             )}
-            {/* Keyed by pathname so each navigation replays the enter transition. The
-              class still comes from ui.module.scss: it also owns the vertical rhythm
-              between stacked panels, which the page primitives take over in W2. */}
-            <div key={location.pathname} className={s.pageEnter}>
+            {/* Keyed by pathname so each navigation replays the enter transition; the
+              same class carries the vertical rhythm between sibling blocks. */}
+            <div key={location.pathname} className={s.enter}>
               <Outlet />
             </div>
           </div>
@@ -203,16 +202,12 @@ function Login() {
   if (status === "authenticated") return <Navigate to="/dashboard" replace />;
   return (
     <div className={s.login}>
-      <div className={s.loginBackdrop} aria-hidden="true">
-        <span />
-        <span />
-        <span />
-      </div>
-      <div className={s.loginAppearance}>
+      <div className={s.backdrop} aria-hidden="true" />
+      <div className={s.appearance}>
         <LanguageToggle />
         <Appearance />
       </div>
-      <section className={s.loginIntro}>
+      <section className={s.intro}>
         <div className={s.brand}>
           <span className={s.brandIcon}>
             <Icon name="leaf" />
@@ -220,14 +215,15 @@ function Login() {
           CodeBuddy
         </div>
         <h1>{t("login.subtitle")}</h1>
-        <div className={s.loginOrbit} aria-hidden="true">
+        <div className={s.orbit} aria-hidden="true">
           <Icon name="leaf" />
         </div>
       </section>
-      <section className={`${s.loginCard} ${shake ? s.loginShake : ""}`}>
+      <section className={shake ? `${s.card} ${s.loginShake}` : s.card}>
         <Icon name="shield" />
         <h2>{t("login.title")}</h2>
         <form
+          className={s.form}
           method="post"
           action="/admin/session"
           onSubmit={(e) => {
@@ -266,10 +262,9 @@ function Login() {
               .finally(() => setBusy(false));
           }}
         >
-          <label className={s.field}>
-            {t("login.username")}
+          <Field label={t("login.username")}>
             <span className={s.inputGroup}>
-              <Icon name="user" />
+              <Icon name="user" size="sm" />
               <input
                 name="username"
                 autoComplete="username"
@@ -282,11 +277,10 @@ function Login() {
                 placeholder="admin"
               />
             </span>
-          </label>
-          <label className={s.field}>
-            {t("login.password")}
+          </Field>
+          <Field label={t("login.password")}>
             <span className={s.inputGroup}>
-              <Icon name="lock" />
+              <Icon name="lock" size="sm" />
               <input
                 name="password"
                 type={visible ? "text" : "password"}
@@ -300,21 +294,18 @@ function Login() {
                 onKeyDown={(e) => setCaps(e.getModifierState("CapsLock"))}
                 onKeyUp={(e) => setCaps(e.getModifierState("CapsLock"))}
               />
-              <button
-                type="button"
-                className={s.inputAction}
-                onMouseDown={(e) => e.preventDefault()}
-                aria-label={visible ? t("login.hidePassword") : t("login.showPassword")}
+              <IconButton
+                icon={visible ? "eyeOff" : "eye"}
+                label={visible ? t("login.hidePassword") : t("login.showPassword")}
                 aria-pressed={visible}
+                onMouseDown={(e) => e.preventDefault()}
                 onClick={() => setVisible((value) => !value)}
-              >
-                <Icon name={visible ? "eyeOff" : "eye"} />
-              </button>
+              />
             </span>
-          </label>
+          </Field>
           {caps && (
             <span id="login-caps" className={s.capsHint} role="status">
-              <Icon name="alert" />
+              <Icon name="alert" size="sm" />
               {t("login.capsLock")}
             </span>
           )}
@@ -328,19 +319,22 @@ function Login() {
             {t("login.remember")}
           </label>
           <ErrorNotice message={error} />
-          <button
-            className={s.primary}
+          <Button
+            type="submit"
+            variant="primary"
+            block
             disabled={busy || !username.trim() || !password}
             aria-busy={busy}
           >
             {busy ? t("login.verifying") : t("login.enter")}
-            <Icon name={busy ? "refresh" : "arrow"} />
-          </button>
+            <Icon name={busy ? "refresh" : "arrow"} size="sm" spin={busy} />
+          </Button>
         </form>
       </section>
     </div>
   );
 }
+
 export function Guard() {
   const t = useT();
   const { status, error } = useSession();

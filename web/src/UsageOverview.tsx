@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState, type PointerEvent } from "react";
 import { compact, metric, number, text, type RecordValue } from "./api";
-import { Empty, Icon } from "./components";
-import { useT } from "./i18n";
-import s from "./ui.module.scss";
+import { Button, Empty, Grid, Icon, Stack, Table, type IconName, type TableColumn } from "./ui";
+import { t, useT } from "./i18n";
+import s from "./UsageOverview.module.scss";
 
 function delta(current: number | null, previous: number | null): string | null {
   if (current === null || previous === null || previous === 0) return null;
@@ -164,7 +164,7 @@ export function KpiCards({
   // and the note can carry its own muted styling.
   const cards: [
     string,
-    string,
+    IconName,
     string,
     string | null,
     string,
@@ -251,25 +251,52 @@ export function KpiCards({
     ],
   ];
   return (
-    <div className={s.kpiGrid}>
+    // ui/Grid fits as many columns as the width allows, so the eight tiles keep a full
+    // last row at every viewport instead of a 4 + 1 orphan (P2-3).
+    <Grid min="md">
       {cards.map(([label, icon, value, exactText, sub, spark, color, note]) => (
         <section className={s.kpiCard} key={label}>
-          <div>
-            <span>{label}</span>
-            <span>
-              <Icon name={icon} />
+          <div className={s.kpiHead}>
+            <span className={s.kpiLabel}>{label}</span>
+            <span className={s.kpiIcon} aria-hidden="true">
+              <Icon name={icon} size="sm" />
             </span>
           </div>
           <KpiValue label={label} display={value} exact={exactText} />
-          <small>
+          <small className={s.kpiHint}>
             <span>{sub}</span>
-            {note ? <span className={s.muted}> · {note}</span> : null}
+            {note ? <span className={s.kpiHintMuted}> · {note}</span> : null}
           </small>
           <Spark values={spark} color={color} />
         </section>
       ))}
-    </div>
+    </Grid>
   );
+}
+
+/** One row of the disclosure table: the bucket plus the key that identifies its position. */
+type SeriesRow = { key: string; row: RecordValue };
+
+/** The plotted buckets as table columns; the date header follows the granularity shown. */
+function trendColumns(hourly: boolean): TableColumn<SeriesRow>[] {
+  return [
+    {
+      id: "date",
+      header: hourly ? "时段（UTC）" : "日期（UTC）",
+      cell: (item) => text(item.row.date),
+    },
+    {
+      id: "requests",
+      header: t("dash.kpi.requests"),
+      cell: (item) => metric(item.row.requests),
+    },
+    {
+      id: "tokens",
+      header: t("dash.kpi.totalTokens"),
+      cell: (item) => metric(item.row.total_tokens),
+    },
+    { id: "credit", header: t("dash.kpi.credit"), cell: (item) => metric(item.row.credit) },
+  ];
 }
 
 const TREND_SERIES = [
@@ -280,7 +307,10 @@ const TREND_SERIES = [
 
 const LEFT = 40,
   HOUR_STEP = 3600,
-  RIGHT_PAD = 88,
+  // Room for the third (token) axis label. 88px left it flush against the SVG edge —
+  // 1px of slack at 1440 — so a wider compact value ("1,234.5K") would be cut by the
+  // viewBox. 104 keeps a readable gutter at every measured width.
+  RIGHT_PAD = 104,
   NARROW_RIGHT_PAD = 46,
   TOP = 14,
   BOTTOM = 168,
@@ -428,7 +458,7 @@ export function UsageTrend({
   const selected = active === null ? null : displayRows[active];
   const ticks = [0, 1, 2, 3, 4];
   return (
-    <>
+    <Stack gap="2">
       <div className={s.chartHead}>
         <div className={s.chartLegend}>
           {TREND_SERIES.map(({ key, labelKey, color }) => (
@@ -439,18 +469,18 @@ export function UsageTrend({
           ))}
         </div>
         {domain ? (
-          <button type="button" className={s.zoomReset} onClick={() => setDomain(null)}>
+          <Button size="sm" onClick={() => setDomain(null)}>
             {t("dash.zoomReset")}
-          </button>
+          </Button>
         ) : (
           bucketsValid && <span className={s.zoomHint}>{t("dash.zoomHint")}</span>
         )}
       </div>
-      <div className={s.chartInteractive} ref={wrapRef}>
+      <div className={s.frame} ref={wrapRef}>
         <svg
           ref={svgRef}
           viewBox={`0 0 ${width} ${CHART_HEIGHT}`}
-          className={s.chart}
+          className={s.svg}
           role="img"
           tabIndex={0}
           aria-label={
@@ -571,7 +601,7 @@ export function UsageTrend({
         </svg>
         {selected && active !== null && (
           <div
-            className={s.chartTooltip}
+            className={s.tooltip}
             id={`${id}-tooltip`}
             role="tooltip"
             style={{
@@ -596,35 +626,22 @@ export function UsageTrend({
           </div>
         )}
       </div>
-      <p className={s.srOnly} id={`${id}-hint`}>
+      <p className={s.visuallyHidden} id={`${id}-hint`}>
         指向或点按查看时段；滚轮缩放区间，双击或 Esc 复位；键盘左右方向键逐点查看，Home 和 End
         跳到首尾。
       </p>
-      <details className={s.chartData}>
+      {/* The same buckets the plot draws, in the shared table so a narrow viewport gets
+          cards instead of a clipped column (P1-2 on this page). */}
+      <details className={s.data}>
         <summary>{t("dash.trendData")}</summary>
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">
-                {displayRows !== rows || granularity === "hour" ? "时段（UTC）" : "日期（UTC）"}
-              </th>
-              <th scope="col">{t("dash.kpi.requests")}</th>
-              <th scope="col">{t("dash.kpi.totalTokens")}</th>
-              <th scope="col">{t("dash.kpi.credit")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {displayRows.map((r, i) => (
-              <tr key={i}>
-                <td>{text(r.date)}</td>
-                <td>{metric(r.requests)}</td>
-                <td>{metric(r.total_tokens)}</td>
-                <td>{metric(r.credit)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <Table
+          columns={trendColumns(displayRows !== rows || granularity === "hour")}
+          rows={displayRows.map((row, index) => ({ key: String(index), row }))}
+          rowKey={(item) => item.key}
+          label={t("dash.trendData")}
+          scroll
+        />
       </details>
-    </>
+    </Stack>
   );
 }

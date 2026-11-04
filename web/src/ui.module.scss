@@ -469,9 +469,11 @@ $white: var(--page);
 @media (max-width: 1200px) {
   .stats,
   .stats:has(> :nth-child(5)) {
-    /* 150px minimum so a 390px phone still gets two columns instead of a
-       five-tile single-file column that pushes every metric off the first screen. */
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    /* A 150px minimum packed five tiles into four 137px cells at 1024, where every
+       figure truncated ("6,519.7…") and the fifth tile wrapped alone onto a second
+       row (P2-2 / P2-3). 230px keeps three readable columns at that width and the
+       remaining tiles wrap as a normal pair. */
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   }
 }
 .stat {
@@ -596,9 +598,10 @@ $white: var(--page);
   font-size: var(--fs-11);
   line-height: 18px;
   color: var(--text-subtle);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* A KPI caption is a sentence ("请求 1196 条 · 事件 34 条 · 保留 30 天"), not a value:
+     truncating it removes information the card exists to show. It wraps instead (P2-5). */
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
 }
 /* The sparkline is a fourth child of the KPI card, so it lands on an implicit grid
    row. It used to add a 6px margin on top of the card's own padding; inside the
@@ -965,6 +968,11 @@ $white: var(--page);
 .credUsageBox {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* Four columns of "成功率 98.6%" resolved to 59px each on a phone, so every figure
+     became an ellipsis. Two columns keep them readable (P2-1). */
+  @media (max-width: 640px) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   gap: var(--space-2);
   padding: var(--space-3);
   border-radius: var(--radius-block);
@@ -2507,6 +2515,9 @@ $white: var(--page);
 .filters input {
   flex: 1;
   width: 130px;
+  /* flex-basis 0 with no floor let the two text filters shrink to 59px on a phone,
+     where even the placeholder was cut in half (P2-4). */
+  min-width: 140px;
 }
 .filters .select {
   max-width: 160px;
@@ -5129,39 +5140,16 @@ tr.selectedRow {
 /* Segmented bars: the local .tabs treatment is an underline, so the gliding thumb
    is only painted on the bars that really are segmented (channel / status / view
    switches). Display-only: the thumb is aria-hidden decoration. */
-/* A segmented bar hosts the absolutely positioned SegmentThumb, which is placed from the
-   bar's own offsets; without the positioned ancestor it lands on the page and widens it. */
+/* The gliding SegmentThumb is retired. It was an absolutely positioned, opaque span
+   painted over the selected segment: the segment's own text sat under it, so the active
+   label disappeared on every viewport (P1-1). The selected state is now painted by the
+   button itself ([aria-pressed], .pillActive, .channelActive), and no decoration may be
+   layered above a segment again — a bar contains buttons and nothing else. */
 .channelTrack,
 .statusPills,
 .viewSwitch,
 .tabs {
   position: relative;
-}
-.segmentThumb {
-  position: absolute;
-  top: 0;
-  left: 0;
-  opacity: 0;
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-card);
-  background: var(--selected);
-  box-shadow: var(--shadow-1);
-  pointer-events: none;
-}
-.statusPills .segmentThumb,
-.viewSwitch .segmentThumb {
-  border-radius: var(--radius-full);
-}
-.tabs .segmentThumb {
-  display: none;
-}
-.segmentReady {
-  $glide: var(--duration-panel) var(--ease-standard);
-  transition:
-    transform $glide,
-    width $glide,
-    height $glide,
-    opacity var(--duration-standard);
 }
 
 /* Banner for a state the operator must act on (e.g. the default admin password). */
@@ -5309,6 +5297,12 @@ tr.selectedRow {
 
 /* Recorded upstream error body, pinned beside its trigger so no table clips it. */
 .errorJsonTrigger {
+  /* P1-3: the trigger is an inline-block inside a clipped cell, and a long upstream error
+     text stretched it to 316px past a 157px column, where the panel cut it mid-sentence
+     with no ellipsis. Bound it by the cell and let the label wrap instead. */
+  display: block;
+  max-width: 100%;
+  text-align: start;
   border: none;
   background: none;
   padding: 0;
@@ -5317,6 +5311,7 @@ tr.selectedRow {
   cursor: help;
   text-decoration: underline dotted;
   text-underline-offset: 3px;
+  overflow-wrap: anywhere;
 }
 .errorJsonTip {
   position: fixed;
@@ -5339,6 +5334,11 @@ tr.selectedRow {
   cursor: text;
 }
 .channelTrack button.channelActive {
+  /* Self-drawn selected segment: the retired thumb used to paint this face, so without
+     it the active filter looked exactly like the inactive ones. */
+  background: var(--selected);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-control);
   color: var(--text);
   font-weight: 600;
 }
@@ -5711,4 +5711,14 @@ tr.selectedRow {
 }
 .warnText {
   color: var(--warning-fg);
+}
+/* Phone-width KPI grid: two columns of ~170px keep five metrics on the first screen,
+   which one column cannot. Declared here, after the @media (max-width: 800px) block that
+   sets a single-column-friendly .stats, because equal specificity is decided by source
+   order and that block would otherwise win at 390px. */
+@media (max-width: 640px) {
+  .stats,
+  .stats:has(> :nth-child(5)) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
