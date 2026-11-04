@@ -349,21 +349,27 @@ export function Logs() {
       result.push(subject, status);
       if (kind === "request") {
         result.push(
+          // Below 1200px these three fold away: with the fixed sidebar the content column
+          // cannot seat seven columns, and the ones that used to disappear were the middle
+          // ones — 状态 among them — while 操作 stayed pinned. The card layout still shows all.
           {
             id: "apiKey",
             header: t("logs.col.apiKey"),
             cell: (item) => apiKeyLabel(item.api_key),
+            secondary: true,
           },
           {
             id: "duration",
             header: t("logs.col.duration"),
             sortable: true,
             cell: (item) => `${metric(item.duration_ms)} ms`,
+            secondary: true,
           },
           {
             id: "tokens",
             header: "Token / Credit",
             sortable: true,
+            secondary: true,
             cell: (item) => (
               <>
                 {metric(item.total_tokens)}

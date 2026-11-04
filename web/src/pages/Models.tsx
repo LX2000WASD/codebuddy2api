@@ -433,12 +433,17 @@ function modelColumns({
       sortable: true,
       sortValue: rateValue,
       optional: true,
+      // The optional columns also fold away on a narrow table (they stay in the card
+      // layout): at 1024 the eight-column catalogue would otherwise hide 可用性 behind
+      // the pinned actions column.
+      secondary: true,
     },
     {
       id: "capability",
       header: t("models.col.capability"),
       cell: (m) => <CapabilityChips model={m} />,
       optional: true,
+      secondary: true,
     },
     {
       id: "availability",
@@ -472,6 +477,7 @@ function modelColumns({
         );
       },
       optional: true,
+      secondary: true,
     },
     {
       id: "context",
@@ -481,6 +487,7 @@ function modelColumns({
       sortValue: (m) => widestWindow(m, "input"),
       sortDescFirst: true,
       optional: true,
+      secondary: true,
     },
     {
       id: "output",
@@ -497,12 +504,14 @@ function modelColumns({
       sortValue: (m) => widestWindow(m, "output"),
       sortDescFirst: true,
       optional: true,
+      secondary: true,
     },
     {
       id: "effort",
       header: t("models.col.effort"),
       cell: (m) => <EffortChips model={m} />,
       optional: true,
+      secondary: true,
     },
     {
       id: "boundary",
@@ -523,6 +532,7 @@ function modelColumns({
         </span>
       ),
       optional: true,
+      secondary: true,
     },
     {
       id: "actions",

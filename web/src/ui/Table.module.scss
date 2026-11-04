@@ -16,11 +16,24 @@
 
 .strip {
   flex: none;
-  height: var(--scrollbar-size);
+  /* A scroll affordance that has to be found is not an affordance: the track is tinted,
+     the thumb carries the strong border colour, and the bar is one size up from the page
+     scrollbars so a wide table reads as scrollable at a glance (the log list at 1024 shows
+     three of seven columns until you scroll). */
+  height: calc(var(--scrollbar-size) + var(--hairline) * 2);
   overflow-x: auto;
   overflow-y: hidden;
   background: var(--surface-sunken);
   border-bottom: var(--hairline) solid var(--line);
+}
+
+.strip::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--radius-full);
+}
+
+.strip::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .stripTrack {
@@ -95,9 +108,25 @@
 /* .cell is in the selector so this still wins over a page's own `.muted { display: block }`,
    which is how a "secondary line" was smuggled into a cell. A column that wants that line back
    uses two classes of its own (`.cell .myColumn small`) and outranks this rule. */
+/* A composed cell is a row ("claude-sonnet-4.6  upstream-id  [badge]"): when the first
+   piece is longer than the cap it used to overflow and be clipped at the boundary, so the
+   next piece started mid-word and the cell read as two overlapping labels. The first
+   piece now yields with an ellipsis instead of bleeding into its neighbour. */
+.cell .clip > * > :first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .cell .clip :where(small) {
   display: inline;
   margin: 0;
+  /* A cell often carries a primary value and a secondary one ("claude-sonnet-4.6" +
+     upstream id, "1.2x" + "手填"). With both inline and flush they read as one run of
+     jammed text — the first column of the model catalogue looked like overlapping
+     labels. The gap is the separator; the colour keeps the hierarchy. */
+  margin-inline-start: var(--space-2);
+  color: var(--text-subtle);
 }
 
 .headCell {
@@ -117,6 +146,9 @@
 .actionsCell {
   position: sticky;
   right: 0;
+  /* The pinned column sits over scrolled content; a soft edge says so without a border
+     that would read as another table rule. */
+  box-shadow: var(--table-pinned-shadow);
   z-index: var(--z-raised);
   min-width: var(--table-actions-min-w);
   border-left: var(--hairline) solid var(--line);
@@ -281,6 +313,15 @@
 
 @include bp.md-down {
   .strip {
+    display: none;
+  }
+}
+
+/* A narrow table keeps identity, state and actions; metrics fold away instead of hiding
+   behind the pinned column. CSS owns this so the card layout (and the DOM) keeps every
+   value, and a test that renders the table still sees all columns. */
+@include bp.lg-down {
+  .secondary {
     display: none;
   }
 }

@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import s from "./Table.module.scss";
 
 export type TableColumn<T> = {
@@ -28,6 +35,12 @@ export type TableColumn<T> = {
   actions?: boolean;
   /** Leave the column out of the card layout (a redundant id, a decorative glyph). */
   cardHidden?: boolean;
+  /**
+   * Drop this column from the *table* layout on a narrow window, where the remaining
+   * columns would otherwise hide behind the pinned actions column. The card layout still
+   * shows it: a phone card has room for every value, a 1024px table does not.
+   */
+  secondary?: boolean;
 };
 
 /** `desc: true` is descending; a column that has never been sorted is not in the state. */
@@ -62,11 +75,21 @@ export type TableProps<T> = {
   scroll?: boolean;
   /** Card layout below this viewport width. Pass 0 to keep rows at every width. */
   cardBelow?: number;
+  /**
+   * Below this viewport width the table keeps only the primary columns (see
+   * `TableColumn.secondary`). Defaults to the width where seven or eight columns stop
+   * fitting beside the fixed sidebar: a table that silently hides "状态" behind the
+   * pinned actions column is worse than one that drops "耗时".
+   */
+  compactBelow?: number;
   className?: string;
 };
 
 /** The width below which rows become cards (contract §3.5; the shell's $md). */
 const CARD_BELOW = 900;
+
+/** The width below which a table drops its `secondary` columns (the shell's $lg). */
+const COMPACT_BELOW = 1200;
 
 /** Viewport width, subscribed so the layout follows a resize (the same rule dataTable uses). */
 function useViewportWidth(): number {
@@ -114,10 +137,16 @@ export function Table<T>({
   selection,
   scroll = true,
   cardBelow = CARD_BELOW,
+  compactBelow = COMPACT_BELOW,
   className = "",
 }: TableProps<T>) {
   const width = useViewportWidth();
   const cards = cardBelow > 0 && width < cardBelow;
+  // A narrow table hides its secondary columns through CSS (.secondary below), not by
+  // dropping them from the tree: the card layout and the DOM keep every value, and the
+  // hiding stays one media query instead of a second source of truth in JavaScript.
+  const narrow = compactBelow > 0 && width < compactBelow;
+  const visible = narrow ? columns.filter((column) => !column.secondary) : columns;
   const scroller = useRef<HTMLDivElement>(null);
   const table = useRef<HTMLTableElement>(null);
   const strip = useRef<HTMLDivElement>(null);
@@ -304,7 +333,23 @@ export function Table<T>({
         </div>
       )}
       <div className={s.scroller} ref={scroller}>
-        <table className={s.table} aria-label={label} ref={table}>
+        <table
+          className={s.table}
+          aria-label={label}
+          ref={table}
+          /* The floor that makes a wide table scroll instead of crushing its cells. It has
+             to follow the column count: a fixed 880px floor also forced a four-column log
+             table to scroll, which is how 状态 ended up under the pinned actions column. */
+          style={
+            {
+              "--table-min-width": `${Math.min(880, Math.max(420, visible.length * 160))}px`,
+              // Cells are capped tighter on a narrow table: the cap is what decides whether
+              // four columns fit the content box, and one 280px identity column was enough
+              // to push 状态 under the pinned actions column at 1024.
+              ...(narrow ? { "--table-cell-max": "180px" } : {}),
+            } as CSSProperties
+          }
+        >
           <thead>
             <tr>
               {selection && (
@@ -324,7 +369,12 @@ export function Table<T>({
                 <th
                   key={column.id}
                   scope="col"
-                  className={join(s.headCell, column.actions && s.actionsCell, column.className)}
+                  className={join(
+                    s.headCell,
+                    column.actions && s.actionsCell,
+                    column.secondary && s.secondary,
+                    column.className,
+                  )}
                   data-column={column.id}
                   aria-sort={directionOf(column) === "none" ? undefined : directionOf(column)}
                 >
@@ -361,7 +411,12 @@ export function Table<T>({
                   {columns.map((column) => (
                     <td
                       key={column.id}
-                      className={join(s.cell, column.actions && s.actionsCell, column.className)}
+                      className={join(
+                        s.cell,
+                        column.actions && s.actionsCell,
+                        column.secondary && s.secondary,
+                        column.className,
+                      )}
                       data-column={column.id}
                     >
                       {column.actions ? (

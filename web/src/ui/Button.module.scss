@@ -29,7 +29,16 @@
     color var(--duration-micro) var(--ease-standard);
 }
 
+/* The label may carry an inline icon ("进入工作台 →"). As a block-level flex item the
+   span put that inline SVG on a second line whenever the text alone consumed the row,
+   which is exactly what shipped on the login button. An inline-flex line box keeps glyph
+   and text on one baseline, and wrap still lets a long label break inside the button. */
 .label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
   min-width: 0;
 }
 
