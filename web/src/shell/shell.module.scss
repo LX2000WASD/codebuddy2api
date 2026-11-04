@@ -1,0 +1,643 @@
+/* App shell: navigation rail, sticky header, page container.
+ *
+ * The sidebar is a sticky grid item, not a fixed layer: the content column is its
+ * sibling in the grid, so "content sits under the sidebar" cannot be expressed any
+ * more and no rule has to subtract a sidebar width from a margin or padding. That
+ * is what removes the <=800px inline full-width nav block (defect P2-6) rather than
+ * re-tuning it.
+ *
+ * The four lengths the rewrite contract fixes (248 / 216 / 76 / header height) are
+ * custom properties declared here once; every rule below reads them, so no offset
+ * is a hand-computed magic number. Colours, type and spacing come from theme.scss
+ * tokens only.
+ */
+
+@use "../design/breakpoints" as bp;
+
+.shell {
+  --shell-sidebar-w: 248px;
+  --shell-rail-w: 76px;
+  --shell-header-h: 64px;
+  --shell-content-max: 1680px;
+  --shell-gutter: var(--space-8);
+
+  display: grid;
+  grid-template-columns: var(--shell-sidebar-w) minmax(0, 1fr);
+  min-height: 100dvh;
+  background: var(--page);
+}
+
+/* 900-1199px: the same rail, 32px narrower. */
+@include bp.lg-down {
+  .shell {
+    --shell-sidebar-w: 216px;
+    --shell-gutter: var(--space-6);
+  }
+}
+
+/* The rail the user folded down to a column of icons. */
+.shell[data-nav="rail"] {
+  grid-template-columns: var(--shell-rail-w) minmax(0, 1fr);
+}
+
+/* <900px: the navigation lives in a drawer, so the content owns the full width. The
+   same edge is used by useNarrowViewport (design/breakpoints.scss $md, mirrored in
+   NARROW_QUERY) and by Table's card mode. */
+.shell[data-nav="drawer"] {
+  --shell-gutter: var(--space-4);
+
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.skip {
+  position: fixed;
+  inset-block-start: calc(-1 * var(--space-12));
+  inset-inline-start: var(--space-4);
+  z-index: var(--z-popup);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.skip:focus {
+  inset-block-start: var(--space-3);
+}
+
+/* ===== Navigation rail =====
+   Sticky instead of fixed: it scrolls with its own grid area, so the page below
+   keeps a real column and never needs clearance. */
+.sidebar {
+  position: sticky;
+  inset-block-start: 0;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  block-size: 100dvh;
+  min-inline-size: 0;
+  padding: var(--space-5) var(--space-3) var(--space-3);
+  overflow: hidden;
+  background: var(--sidebar-bg);
+  border-inline-end: 1px solid var(--sidebar-border);
+}
+
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-inline-size: 0;
+  padding: var(--space-1);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.brand:hover {
+  background: var(--sidebar-active-bg);
+}
+
+.brandMark {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  inline-size: 36px;
+  block-size: 36px;
+  border-radius: var(--radius-card);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.brandText {
+  display: grid;
+  min-inline-size: 0;
+}
+
+.brandName {
+  font-size: var(--fs-15);
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+
+.brandSub {
+  font-size: var(--fs-11);
+  letter-spacing: 1px;
+  color: var(--text-muted);
+}
+
+/* The brand row's trailing control (the drawer's close button). */
+.brandAction {
+  margin-inline-start: auto;
+}
+
+.navScroll {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-block-size: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.navGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.navLegend {
+  margin: 0;
+  padding-inline: var(--space-3);
+  font-size: var(--fs-11);
+  font-weight: 500;
+  letter-spacing: 1.2px;
+  color: var(--text-subtle);
+}
+
+.navList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.navItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-inline-size: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  color: var(--text-muted);
+  font-size: var(--fs-13);
+  text-decoration: none;
+  transition:
+    background-color var(--duration-micro) var(--ease-standard),
+    border-color var(--duration-micro) var(--ease-standard),
+    color var(--duration-micro) var(--ease-standard);
+}
+
+.navItem svg {
+  flex: 0 0 auto;
+}
+
+.navItem:hover {
+  background: var(--sidebar-active-bg);
+  color: var(--text);
+}
+
+/* Selection is painted on the item itself. The old rail drew it with an absolutely
+   positioned thumb, which is how the selected label ended up hidden (defect P1-1). */
+.navItem[aria-current="page"],
+.navItem.active {
+  border-color: var(--accent-border);
+  background: var(--accent-subtle);
+  color: var(--accent-text-strong);
+  font-weight: 600;
+}
+
+/* Labels wrap instead of eliding: a two-line destination is readable, a clipped one
+   is not, and a wrapped label needs no tooltip to stay legible. */
+.navText {
+  min-inline-size: 0;
+  line-height: 1.35;
+}
+
+.navBadge {
+  display: inline-flex;
+  align-items: center;
+  margin-inline-start: auto;
+}
+
+/* "A newer release exists", on the updates link. */
+.updateDot {
+  flex: 0 0 auto;
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: 50%;
+  background: var(--warning-fg);
+}
+
+.navFooter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-block-start: auto;
+}
+
+/* The rail hides this label and keeps the glyph; ui/Button owns the button face. */
+.sidebarBarText {
+  min-inline-size: 0;
+}
+
+/* Icon rail: labels and group legends go, hit targets stay. */
+.shell[data-nav="rail"] .sidebar {
+  padding-inline: var(--space-2);
+}
+
+.shell[data-nav="rail"] .brandText,
+.shell[data-nav="rail"] .navLegend,
+.shell[data-nav="rail"] .navText,
+.shell[data-nav="rail"] .sidebarBarText {
+  display: none;
+}
+
+.shell[data-nav="rail"] .brand,
+.shell[data-nav="rail"] .navItem {
+  justify-content: center;
+  padding-inline: var(--space-2);
+}
+
+.shell[data-nav="rail"] .navBadge {
+  margin-inline-start: 0;
+}
+
+/* ===== Workspace column ===== */
+.workspace {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 100dvh;
+}
+
+/* The centred column shared by the header, the page and the footer: one width, so
+   their left edges line up instead of three different maximums. */
+.content {
+  inline-size: 100%;
+  max-inline-size: var(--shell-content-max);
+  min-inline-size: 0;
+  margin-inline: auto;
+}
+
+/* Sticky, but a row of its own in the flex column: the page never starts behind it. */
+.header {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: var(--z-chrome);
+  padding-inline: var(--shell-gutter);
+  border-block-end: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.headerInner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-block-size: var(--shell-header-h);
+}
+
+.headerStart {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-inline-size: 0;
+}
+
+.headerActions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-inline-size: 0;
+  font-size: var(--fs-12);
+  color: var(--text-muted);
+}
+
+.crumb {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumbRoot {
+  flex: 0 0 auto;
+  color: var(--text-subtle);
+}
+
+.crumbSep {
+  flex: 0 0 auto;
+  color: var(--text-subtle);
+}
+
+/* The overflow trigger's wrapper: popover.ts measures the element it is given, so it
+   gets a box that wraps the ui/IconButton rather than the button itself. */
+.trigger {
+  display: inline-flex;
+}
+
+.session {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding-inline: var(--space-2);
+  font-size: var(--fs-11);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.sessionDot {
+  flex: 0 0 auto;
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Narrow header overflow: the panel the tight row folds into. Positioned by
+   popover.ts and portaled to <body>, so it lands inside the viewport even when the
+   trigger sits at the far right. */
+.menu {
+  position: fixed;
+  z-index: var(--z-popup);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-inline-size: 200px;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-overlay);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-2);
+}
+
+.menuRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+}
+
+.menuStatus {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-1);
+  font-size: var(--fs-12);
+  color: var(--text-muted);
+}
+
+.menuDivider {
+  block-size: 1px;
+  margin: var(--space-1) 0;
+  background: var(--line);
+}
+
+/* ===== Page container =====
+   One place decides the page gutter, the readable maximum width and the space the
+   sticky header cannot eat into. */
+.main {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  padding: var(--space-6) var(--shell-gutter) var(--space-12);
+}
+
+.footer {
+  padding: var(--space-4) var(--shell-gutter);
+  border-block-start: 1px solid var(--line);
+  font-size: var(--fs-11);
+  letter-spacing: 1px;
+  color: var(--text-subtle);
+}
+
+/* ===== Area section switcher =====
+   The in-area tabs that replaced ten top-level pages. Selection is the button's own
+   background and border, so nothing can end up painted over the label. */
+.sectionNav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-block-end: var(--space-4);
+  padding: var(--space-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface-hover);
+}
+
+.sectionTab {
+  min-block-size: 32px;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-12);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sectionTab:hover {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.sectionActive {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--accent-text-strong);
+  font-weight: 600;
+}
+
+/* ===== Bootstrap notice ===== */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-block-end: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-card);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  font-size: var(--fs-12);
+}
+
+.notice a {
+  color: inherit;
+  font-weight: 600;
+}
+
+/* Inherits the banner's warning colour: a muted-grey glyph would be the one thing on
+   the warning surface with less contrast than the text beside it. */
+.noticeDismiss {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  margin-inline-start: auto;
+  inline-size: 28px;
+  block-size: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.noticeDismiss:hover {
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+}
+
+/* ===== Navigation drawer (<900px) =====
+   A real modal <dialog>: the top layer gives the sheet its stacking order, the
+   browser traps focus inside it, and ESC arrives as a cancel event. */
+.drawerOverlay {
+  /* Declared here, not on .shell: the sheet is portaled to <body> (a <dialog> has to
+     sit in the top layer), so a custom property on .shell would not reach it. */
+  --shell-drawer-w: min(320px, 86vw);
+
+  position: fixed;
+  inset: 0;
+  inline-size: 100vw;
+  max-inline-size: none;
+  block-size: 100dvh;
+  max-block-size: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.drawerOverlay::backdrop {
+  background: var(--overlay);
+}
+
+.drawerPanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  inline-size: var(--shell-drawer-w);
+  block-size: 100dvh;
+  padding: var(--space-5) var(--space-3) var(--space-3);
+  overflow: hidden;
+  background: var(--sidebar-bg);
+  border-inline-end: 1px solid var(--sidebar-border);
+  box-shadow: var(--shadow-3);
+}
+
+/* The sheet takes focus itself when it opens (so no control inside is pre-armed);
+   a ring around the whole panel would read as a selected region, and every control
+   inside keeps its own focus ring. */
+.drawerPanel:focus {
+  outline: none;
+}
+
+/* ===== Command palette ===== */
+.paletteBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-popup);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--space-12) var(--space-4) var(--space-4);
+  background: var(--veil);
+}
+
+.palette {
+  display: flex;
+  flex-direction: column;
+  inline-size: min(560px, 100%);
+  max-block-size: min(70dvh, 540px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-overlay);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-3);
+}
+
+.paletteInput {
+  min-block-size: 52px;
+  padding: var(--space-3) var(--space-4);
+  border: 0;
+  border-block-end: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-15);
+}
+
+.paletteList {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: var(--space-2);
+  overflow-y: auto;
+  list-style: none;
+}
+
+.paletteGroup {
+  padding: var(--space-2) var(--space-2) var(--space-1);
+  font-size: var(--fs-11);
+  letter-spacing: 1px;
+  color: var(--text-subtle);
+}
+
+.paletteItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-inline-size: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  font-size: var(--fs-13);
+  cursor: pointer;
+}
+
+.paletteItem svg {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+/* Wraps instead of eliding: a two-line result is readable, a clipped one is not,
+   and a wrapped label needs no tooltip to say what it is. */
+.paletteItemLabel {
+  min-inline-size: 0;
+  line-height: 1.35;
+}
+
+.paletteItem[aria-selected="true"] {
+  background: var(--accent-subtle);
+  color: var(--accent-text-strong);
+}
+
+.paletteItemHint {
+  flex: 0 0 auto;
+  margin-inline-start: auto;
+  padding-inline-start: var(--space-2);
+  font-size: var(--fs-11);
+  color: var(--text-subtle);
+}
+
+.paletteEmpty {
+  margin: 0;
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  font-size: var(--fs-12);
+  color: var(--text-muted);
+}

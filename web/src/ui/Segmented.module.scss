@@ -1,0 +1,94 @@
+@use "../design/breakpoints.scss" as bp;
+
+/* A segmented bar is a group of buttons and nothing else. The selected segment is painted
+   by its own background and border (P1-1 was an opaque absolute block over the label). */
+.group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--space-1);
+  background: var(--surface-sunken);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-card);
+}
+
+.segment {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--control-h-sm);
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  color: var(--text-muted);
+  background: transparent;
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-control);
+  font: inherit;
+  font-size: var(--fs-12);
+  line-height: var(--lh-tight);
+  text-align: start;
+  cursor: pointer;
+  transition:
+    background var(--duration-micro) var(--ease-standard),
+    border-color var(--duration-micro) var(--ease-standard),
+    color var(--duration-micro) var(--ease-standard);
+}
+
+.segment:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.segment:active:not(:disabled) {
+  background: var(--surface-active);
+}
+
+.segment[aria-pressed="true"] {
+  color: var(--text);
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+}
+
+.segment:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+.label {
+  min-width: 0;
+}
+
+.amount {
+  color: var(--text);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-strong);
+  line-height: var(--lh-tight);
+}
+
+.detail {
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+}
+
+.segment[aria-pressed="true"] .detail {
+  color: var(--text-muted);
+}
+
+.group[data-size="sm"] .segment {
+  padding: 0 var(--space-2);
+  font-size: var(--fs-11);
+}
+
+/* A bar with four rich segments cannot stay on one line on a phone: it becomes a
+   full-width wrapping row instead of overflowing its container. */
+@include bp.md-down {
+  .group {
+    display: flex;
+    width: 100%;
+  }
+}

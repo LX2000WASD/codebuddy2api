@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -168,5 +168,88 @@ describe("collapsible navigation", () => {
     mount();
     fireEvent.click(screen.getByRole("button", { name: "收起侧栏" }));
     expect(screen.getByRole("button", { name: "展开侧栏" })).toBeTruthy();
+  });
+});
+
+/**
+ * The drawer range (<900px). jsdom answers no media query at all, which is the wide
+ * layout, so these cases stub matchMedia with the exact query the shell asks for: the
+ * drawer is then measured through the same switch the stylesheet and the component
+ * share instead of being force-mounted into a layout it does not belong to.
+ */
+describe("narrow navigation drawer", () => {
+  const original = Object.getOwnPropertyDescriptor(window, "matchMedia");
+  function stubNarrow(matches: boolean) {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      writable: true,
+      value: (query: string) => ({
+        matches,
+        media: query,
+        onchange: null,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        dispatchEvent: () => true,
+      }),
+    });
+  }
+  function mount() {
+    useSession.setState({ status: "authenticated", csrf: "synthetic" });
+    vi.spyOn(api, "get").mockImplementation(async (path) => ({
+      data: path === "/models" ? { revision: 0, models: [] } : { credentials: [] },
+    }));
+    return render(
+      <MemoryRouter initialEntries={["/dashboard/models"]}>
+        <AppRoutes />
+      </MemoryRouter>,
+    );
+  }
+  afterEach(() => {
+    if (original) Object.defineProperty(window, "matchMedia", original);
+    else delete (window as { matchMedia?: unknown }).matchMedia;
+  });
+
+  it("takes the navigation out of the page flow", async () => {
+    stubNarrow(true);
+    mount();
+    // No sidebar block above the content: below the breakpoint there is no rail at
+    // all, so the first screen belongs to the page (defect P2-6).
+    expect(screen.queryByRole("complementary")).toBeNull();
+    expect(document.querySelector('[data-nav="drawer"]')).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "打开导航" }));
+    const drawer = await screen.findByRole("dialog", { name: "主导航" });
+    expect(within(drawer).getByRole("link", { name: "路由与账号" }).getAttribute("href")).toBe(
+      "/dashboard/routing",
+    );
+    // Picking a destination closes the sheet instead of leaving it over the new page.
+    fireEvent.click(within(drawer).getByRole("link", { name: "路由与账号" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("locks the page, then hands focus back to the trigger", async () => {
+    stubNarrow(true);
+    mount();
+    const opener = screen.getByRole("button", { name: "打开导航" });
+    opener.focus();
+    fireEvent.click(opener);
+    const drawer = await screen.findByRole("dialog", { name: "主导航" });
+    expect(document.body.style.position).toBe("fixed");
+    await waitFor(() => expect(drawer.contains(document.activeElement)).toBe(true));
+    // ESC is reachable as a key event and (in a browser) as the dialog's cancel event;
+    // both routes must close the sheet.
+    fireEvent.keyDown(drawer, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.body.style.position).toBe("");
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("stays wide when the viewport is above the breakpoint", () => {
+    stubNarrow(false);
+    mount();
+    expect(screen.getByRole("complementary")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "打开导航" })).toBeNull();
+    expect(screen.getByRole("button", { name: "收起侧栏" })).toBeTruthy();
   });
 });

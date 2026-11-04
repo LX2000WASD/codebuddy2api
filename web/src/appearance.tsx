@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { api, object } from "./api";
 import { Drawer, DrawerPresence, Icon } from "./components";
+import { IconButton } from "./ui";
 import { chooseLanguage, languagePreference, useT, type LangPref } from "./i18n";
 import s from "./ui.module.scss";
 import "./theme.scss";
@@ -81,48 +82,47 @@ function persistLanguage(value: LangPref) {
     .catch(() => undefined);
 }
 /** One click moves to the next interface language: system, Chinese, English. */
-export function LanguageToggle() {
+export function LanguageToggle({ onChoose }: { onChoose?: () => void } = {}) {
   const t = useT();
   const [pref, setPref] = useState(languagePreference);
   const name = { system: t("appearance.lang.system"), zh: "中文", en: "English" }[pref];
   const label = t("appearance.languageIs", { lang: name });
   return (
-    <button
-      type="button"
-      className={s.appearanceButton}
-      aria-label={label}
-      title={label}
+    <IconButton
+      icon={
+        pref === "system" ? (
+          "globe"
+        ) : (
+          <span className={s.langGlyph}>{pref === "zh" ? "中" : "EN"}</span>
+        )
+      }
+      label={label}
       onClick={() => {
         const next = LANGUAGE_CYCLE[(LANGUAGE_CYCLE.indexOf(pref) + 1) % LANGUAGE_CYCLE.length]!;
         chooseLanguage(next);
         setPref(next);
         persistLanguage(next);
+        onChoose?.();
       }}
-    >
-      {pref === "system" ? (
-        <Icon name="globe" />
-      ) : (
-        <span className={s.langGlyph}>{pref === "zh" ? "中" : "EN"}</span>
-      )}
-    </button>
+    />
   );
 }
-export function Appearance() {
+export function Appearance({ onOpen }: { onOpen?: () => void } = {}) {
   const [open, setOpen] = useState(false);
   const { mode, palette, dark, persisted } = useAppearance();
   useEffect(initializeAppearance, []);
   return (
     <>
-      <button
-        className={s.appearanceButton}
-        aria-label="外观设置"
-        title="外观设置"
+      <IconButton
+        icon="appearance"
+        label="外观设置"
         aria-expanded={open}
         aria-haspopup="dialog"
-        onClick={() => setOpen(true)}
-      >
-        <Icon name="appearance" />
-      </button>
+        onClick={() => {
+          onOpen?.();
+          setOpen(true);
+        }}
+      />
       <DrawerPresence>
         {open && (
           <Drawer title="外观设置" className={s.appearanceDrawer} onClose={() => setOpen(false)}>

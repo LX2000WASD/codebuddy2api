@@ -1,0 +1,130 @@
+@use "../design/breakpoints.scss" as bp;
+
+/* The page frame. Sections are spaced by this column's gap, so a page does not have to
+   remember a margin between panels. */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-20);
+  font-weight: var(--fw-strong);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+
+.description {
+  max-width: 78ch;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin-inline-start: auto;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cluster {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.cluster[data-align="start"] {
+  align-items: flex-start;
+}
+
+.cluster[data-align="center"] {
+  align-items: center;
+}
+
+.cluster[data-align="baseline"] {
+  align-items: baseline;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--grid-min)), 1fr));
+  min-width: 0;
+}
+
+.grid[data-min="sm"] {
+  --grid-min: var(--grid-min-sm);
+}
+
+.grid[data-min="md"] {
+  --grid-min: var(--grid-min-md);
+}
+
+.grid[data-min="lg"] {
+  --grid-min: var(--grid-min-lg);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+}
+
+.toolbar[data-split="true"] {
+  justify-content: space-between;
+}
+
+/* Two columns while there is room for both; one column when there is not. minmax(0, ...)
+   on each side is what stops a wide table inside from widening the page. */
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--split-aside));
+  gap: var(--space-4);
+  align-items: start;
+  min-width: 0;
+}
+
+.main,
+.aside {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+@include bp.lg-down {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

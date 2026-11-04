@@ -1,0 +1,239 @@
+@use "../design/breakpoints.scss" as bp;
+
+/* P1-2 was two bugs in one box: the row's only action entry point sat in a column that
+   scrolled out of view, and the scrollbar that would have revealed it was painted at the
+   bottom of a 72vh box, below the fold. Everything here answers one of the two:
+     - .headCell   the header sticks, so the columns keep their meaning while scrolling;
+     - .actionsCell is pinned right, so the actions are visible at every offset;
+     - .strip      repeats the horizontal scrollbar at the TOP of the table;
+     - the card layout (below 900px) removes horizontal scrolling entirely. */
+.wrap {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.strip {
+  flex: none;
+  height: var(--scrollbar-size);
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--surface-sunken);
+  border-bottom: var(--hairline) solid var(--line);
+}
+
+.stripTrack {
+  height: var(--hairline);
+}
+
+.scroller {
+  min-width: 0;
+  overflow: auto;
+}
+
+.wrap[data-scroll="true"] .scroller {
+  max-height: var(--table-max-height);
+}
+
+.table {
+  width: 100%;
+  color: var(--text);
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--fs-12);
+}
+
+.headCell,
+.cell {
+  padding: var(--space-2) var(--space-3);
+  text-align: start;
+  vertical-align: top;
+  background: var(--surface);
+  border-bottom: var(--hairline) solid var(--line);
+}
+
+.headCell {
+  position: sticky;
+  top: var(--table-sticky-top);
+  z-index: var(--z-sticky);
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+}
+
+.selectCell {
+  width: var(--control-h-md);
+  padding-inline: var(--space-2);
+}
+
+.actionsCell {
+  position: sticky;
+  right: 0;
+  z-index: var(--z-raised);
+  min-width: var(--table-actions-min-w);
+  border-left: var(--hairline) solid var(--line);
+}
+
+/* A pinned header cell is pinned on both axes, so it has to outrank the body's pinned
+   cell: calc() over two tokens keeps the order readable instead of hard-coding 21. */
+.headCell.actionsCell {
+  z-index: calc(var(--z-sticky) + var(--z-raised));
+}
+
+.row:last-child .cell {
+  border-bottom: 0;
+}
+
+.row[data-selected="true"] .cell,
+.row[data-selected="true"] .actionsCell {
+  background: var(--accent-subtle);
+}
+
+.sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  color: inherit;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  text-align: start;
+  cursor: pointer;
+}
+
+.sort:hover {
+  color: var(--text);
+}
+
+.sortArrow {
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+}
+
+.sort:hover .sortArrow,
+.headCell[aria-sort] .sortArrow {
+  color: var(--accent-text-strong);
+}
+
+/* ── Card layout ──────────────────────────────────────────────────────────────
+   One dl per row, one dt/dd pair per column, actions last. Nothing here scrolls
+   sideways, so "the actions column is off screen" cannot happen on a phone. */
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  background: var(--surface);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-card);
+}
+
+.card[data-selected="true"] {
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.pairs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+}
+
+.pair,
+.pairActions {
+  display: grid;
+  grid-template-columns: minmax(0, var(--table-card-label)) minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: start;
+  min-width: 0;
+}
+
+/* The actions pair is the card's footer: separated by a rule, and its buttons wrap
+   instead of being cut off at the card edge. */
+.pairActions {
+  padding-top: var(--space-2);
+  border-top: var(--hairline) solid var(--line);
+}
+
+.cardLabel {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-relaxed);
+  overflow-wrap: anywhere;
+}
+
+.cardValue {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.cardValue > small {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+}
+
+.pairActions .cardValue {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.cardSort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  color: var(--text-muted);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: var(--fs-11);
+  text-align: start;
+  cursor: pointer;
+}
+
+/* Sorted state is the label's own colour and weight, never a block over the text. */
+.cardSort[aria-pressed="true"] {
+  color: var(--text);
+  font-weight: var(--fw-strong);
+}
+
+@include bp.md-down {
+  .strip {
+    display: none;
+  }
+}

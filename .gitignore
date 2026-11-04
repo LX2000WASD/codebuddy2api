@@ -59,3 +59,6 @@ backup-codebuddy-auth*/
 dashboard-public.png
 # One-click update staging directory
 /.update/
+
+# pnpm workspace dependencies (was committed as a self-referencing symlink)
+/web/node_modules

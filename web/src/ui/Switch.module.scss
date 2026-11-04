@@ -1,0 +1,72 @@
+/* The input stays in the DOM (focus, keyboard, form semantics) and covers the track, so
+   the whole control is the hit target. Only the track is painted. */
+.switch {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  width: var(--switch-w);
+  height: var(--switch-h);
+}
+
+.input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.input:disabled {
+  cursor: not-allowed;
+}
+
+.track {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: var(--hairline);
+  background: var(--surface-active);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-full);
+  transition: background var(--duration-micro) var(--ease-standard);
+}
+
+.track::after {
+  content: "";
+  display: block;
+  width: var(--switch-thumb);
+  height: var(--switch-thumb);
+  background: var(--surface-raised);
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-1);
+  transition: transform var(--duration-standard) var(--ease-standard);
+}
+
+.input:checked + .track {
+  background: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.input:checked + .track::after {
+  transform: translateX(calc(var(--switch-w) - var(--switch-thumb) - var(--hairline) * 4));
+}
+
+.input:focus-visible + .track {
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.input:disabled + .track {
+  background: var(--surface-sunken);
+  border-color: var(--line);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .track,
+  .track::after {
+    transition: none;
+  }
+}

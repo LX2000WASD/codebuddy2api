@@ -1,0 +1,212 @@
+/* ── Badge ────────────────────────────────────────────────────────────────────
+   A tag wraps rather than overflowing: no nowrap, so a long value grows the badge instead
+   of being clipped by whatever contains it. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--space-1) var(--space-2);
+  color: var(--text-muted);
+  background: var(--surface-sunken);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-tag);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+
+.badge[data-tone="good"] {
+  color: var(--success-fg);
+  background: var(--success-bg);
+  border-color: var(--success-border);
+}
+
+.badge[data-tone="warn"] {
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+}
+
+.badge[data-tone="bad"] {
+  color: var(--danger-fg);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+/* ── Empty ────────────────────────────────────────────────────────────────────
+   Two different facts, two different pictures: "nothing here yet" (leaf, accent) and
+   "your filter matched nothing" (magnifier, neutral). */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-12) var(--space-6);
+  text-align: center;
+}
+
+.emptyIcon {
+  display: flex;
+  padding: var(--space-2);
+  color: var(--accent-text-strong);
+  background: var(--accent-subtle);
+  border-radius: var(--radius-block);
+}
+
+.empty[data-tone="filtered"] .emptyIcon {
+  color: var(--text-subtle);
+  background: var(--surface-sunken);
+}
+
+.emptyTitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-base);
+}
+
+.emptyBody {
+  max-width: 46ch;
+  margin: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.emptyAction {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+/* ── Error ────────────────────────────────────────────────────────────────────
+   A status without a boundary reads as body copy, so this one keeps its border. */
+.error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  color: var(--danger-fg);
+  background: var(--danger-bg);
+  border: var(--hairline) solid var(--danger-border);
+  border-radius: var(--radius-block);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+}
+
+.errorText {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.errorRetry {
+  flex: none;
+  margin: 0;
+  padding: 0 var(--space-2);
+  color: inherit;
+  background: transparent;
+  border: var(--hairline) solid var(--danger-border);
+  border-radius: var(--radius-control);
+  font: inherit;
+  font-size: var(--fs-11);
+  cursor: pointer;
+}
+
+.errorRetry:hover {
+  border-color: var(--danger-fg);
+}
+
+/* ── Skeleton ─────────────────────────────────────────────────────────────────*/
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.skeletonBlock {
+  display: block;
+  min-height: var(--space-4);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-control);
+  animation: skeletonPulse var(--duration-panel) var(--ease-standard) infinite alternate;
+}
+
+.skeleton[data-variant="card"] .skeletonBlock {
+  min-height: var(--space-12);
+  border-radius: var(--radius-card);
+}
+
+.skeleton[data-variant="chart"] .skeletonBlock {
+  min-height: calc(var(--space-12) * 3);
+  border-radius: var(--radius-card);
+}
+
+.skeletonRow {
+  display: grid;
+  grid-template-columns: repeat(var(--skeleton-columns, 4), minmax(0, 1fr));
+  gap: var(--space-4);
+  align-items: center;
+  min-width: 0;
+  padding: var(--space-3) 0;
+  border-bottom: var(--hairline) solid var(--line);
+}
+
+.skeletonRow > span {
+  display: block;
+  height: var(--space-2);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-full);
+  animation: skeletonPulse var(--duration-panel) var(--ease-standard) infinite alternate;
+}
+
+.skeletonRow > span[data-shape="badge"] {
+  height: var(--control-h-sm);
+  border-radius: var(--radius-tag);
+}
+
+.skeletonRow > span[data-shape="twoLine"] {
+  height: var(--space-4);
+  border-radius: var(--radius-control);
+}
+
+.w40 {
+  width: 40%;
+}
+
+.w50 {
+  width: 50%;
+}
+
+.w65 {
+  width: 65%;
+}
+
+.wPill {
+  width: 30%;
+  max-width: var(--control-h-lg);
+}
+
+@keyframes skeletonPulse {
+  to {
+    opacity: 0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeletonBlock,
+  .skeletonRow > span {
+    animation: none;
+  }
+}

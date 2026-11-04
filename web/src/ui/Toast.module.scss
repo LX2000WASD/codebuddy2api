@@ -1,0 +1,120 @@
+/* Notices float over the page and over an open sheet (they are mounted inside the top
+   layer when one is open). The container ignores pointer events so it can never become an
+   invisible blocker in the middle of the screen; each notice takes its own clicks. */
+.toasts {
+  position: fixed;
+  top: var(--space-5);
+  left: 50%;
+  z-index: var(--z-popup);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: min(var(--toast-w), calc(100vw - var(--space-8)));
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border);
+  border-inline-start: calc(var(--hairline) * 3) solid var(--border-strong);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-3);
+  pointer-events: auto;
+  cursor: pointer;
+  animation: toastIn var(--duration-standard) var(--ease-standard) both;
+}
+
+.toast[data-tone="good"] {
+  border-inline-start-color: var(--success-border);
+}
+
+.toast[data-tone="warn"] {
+  border-inline-start-color: var(--warning-border);
+}
+
+.toast[data-tone="bad"] {
+  border-inline-start-color: var(--danger-border);
+}
+
+.toast[data-leaving="true"] {
+  animation: toastOut var(--duration-standard) var(--ease-exit) both;
+}
+
+.icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  color: var(--text-muted);
+}
+
+.toast[data-tone="good"] .icon {
+  color: var(--success-fg);
+}
+
+.toast[data-tone="warn"] .icon {
+  color: var(--warning-fg);
+}
+
+.toast[data-tone="bad"] .icon {
+  color: var(--danger-fg);
+}
+
+.text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.title {
+  color: var(--text);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.body {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--space-2) * -1));
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes toastOut {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast,
+  .toast[data-leaving="true"] {
+    animation: none;
+  }
+}

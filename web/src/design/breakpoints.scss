@@ -1,0 +1,109 @@
+// Breakpoints and the Sass mixins every primitive shares.
+//
+// The rewrite contract (§2) puts both here: pages and ui/ may use these mixins, but the
+// tokens are declared elsewhere — colour, type size, spacing, radius, motion, elevation
+// and z-order stay in web/src/theme.scss, and the structural metrics those do not cover
+// live in design/base.scss. Nothing in this file emits CSS, so every .module.scss can
+// @use it without duplicating a rule into the bundle.
+
+/// Viewport edges. $md is where the shell turns the sidebar into a drawer and where
+/// Table switches from rows to cards, so the two sides must agree on the exact pixel.
+$md: 900px;
+$lg: 1200px;
+$xl: 1440px;
+
+/// A viewport *narrower* than $width. The 1px keeps 899 and 900 on opposite sides,
+/// which is the same comparison the TS side makes with `width < 900`.
+@mixin below($width) {
+  @media (max-width: #{$width - 1px}) {
+    @content;
+  }
+}
+
+/// A viewport at least $width wide.
+@mixin above($width) {
+  @media (min-width: $width) {
+    @content;
+  }
+}
+
+/// The two ends of the shell's responsive contract, named so a call site says what it
+/// means instead of repeating a number.
+@mixin md-down {
+  @include below($md) {
+    @content;
+  }
+}
+
+@mixin lg-down {
+  @include below($lg) {
+    @content;
+  }
+}
+
+/// A flex or grid child that is allowed to shrink. Contract §3.2: every one of them
+/// carries this, because the default `min-width: auto` is what made toolbars and cards
+/// overflow their parent instead of shrinking.
+@mixin shrinkable {
+  min-width: 0;
+}
+
+/// Ellipsis. Contract §3.2: only legal when the tsx also sets `title` to the full value,
+/// otherwise the text is silently cut with no way to read it.
+@mixin truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/// The surface shared by every text control, so an input, a textarea and the select
+/// trigger cannot drift into three different borders.
+@mixin control-face {
+  appearance: none;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-h-md);
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  font: inherit;
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+
+  &:hover:not(:disabled) {
+    border-color: var(--border-strong);
+  }
+
+  &:focus-visible {
+    outline: var(--focus-width) solid var(--focus-ring);
+    outline-offset: var(--focus-offset);
+    border-color: var(--accent-border);
+  }
+
+  &:disabled {
+    color: var(--text-disabled);
+    background: var(--surface-sunken);
+    cursor: not-allowed;
+  }
+
+  &::placeholder {
+    color: var(--text-subtle);
+  }
+}
+
+/// Off-screen but still announced. Used for table captions and icon-button hints.
+@mixin visually-hidden {
+  position: absolute;
+  width: var(--hairline);
+  height: var(--hairline);
+  padding: 0;
+  margin: calc(var(--hairline) * -1);
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

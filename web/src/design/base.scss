@@ -1,0 +1,125 @@
+/* Structural tokens and the global rules the primitives assume.
+ *
+ * Loaded once, as a side effect, by ui/index.ts. It declares no colour, type-size,
+ * spacing or radius token on purpose: those are the palette system in web/src/theme.scss
+ * and a second copy would be a second source of truth. What is here is the geometry
+ * theme.scss does not cover (hairlines, control heights, icon sizes, the table's scroll
+ * budget, layout minimums) plus the three globals every primitive relies on.
+ */
+
+:root {
+  /* Border, focus and glyph geometry. ui/ writes no px literal; these are the only
+     widths and sizes it reads. */
+  --hairline: 1px;
+  --focus-width: 2px;
+  --focus-offset: 2px;
+  --icon-xs: 12px;
+  --icon-sm: 16px;
+  --icon-md: 20px;
+  --icon-lg: 24px;
+  --icon-stroke: 1.6;
+  --chevron-size: 14px;
+
+  /* Control geometry. --control-min-w is the narrowest a field may be squeezed to in a
+     wrapping toolbar: below it the placeholder stops being readable (P2-4 measured the
+     filter inputs at 59px for an intended 132px). */
+  --control-h-sm: 28px;
+  --control-h-md: 34px;
+  --control-h-lg: 40px;
+  --control-min-w: 132px;
+  --switch-w: 36px;
+  --switch-h: 20px;
+  --switch-thumb: 14px;
+
+  /* Line heights and weights; the type *sizes* stay --fs-* in theme.scss. */
+  --lh-tight: 1.25;
+  --lh-base: 1.55;
+  --lh-relaxed: 1.75;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-strong: 600;
+
+  /* Table scroll budget. P1-2 was a table whose scroll box ended below the fold, so its
+     horizontal scrollbar could never be reached; capping the box here — instead of a
+     hard 72vh at the call site — keeps that edge, and the scroll strip Table paints at
+     the top of the box, inside the viewport. Pages that fill the viewport themselves
+     override --table-max-height with 100%. */
+  --table-max-height: min(68dvh, 720px);
+  --table-sticky-top: 0px;
+  --table-actions-min-w: 148px;
+  --scrollbar-size: 10px;
+
+  /* Monospace for identifiers and keys. The sans stack belongs to theme.scss/body; this is
+     the second family the primitives need to keep ids readable character by character. */
+  --font-mono: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace;
+
+  /* Card layout of Table: the width reserved for the label column of each dt/dd pair. */
+  --table-card-label: 88px;
+
+  /* Overlay and popover widths: a drawer is a full-height side sheet, a dialog is a centred
+     card, a select listbox never outgrows the window. */
+  --overlay-w: 560px;
+  --dialog-w: 640px;
+  --listbox-max-height: min(320px, 60vh);
+  --toast-w: 460px;
+
+  /* Layout primitives: the smallest a card may get before the grid should add a column. */
+  --grid-min-sm: 148px;
+  --grid-min-md: 220px;
+  --grid-min-lg: 280px;
+  --split-aside: 320px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Focus is visible on every control without each one re-declaring it. :where() keeps the
+   ring at zero specificity, so a component that draws its own ring still wins. */
+:where(:focus-visible) {
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+/* A mouse click must not paint the ring, but it must never remove it from the keyboard
+   either: this only clears the outline for the non-focus-visible case. */
+:where(:focus:not(:focus-visible)) {
+  outline: none;
+}
+
+::selection {
+  color: var(--text);
+  background: var(--accent-subtle);
+}
+
+/* Thin, tokenised scrollbars. Table paints a scroll strip as an affordance, so its thumb
+   has to be visible — but 17px of system chrome per axis is not a design decision. */
+* {
+  scrollbar-color: var(--border) transparent;
+  scrollbar-width: thin;
+}
+
+::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

@@ -1,0 +1,224 @@
+@use "../design/breakpoints.scss" as bp;
+
+/* The dialog element is the overlay chrome: it fills the viewport, paints nothing itself
+   and lets ::backdrop carry the veil. */
+.overlay {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: var(--space-4);
+  overflow: hidden;
+  background: transparent;
+  border: 0;
+  overscroll-behavior: none;
+}
+
+.overlay[open] {
+  display: flex;
+}
+
+.overlay[data-variant="drawer"] {
+  justify-content: flex-end;
+}
+
+.overlay[data-variant="dialog"] {
+  align-items: center;
+  justify-content: center;
+}
+
+.overlay::backdrop {
+  background: var(--overlay);
+}
+
+.overlay[data-phase="open"]::backdrop {
+  animation: veilIn var(--duration-standard) var(--ease-standard) both;
+}
+
+.overlay[data-phase="exiting"]::backdrop {
+  animation: veilOut var(--duration-standard) var(--ease-exit) both;
+}
+
+/* Solid, not translucent: a see-through sheet forces every block inside it to grow its own
+   opaque card, which is how the credentials page ended up three boxes deep. */
+.surface {
+  display: flex;
+  flex-direction: column;
+  width: min(var(--overlay-w), 100%);
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-overlay);
+  box-shadow: var(--shadow-3);
+  overflow: hidden;
+}
+
+.overlay[data-variant="dialog"] .surface {
+  width: min(var(--dialog-w), 100%);
+  height: auto;
+  max-height: 100%;
+}
+
+.overlay[data-variant="drawer"][data-phase="open"] .surface {
+  animation: drawerIn var(--duration-panel) var(--ease-standard) both;
+}
+
+.overlay[data-variant="drawer"][data-phase="exiting"] .surface {
+  animation: drawerOut var(--duration-standard) var(--ease-exit) both;
+}
+
+.overlay[data-variant="dialog"][data-phase="open"] .surface {
+  animation: dialogIn var(--duration-panel) var(--ease-standard) both;
+}
+
+.overlay[data-variant="dialog"][data-phase="exiting"] .surface {
+  animation: dialogOut var(--duration-standard) var(--ease-exit) both;
+}
+
+@keyframes drawerIn {
+  from {
+    opacity: 0;
+    transform: translateX(var(--space-8)) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes drawerOut {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+
+  to {
+    opacity: 0;
+    transform: translateX(var(--space-8)) scale(0.98);
+  }
+}
+
+@keyframes dialogIn {
+  from {
+    opacity: 0;
+    transform: translateY(var(--space-2)) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes dialogOut {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(var(--space-2)) scale(0.98);
+  }
+}
+
+@keyframes veilIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes veilOut {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+.head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: var(--hairline) solid var(--line);
+}
+
+.title {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-15);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+
+/* The close button is the head's last child and pushes itself to the far edge. */
+.head > :last-child {
+  margin-inline-start: auto;
+}
+
+/* The body is the only scroll box: the sheet's own frame never moves. */
+.body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  min-height: 0;
+  padding: var(--space-5);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.footer {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5);
+  border-top: var(--hairline) solid var(--line);
+}
+
+@include bp.md-down {
+  .overlay {
+    padding: var(--space-2);
+  }
+
+  .surface {
+    border-radius: var(--radius-card);
+  }
+
+  .head,
+  .body,
+  .footer {
+    padding: var(--space-4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay[data-phase="open"] .surface,
+  .overlay[data-phase="exiting"] .surface,
+  .overlay[data-phase="open"]::backdrop,
+  .overlay[data-phase="exiting"]::backdrop {
+    animation: none;
+  }
+}

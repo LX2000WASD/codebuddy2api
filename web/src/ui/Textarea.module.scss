@@ -1,0 +1,22 @@
+@use "../design/breakpoints.scss" as bp;
+
+/* The same face as Input, but taller by default and resizable only downwards: a textarea
+   that grows sideways would break the column it sits in. */
+.textarea {
+  @include bp.control-face;
+  min-width: var(--control-min-w);
+  min-height: calc(var(--control-h-md) * 2);
+  resize: vertical;
+}
+
+.textarea[data-mono="true"] {
+  font-family: var(--font-mono);
+}
+
+.textarea[aria-invalid="true"] {
+  border-color: var(--danger-border);
+}
+
+.textarea[aria-invalid="true"]:focus-visible {
+  outline-color: var(--danger-fg);
+}

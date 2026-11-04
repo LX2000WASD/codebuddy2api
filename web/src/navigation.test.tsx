@@ -170,6 +170,18 @@ describe("command palette", () => {
     expect(screen.queryByPlaceholderText("搜索页面或动作…")).toBeNull();
   });
 
+  it("locks the page behind it while it is open", async () => {
+    mount("/dashboard");
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    const input = await screen.findByPlaceholderText("搜索页面或动作…");
+    // A full-screen palette that leaves the page scrolling underneath is a scroll
+    // trap: the wheel moves content the palette is covering.
+    expect(document.body.style.position).toBe("fixed");
+    fireEvent.keyDown(input, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByPlaceholderText("搜索页面或动作…")).toBeNull());
+    expect(document.body.style.position).toBe("");
+  });
+
   it("closes on Escape and reports an empty result set", async () => {
     mount("/dashboard");
     fireEvent.keyDown(window, { key: "k", metaKey: true });

@@ -3,10 +3,11 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router";
 import { api, errorMessage, useSession } from "./api";
 import { chooseAppearance, useAppearance } from "./appearance";
-import { Icon } from "./components";
 import { chooseLanguage, languagePreference, useT } from "./i18n";
+import { lockPage } from "./modal";
 import { navAreas, sectionTarget } from "./navigation";
-import s from "./ui.module.scss";
+import { Icon, type IconName } from "./ui";
+import s from "./shell/shell.module.scss";
 
 /**
  * Signing out is reachable from two places (the header button and the command
@@ -26,7 +27,7 @@ type Command = {
   group: "go" | "action";
   label: string;
   hint?: string;
-  icon: string;
+  icon: IconName;
   /** Extra search terms: the Chinese label, the English label, and the old page name. */
   keywords?: string;
   run: () => void;
@@ -177,6 +178,14 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     return () => window.cancelAnimationFrame(frame);
   }, [open]);
 
+  // A modal surface: while the palette is open, the page behind it must not scroll.
+  // The shared reference-counted lock is the same one a drawer uses, so opening a
+  // dialog from inside the palette keeps the page locked until both are gone.
+  useEffect(() => {
+    if (!open) return;
+    return lockPage();
+  }, [open]);
+
   if (!open) return null;
 
   const runAt = (index: number) => {
@@ -201,20 +210,15 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   return createPortal(
     <div
-      className={s.commandBackdrop}
+      className={s.paletteBackdrop}
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div
-        className={s.commandPanel}
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("command.title")}
-      >
+      <div className={s.palette} role="dialog" aria-modal="true" aria-label={t("command.title")}>
         <input
           ref={input}
-          className={s.commandInput}
+          className={s.paletteInput}
           type="text"
           role="combobox"
           aria-expanded="true"
@@ -247,15 +251,15 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           }}
         />
         {status && (
-          <p className={s.commandEmpty} role="status">
+          <p className={s.paletteEmpty} role="status">
             {status}
           </p>
         )}
         {matched.length === 0 ? (
-          <p className={s.commandEmpty}>{t("command.empty")}</p>
+          <p className={s.paletteEmpty}>{t("command.empty")}</p>
         ) : (
           <ul
-            className={s.commandList}
+            className={s.paletteList}
             id="command-list"
             role="listbox"
             aria-label={t("command.title")}
@@ -264,7 +268,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
               .filter((group) => group.items.length > 0)
               .map((group) => (
                 <li key={group.key} role="group" aria-label={group.label}>
-                  <div className={s.commandGroup} aria-hidden="true">
+                  <div className={s.paletteGroup} aria-hidden="true">
                     {group.label}
                   </div>
                   {group.items.map(({ command, index }) => (
@@ -273,7 +277,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                       id={optionId(command.id)}
                       role="option"
                       aria-selected={index === cursor}
-                      className={s.commandItem}
+                      className={s.paletteItem}
                       // Activation is a click so assistive tech and synthetic events
                       // work; pointerdown only stops the input from losing focus.
                       onPointerDown={(event) => event.preventDefault()}
@@ -281,8 +285,8 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                       onPointerMove={() => setActive(index)}
                     >
                       <Icon name={command.icon} />
-                      <span>{command.label}</span>
-                      {command.hint && <span className={s.commandItemHint}>{command.hint}</span>}
+                      <span className={s.paletteItemLabel}>{command.label}</span>
+                      {command.hint && <span className={s.paletteItemHint}>{command.hint}</span>}
                     </div>
                   ))}
                 </li>

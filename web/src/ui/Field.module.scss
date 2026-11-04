@@ -1,0 +1,28 @@
+/* A field is a column of label, control and at most one note: it never pushes the
+   controls around it sideways (contract §3.2 wants every flex child to be shrinkable). */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+}
+
+.label {
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+}
+
+.hint {
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+}
+
+.error {
+  color: var(--danger-fg);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+}

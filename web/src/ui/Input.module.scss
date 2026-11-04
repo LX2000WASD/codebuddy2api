@@ -1,0 +1,20 @@
+@use "../design/breakpoints.scss" as bp;
+
+/* --control-min-w is the difference between a filter row that shrinks and one that
+   crushes its placeholder to 59px inside a 132px slot (P2-4). */
+.input {
+  @include bp.control-face;
+  min-width: var(--control-min-w);
+}
+
+.input[data-mono="true"] {
+  font-family: var(--font-mono);
+}
+
+.input[aria-invalid="true"] {
+  border-color: var(--danger-border);
+}
+
+.input[aria-invalid="true"]:focus-visible {
+  outline-color: var(--danger-fg);
+}

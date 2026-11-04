@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import type { IconName } from "./ui";
 import { Dashboard } from "./pages/Dashboard";
 import { Models } from "./pages/Models";
 import { Credentials } from "./pages/Credentials";
@@ -33,7 +34,8 @@ export type NavArea = {
   /** Canonical path of the area. */
   path: string;
   labelKey: string;
-  icon: string;
+  /** A glyph from the shared icon set, so a missing name fails type-checking. */
+  icon: IconName;
   group: NavGroupKey;
   sections: NavSection[];
   /** Old first-level paths that now resolve into this area. */

@@ -1,0 +1,105 @@
+/* One button surface. Variants only move colour; geometry, focus and the shrink rules
+   are shared, so a page cannot produce a button that overflows its container. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--control-h-md);
+  margin: 0;
+  padding: 0 var(--space-3);
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  font: inherit;
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  /* The label wraps rather than leaving the button: see the P1-3 note in Button.tsx. */
+  overflow-wrap: anywhere;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background var(--duration-micro) var(--ease-standard),
+    border-color var(--duration-micro) var(--ease-standard),
+    color var(--duration-micro) var(--ease-standard);
+}
+
+.label {
+  min-width: 0;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.button:active:not(:disabled) {
+  background: var(--surface-active);
+}
+
+.button[data-size="sm"] {
+  min-height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  font-size: var(--fs-11);
+}
+
+.button[data-size="lg"] {
+  min-height: var(--control-h-lg);
+  padding: 0 var(--space-4);
+  font-size: var(--fs-13);
+}
+
+.button[data-block="true"] {
+  width: 100%;
+}
+
+.button[data-variant="primary"] {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.button[data-variant="primary"]:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.button[data-variant="primary"]:active:not(:disabled) {
+  background: var(--accent-pressed);
+}
+
+.button[data-variant="danger"] {
+  color: var(--danger-fg);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+.button[data-variant="danger"]:hover:not(:disabled) {
+  border-color: var(--danger-fg);
+}
+
+.button[data-variant="ghost"] {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: transparent;
+}
+
+.button[data-variant="ghost"]:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-hover);
+  border-color: transparent;
+}
+
+/* Last, so it wins over every variant at equal specificity: a disabled control never
+   keeps the accent fill or a hover surface. */
+.button:disabled {
+  color: var(--text-disabled);
+  background: var(--surface-sunken);
+  border-color: var(--line);
+  cursor: not-allowed;
+}

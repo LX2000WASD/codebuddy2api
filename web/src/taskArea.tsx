@@ -1,7 +1,7 @@
 import { useNavigate, useSearchParams } from "react-router";
 import { useT } from "./i18n";
 import { navAreas, sectionFor, sectionTarget } from "./navigation";
-import s from "./ui.module.scss";
+import s from "./shell/shell.module.scss";
 
 /**
  * Renders one task area: a section switcher (only where the area holds more than one
@@ -25,6 +25,11 @@ export function TaskArea({ areaKey }: { areaKey: string }) {
         // A landmark, not role="tab": these buttons change the URL, and pages inside
         // the area carry tablists of their own — two tab roles on one screen would be
         // ambiguous for both assistive tech and the e2e queries.
+        //
+        // Selection is the button's own background and border. The previous switcher
+        // animated a separate highlight block over the active label; an absolutely
+        // positioned opaque layer over in-flow text is how that label disappeared
+        // (defect P1-1), so no decoration is layered on top here.
         <nav
           className={s.sectionNav}
           aria-label={t("app.areaSections", { area: t(area.labelKey) })}
@@ -36,7 +41,7 @@ export function TaskArea({ areaKey }: { areaKey: string }) {
                 key={candidate.key}
                 type="button"
                 aria-current={active ? "page" : undefined}
-                className={active ? s.sectionActive : undefined}
+                className={active ? `${s.sectionTab} ${s.sectionActive}` : s.sectionTab}
                 onClick={() => {
                   // replace: switching sections inside one area should not stack
                   // history entries the back button has to unwind one at a time.
