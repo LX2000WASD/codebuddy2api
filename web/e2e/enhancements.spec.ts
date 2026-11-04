@@ -68,7 +68,9 @@ test("appearance persists, follows the system, and animates modal exit", async (
     .locator("body")
     .evaluate((node) => getComputedStyle(node).backgroundColor);
   await expect(page.getByLabel("青叶")).toBeDisabled();
-  await page.screenshot({ path: "test-results/appearance-dark.png", fullPage: true });
+  // Viewport-sized: a full-page grab of the dark dashboard took seconds under parallel
+  // workers and pushed the test into its 30s timeout before the next assertion.
+  await page.screenshot({ path: "test-results/appearance-dark.png" });
   await page.getByLabel("浅色", { exact: true }).check();
   await page.getByLabel("蔷薇").check();
   await page.getByLabel("深色", { exact: true }).check();

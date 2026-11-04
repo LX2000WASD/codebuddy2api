@@ -331,7 +331,12 @@ export function HealthSparkline({ name, rows }: { name: string; rows: RecordValu
   const counts = rows.map((row) => number(row.requests) ?? 0);
   const peak = Math.max(1, ...counts);
   return (
-    <span className={s.sparkline} role="img" aria-label={t("models.health.sparkAria", { name })}>
+    <span
+      className={s.sparkline}
+      data-spark=""
+      role="img"
+      aria-label={t("models.health.sparkAria", { name })}
+    >
       {rows.map((row, index) => {
         const requests = number(row.requests) ?? 0;
         const errors = number(row.error) ?? 0;

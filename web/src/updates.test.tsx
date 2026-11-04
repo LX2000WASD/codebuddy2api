@@ -22,7 +22,7 @@ const releases = [
     notes:
       "## Highlights\n\n- One-click **updates** with `backups`\n- See [PR](https://github.com/x/y/pull/1)",
     published_at: "2026-10-20T00:00:00Z",
-    url: "https://github.com/maiphucgiang/codebuddy2api/releases/tag/v1.5.0",
+    url: "https://github.com/LX2000WASD/codebuddy2api/releases/tag/v1.5.0",
     installable: true,
   },
   {
@@ -31,14 +31,14 @@ const releases = [
     name: "v1.4.0",
     notes: "Older notes",
     published_at: "2026-10-19T00:00:00Z",
-    url: "https://github.com/maiphucgiang/codebuddy2api/releases/tag/v1.4.0",
+    url: "https://github.com/LX2000WASD/codebuddy2api/releases/tag/v1.4.0",
     installable: true,
   },
 ];
 function payload(overrides: Record<string, unknown> = {}) {
   return {
     current: "1.4.0",
-    repository: "https://github.com/maiphucgiang/codebuddy2api",
+    repository: "https://github.com/LX2000WASD/codebuddy2api",
     deployment: "archive",
     self_update: { available: true, reason: null },
     checked_at: 1792497600,
@@ -87,7 +87,7 @@ describe("updates page", () => {
     mount();
     expect(await screen.findByText("Highlights")).toBeTruthy();
     expect(screen.getByRole("link", { name: "GitHub 仓库" }).getAttribute("href")).toBe(
-      "https://github.com/maiphucgiang/codebuddy2api",
+      "https://github.com/LX2000WASD/codebuddy2api",
     );
     expect(screen.getByText("updates")).toBeTruthy();
     expect(screen.getByRole("link", { name: "在 GitHub 查看" }).getAttribute("href")).toBe(

@@ -164,3 +164,12 @@
   font-size: var(--fs-11);
   line-height: var(--lh-base);
 }
+
+/* The health column's sparkline makes those rows 87px tall next to 45px neighbours: in
+   the table the badge and the request count already carry the answer, so the trace is a
+   card-only detail. */
+@media (min-width: 900px) {
+  .healthCell [data-spark] {
+    display: none;
+  }
+}

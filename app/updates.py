@@ -32,7 +32,7 @@ import httpx
 from .backups import BackupError, Backups
 from .startup import request_restart
 
-REPOSITORY = "maiphucgiang/codebuddy2api"
+REPOSITORY = "LX2000WASD/codebuddy2api"
 REPOSITORY_URL = f"https://github.com/{REPOSITORY}"
 RELEASES_API = f"https://api.github.com/repos/{REPOSITORY}/releases?per_page=20"
 CHECK_INTERVAL = 6 * 3600

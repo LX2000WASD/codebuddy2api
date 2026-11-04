@@ -662,7 +662,7 @@ class Upstream:
         return Reply(payload=[{
             "tag_name": f"v{version}", "name": f"v{version}", "draft": False, "prerelease": False,
             "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3 * DAY)),
-            "html_url": f"https://github.com/maiphucgiang/codebuddy2api/releases/tag/v{version}",
+            "html_url": f"https://github.com/LX2000WASD/codebuddy2api/releases/tag/v{version}",
             "body": "## 预览环境\n\n- 发布列表为模拟数据，安装已停用。",
             "assets": [{"name": f"codebuddy2api-{version}.tar.gz", "digest": "sha256:" + "0" * 64},
                        {"name": "SHA256SUMS"}]}])

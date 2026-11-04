@@ -139,10 +139,10 @@ class UpstreamTests(Isolated):
         self.assertTrue(all(item["url"].startswith("https://example.com/") for item in results))
 
     def test_release_archive_serves_the_speed_test_only(self):
-        response = httpx.get("https://ghfast.top/https://github.com/maiphucgiang/codebuddy2api/releases/download/"
+        response = httpx.get("https://ghfast.top/https://github.com/LX2000WASD/codebuddy2api/releases/download/"
                              "v1.0.0/codebuddy2api-1.0.0.tar.gz")
         self.assertTrue(response.content.startswith(b"\x1f\x8b"))
-        release = httpx.get("https://api.github.com/repos/maiphucgiang/codebuddy2api/releases").json()[0]
+        release = httpx.get("https://api.github.com/repos/LX2000WASD/codebuddy2api/releases").json()[0]
         self.assertEqual({asset["name"] for asset in release["assets"]},
                          {release["tag_name"].replace("v", "codebuddy2api-", 1) + ".tar.gz", "SHA256SUMS"})
 

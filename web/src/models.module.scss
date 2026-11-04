@@ -540,3 +540,17 @@
 .catalog {
   min-width: 0;
 }
+
+/* The identity column carries a public id and an upstream id; 200px truncated both. The
+   cap is per column so the other cells keep the global default. */
+.idCell {
+  --table-cell-max: 340px;
+}
+
+/* The card layout has room for the upstream id; the table row does not (it shares the
+   cell with the public id, and both truncated into each other). Table = >=900px. */
+@media (min-width: 900px) {
+  .idCell .upstreamId {
+    display: none;
+  }
+}

@@ -1141,7 +1141,17 @@ export function Credentials() {
           disabled={busy}
           onChange={(checked) => togglePaused(c, checked)}
         />
-        <span>{c.paused === true ? "已暂停" : c.paused === false ? "运行中" : "未知"}</span>
+        {/* "运行中" next to an 人工停用 switch is a contradiction: an account that is
+            not enabled does not take traffic however its pause flag reads. */}
+        <span>
+          {c.paused === true
+            ? "已暂停"
+            : c.paused === false
+              ? c.enabled === true
+                ? "运行中"
+                : "未参与选路"
+              : "未知"}
+        </span>
       </span>
     </>
   );

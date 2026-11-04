@@ -386,6 +386,7 @@ function modelColumns({
     {
       id: "id",
       header: t("models.col.id"),
+      className: css.idCell,
       sortable: true,
       sortValue: (m) => m.public_id,
       // The line carries identity and state. Everything else about the rule — the display
@@ -394,6 +395,7 @@ function modelColumns({
       title: (m) =>
         [
           m.public_id,
+          m.upstream_id && m.upstream_id !== m.public_id ? `上游 ${m.upstream_id}` : "",
           modelDisplayName(m),
           (m.routes?.length ?? 0) > 1
             ? `${t("models.routes.label")}：${m
@@ -411,9 +413,14 @@ function modelColumns({
           .join(" · "),
       cell: (m) => (
         <span className={css.cellLine}>
+          {/* Enablement is the availability column's job: repeating the 已停用 badge here
+              put the same information twice in one row and squeezed the identity, which
+              then truncated both the name and the upstream id. */}
           <strong className={css.modelName}>{m.public_id}</strong>
-          <small className={css.mono}>{m.upstream_id ?? m.id}</small>
-          {!m.enabled && <Badge tone="neutral">{t("models.avail.disabled")}</Badge>}
+          {/* Table rows are one line: an id and its upstream id both truncate when they
+              share the cell, so the table keeps the id and the tooltip carries the rest.
+              The card layout still shows both. */}
+          <small className={css.mono + " " + css.upstreamId}>{m.upstream_id ?? m.id}</small>
           {m.custom && <Badge>自建</Badge>}
           {m.media_kinds?.map((kind) => (
             <Badge key={kind} tone="neutral">

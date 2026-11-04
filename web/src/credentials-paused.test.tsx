@@ -111,7 +111,9 @@ describe("paused switch reads the authoritative row field", () => {
     render(<Credentials />);
     const paused = screen.getByRole("switch", { name: "暂停账号 one.info" }) as HTMLInputElement;
     expect(paused.checked).toBe(false);
-    expect(screen.getByText("运行中")).toBeTruthy();
+    // Not paused — but also not running: a disabled account takes no traffic, and saying
+    // "运行中" next to the 人工停用 switch was the contradiction this asserts against.
+    expect(screen.getByText("未参与选路")).toBeTruthy();
     expect(screen.getByText("人工停用")).toBeTruthy();
   });
 
