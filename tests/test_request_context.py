@@ -273,10 +273,15 @@ class EndpointContextTests(fixtures.GatewayFixture, unittest.TestCase):
                             else:
                                 self.assertNotIn(expected, [m.get("content") for m in systems])
                                 if not has_system:
-                                    self.assertEqual(systems, [])
+                                    # A request without instructions gets the channel default,
+                                    # because the international site rejects a user-first one.
+                                    self.assertEqual([m.get("content") for m in systems],
+                                                     ["You are a helpful assistant."])
                             if has_system:
                                 self.assertIn("client rules", [m.get("content") for m in systems])
-                            self.assertNotIn("You are a helpful assistant.", [m.get("content") for m in systems])
+                            if not has_system and mode == "prepend":
+                                # prepend replaces the placeholder instead of stacking on it.
+                                self.assertEqual([m.get("content") for m in systems], [expected])
 
         original = {"messages": [{"role": "user", "content": "hi"}]}
         once = desensitize_module.apply_system_prompt_mode(original, "cn-work", "prepend")

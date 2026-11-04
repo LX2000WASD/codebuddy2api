@@ -457,6 +457,23 @@ def system_as_user_body(body: dict) -> dict:
     return {**body, "messages": [{"role": "system", "content": _CHANNEL_SYSTEM_DEFAULT}, *rest]}
 
 
+def ensure_leading_system(body: dict) -> dict:
+    """Fill the leading system slot the international channel requires.
+
+    codebuddy.ai rejects a conversation whose first message is not a system message with
+    400 / 11128 "first message is not system prompt", while codebuddy.cn serves the same
+    request. The channel's own neutral default keeps one request shape working on both
+    sites. This fills an empty slot and never replaces client text: a request that already
+    opens with instructions keeps them byte for byte.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages or not isinstance(messages[0], dict):
+        return body
+    if messages[0].get("role") == "system":
+        return body
+    return {**body, "messages": [{"role": "system", "content": _CHANNEL_SYSTEM_DEFAULT}, *messages]}
+
+
 def apply_system_prompt_mode(body: dict, profile: str, mode: str) -> dict:
     """Apply an optional profile prompt without mutating canonical messages."""
     if mode == "empty":
@@ -470,6 +487,11 @@ def apply_system_prompt_mode(body: dict, profile: str, mode: str) -> dict:
     if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system" \
             and _content_to_text(messages[0].get("content")) == prompt:
         return body
+    if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system" \
+            and _content_to_text(messages[0].get("content")) == _CHANNEL_SYSTEM_DEFAULT:
+        # This is the placeholder ensure_leading_system inserted, not client text: the
+        # operator's prompt takes the slot instead of stacking a second system message.
+        return {**body, "messages": [{"role": "system", "content": prompt}, *messages[1:]]}
     return {**body, "messages": [{"role": "system", "content": prompt}, *messages]}
 
 

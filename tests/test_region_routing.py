@@ -702,7 +702,7 @@ class RegionRoutingTests(unittest.TestCase):
             _, body = self.post_ok(endpoint, self.payload(endpoint, "auto"), {"cn-cli"})
             self.assertEqual(body["model"], "auto")
 
-    def test_system_preserves_caller_instructions_without_gateway_default(self):
+    def test_system_preserves_caller_instructions_and_fills_only_an_empty_slot(self):
         for profile in PROFILES:
             self.configure(profiles=(profile,))
             for endpoint in GENERATIONS:
@@ -730,8 +730,11 @@ class RegionRoutingTests(unittest.TestCase):
                             self.assertEqual(systems, [{"role": "system", "content": system}])
                             self.assertEqual(messages[0], systems[0])
                         else:
-                            self.assertEqual(systems, [])
-                            self.assertEqual(messages[0]["role"], "user")
+                            # An empty leading slot gets the channel default, because the
+                            # international site rejects a user-first conversation (11128).
+                            self.assertEqual(systems, [{"role": "system",
+                                                        "content": "You are a helpful assistant."}])
+                            self.assertEqual(messages[0], systems[0])
 
     def test_late_system_is_not_overwritten_when_intl_requires_first_system(self):
         self.configure(profiles=("intl-cli",))

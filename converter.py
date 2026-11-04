@@ -40,7 +40,8 @@ import uvicorn as uvicorn  # Keep the existing embedding/test hook.
 
 try:
     from app.desensitize import (apply_system_prompt_mode, desensitize_body,
-                                 desensitize_channel_body, system_as_user_body)
+                                 desensitize_channel_body, ensure_leading_system,
+                                 system_as_user_body)
 except ImportError:  # Disable desensitization when its module is unavailable.
     def desensitize_body(body, roles=("system",), compact_harness=False, identity_mode="off"):
         return body
@@ -52,6 +53,9 @@ except ImportError:  # Disable desensitization when its module is unavailable.
         return body
 
     def apply_system_prompt_mode(body, profile, mode):
+        return body
+
+    def ensure_leading_system(body):
         return body
 
 from app.adapters.responses_adapter import (
@@ -5009,6 +5013,12 @@ def _prepare_chat_body(body: dict, *, region=None, session_payload=None) -> dict
             messages = [messages[system_index], *messages[:system_index], *messages[system_index + 1:]]
             message_indices.insert(0, message_indices.pop(system_index))
     body["messages"] = normalize_chat_messages(messages, message_indices=message_indices)
+    # The international channel rejects a conversation that does not open with a system
+    # message (400 / 11128 "first message is not system prompt"); the domestic one serves
+    # it. Filling the empty slot here keeps one request shape valid on both sites, and it
+    # runs after the developer-role and late-system moves above so a client that *does*
+    # send instructions is never given a second system message.
+    body = ensure_leading_system(body)
     # Outbound tool pairing cleanup (ported from the panel gateway, see app/tool_pairing.py).
     # Applied to every model regardless of the desensitize switch: an incomplete
     # tool_call/tool result pairing makes the upstream reject the request, and because

@@ -63,11 +63,18 @@ class DeveloperRoleNormalization(unittest.TestCase):
         ])
         self.assertNotIn("developer", [m["role"] for m in body["messages"]])
 
-    def test_missing_system_has_no_gateway_default(self):
-        """Do not add a gateway prompt when prompt mode is empty."""
+    def test_missing_system_gets_the_channel_default(self):
+        """Fill an empty leading system slot: codebuddy.ai rejects a user-first conversation."""
         body = _prepare([{"role": "user", "content": "hi"}])
-        self.assertEqual([m["role"] for m in body["messages"]], ["user"])
-        self.assertNotIn("system", [m["role"] for m in body["messages"]])
+        self.assertEqual([m["role"] for m in body["messages"]], ["system", "user"])
+        self.assertEqual(body["messages"][0]["content"], "You are a helpful assistant.")
+        self.assertEqual(body["messages"][1], {"role": "user", "content": "hi"})
+
+    def test_tool_first_conversation_also_gets_the_default(self):
+        """The channel checks position 0, not which role the client chose to start with."""
+        body = _prepare([{"role": "assistant", "content": "ready"},
+                         {"role": "user", "content": "hi"}])
+        self.assertEqual([m["role"] for m in body["messages"]], ["system", "assistant", "user"])
 
 class CallerPayloadNotMutated(unittest.TestCase):
     """Normalize upstream copies without mutating caller-owned payloads."""
