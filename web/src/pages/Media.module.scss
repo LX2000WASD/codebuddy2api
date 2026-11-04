@@ -1,0 +1,299 @@
+@use "../design/breakpoints.scss" as bp;
+
+/* The media page: the unconfigured banner, the four KPI tiles, the tab bar, the asset
+ * grid and the task table.
+ *
+ * The tab bar is a tablist whose selected tab paints itself (colour + an underline on its
+ * own border). The old bar mounted components.tsx's SegmentThumb: an absolutely positioned
+ * opaque block with no z-index, which is the mechanism behind P1-1, and it was only
+ * harmless here because ui.module.scss hid it inside .tabs. Nothing is layered over these
+ * labels, so that defect cannot come back with the selector.
+ */
+
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+  border: var(--hairline) solid var(--warning-border);
+  border-radius: var(--radius-block);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+}
+
+/* Takes the free width of the banner so the action stays on the same line while there is
+   room, and wraps under the text when there is not. */
+.bannerText {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Four tiles, so the column count is pinned instead of following the width: an auto-fitting
+   grid puts three on the first row and leaves the fourth alone on the second at 1024 (the
+   orphan row of P2-3). 4 / 2 never produces a single-tile row, and two tiles still fit a
+   390px viewport. */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+@include bp.lg-down {
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* The usage meter inside the first tile. Extra of Stat is a row, so the bar fills what the
+   chips next to it leave. */
+.meter {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--space-2);
+  overflow: hidden;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-full);
+}
+
+.meterFill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+}
+
+.meter[data-tone="warn"] .meterFill {
+  background: var(--warning-fg);
+}
+
+.meter[data-tone="bad"] .meterFill {
+  background: var(--danger-fg);
+}
+
+/* ── Tab bar ──────────────────────────────────────────────────────────────────*/
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+  border-block-end: var(--hairline) solid var(--line);
+}
+
+.tab {
+  min-height: var(--control-h-md);
+  padding: 0 var(--space-3);
+  color: var(--text-muted);
+  background: none;
+  border: 0;
+  border-block-end: calc(var(--hairline) * 2) solid transparent;
+  border-radius: 0;
+  font: inherit;
+  font-size: var(--fs-12);
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab[aria-selected="true"] {
+  color: var(--accent-text-strong);
+  border-block-end-color: var(--accent);
+  font-weight: var(--fw-medium);
+}
+
+/* ── Filters ──────────────────────────────────────────────────────────────────*/
+/* The shared Select is a full-width control; this slot gives it a floor instead of letting
+   a wrapping toolbar crush it to its placeholder's width (the shape of P2-4). */
+.filter {
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: var(--control-min-w);
+  max-width: 100%;
+}
+
+/* ── Asset grid ───────────────────────────────────────────────────────────────*/
+/* Thumbnails stay two per row on a phone: at 390 a single column of 16:9 previews pushes the
+   second asset below the fold, and "which files do I have" is the question this page answers. */
+.card {
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-2);
+  color: var(--text);
+  background: var(--surface);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-card);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition: border-color var(--duration-micro) var(--ease-standard);
+}
+
+.card:hover {
+  border-color: var(--border-strong);
+}
+
+.thumb {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  color: var(--text-subtle);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-block);
+}
+
+.thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: 0 var(--space-1) var(--space-1);
+}
+
+/* The one truncated value on the card, and the card button already carries the full model
+   as its title; the label carries it too so a hover on the text alone explains it. */
+.model {
+  @include bp.truncate;
+  color: var(--text);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+}
+
+.metaLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+}
+
+.metaLine[data-warn="true"] {
+  color: var(--warning-fg);
+}
+
+/* ── Pagination ───────────────────────────────────────────────────────────────*/
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.pageLabel {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+}
+
+/* ── Table cells ──────────────────────────────────────────────────────────────*/
+/* Table cells are one line each (see ui/Table.module.scss), so an identifier column only
+   needs its own family; the primitive ellipsizes it and fills in the tooltip. */
+.idCell {
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  overflow-wrap: anywhere;
+}
+
+.muted {
+  color: var(--text-subtle);
+}
+
+/* ── Drawers ──────────────────────────────────────────────────────────────────*/
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+/* The download action is a link, so it needs the button face: the same geometry as
+   ui/Button's default variant, applied to an <a> (a download is a navigation, not a
+   state change, and it must keep its href). */
+.linkButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--control-h-md);
+  padding: 0 var(--space-3);
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color var(--duration-micro) var(--ease-standard);
+}
+
+.linkButton:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.preview {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  padding: var(--space-2);
+  background: var(--surface-sunken);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-card);
+}
+
+/* A viewport budget, not a spacing token: the preview must leave the drawer's actions in
+   sight on a phone, the same way --table-max-height keeps a table's scroll strip on screen.
+   It is the only length literal in this file. */
+.previewMedia {
+  display: block;
+  max-width: 100%;
+  max-height: 40dvh;
+  border-radius: var(--radius-block);
+}

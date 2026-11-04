@@ -1,9 +1,19 @@
 import { useEffect, useState } from "react";
 import { api, errorMessage, object, useSession } from "../api";
-import { Badge, ErrorNotice, Panel, ResourceState } from "../components";
-import s from "../ui.module.scss";
 import { t as translate, useT } from "../i18n";
-import { notify } from "../toast";
+import {
+  Badge,
+  Button,
+  Cluster,
+  ErrorNotice,
+  Field,
+  Input,
+  Panel,
+  ResourceState,
+  Stack,
+  notify,
+} from "../ui";
+import s from "./Account.module.scss";
 
 type Account = {
   username: string;
@@ -108,7 +118,7 @@ export function AccountPanel() {
     <>
       <ResourceState loading={loading} error={error && !account ? error : null} reload={load} />
       {account && (
-        <div className={s.stack}>
+        <Stack gap="4">
           <Panel
             title={t("account.title")}
             action={
@@ -117,79 +127,72 @@ export function AccountPanel() {
               </Badge>
             }
           >
-            <div className={s.panelBody}>
-              <form className={`${s.drawerForm} ${s.accountForm}`} onSubmit={save}>
-                <label className={s.field}>
-                  {t("login.username")}
-                  <input
-                    name="username"
-                    autoComplete="username"
-                    value={username}
-                    onChange={(event) => setUsername(event.target.value)}
-                    pattern="[A-Za-z0-9_.\-]{1,32}"
-                    required
-                  />
-                </label>
-                <label className={s.field}>
-                  {t("common.currentPassword")}
-                  <input
-                    name="current-password"
-                    type="password"
-                    autoComplete="current-password"
-                    value={currentPassword}
-                    onChange={(event) => setCurrentPassword(event.target.value)}
-                    required
-                  />
-                </label>
-                <label className={s.field}>
-                  {t("account.newPassword")}
-                  <input
-                    name="new-password"
-                    type="password"
-                    autoComplete="new-password"
-                    value={newPassword}
-                    onChange={(event) => setNewPassword(event.target.value)}
-                    minLength={8}
-                    maxLength={128}
-                    placeholder={t("account.passwordHint")}
-                  />
-                </label>
-                <label className={s.field}>
-                  {t("account.confirmPassword")}
-                  <input
-                    name="confirm-new-password"
-                    type="password"
-                    autoComplete="new-password"
-                    value={confirmation}
-                    onChange={(event) => setConfirmation(event.target.value)}
-                    minLength={newPassword ? 8 : undefined}
-                    maxLength={128}
-                    placeholder={t("account.passwordHint")}
-                  />
-                </label>
-                <ErrorNotice message={error} />
-                <div className={s.actions}>
-                  <button
-                    className={s.primary}
-                    disabled={busy || !changed || !currentPassword}
-                    aria-busy={busy}
-                  >
-                    {busy ? t("account.saving") : t("account.save")}
-                  </button>
-                </div>
-              </form>
-            </div>
+            <form className={s.form} onSubmit={save}>
+              <Field label={t("login.username")}>
+                <Input
+                  name="username"
+                  autoComplete="username"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  pattern="[A-Za-z0-9_.-]{1,32}"
+                  required
+                />
+              </Field>
+              <Field label={t("common.currentPassword")}>
+                <Input
+                  name="current-password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={currentPassword}
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                  required
+                />
+              </Field>
+              <Field label={t("account.newPassword")}>
+                <Input
+                  name="new-password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  minLength={8}
+                  maxLength={128}
+                  placeholder={t("account.passwordHint")}
+                />
+              </Field>
+              <Field label={t("account.confirmPassword")}>
+                <Input
+                  name="confirm-new-password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={confirmation}
+                  onChange={(event) => setConfirmation(event.target.value)}
+                  minLength={newPassword ? 8 : undefined}
+                  maxLength={128}
+                  placeholder={t("account.passwordHint")}
+                />
+              </Field>
+              <ErrorNotice message={error} />
+              <Cluster>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  disabled={busy || !changed || !currentPassword}
+                  aria-busy={busy}
+                >
+                  {busy ? t("account.saving") : t("account.save")}
+                </Button>
+              </Cluster>
+            </form>
           </Panel>
           <Panel title={t("account.sessionsTitle")} hint={t("account.sessionsHint")}>
-            <div className={s.panelBody}>
-              <div className={s.actions}>
-                <button className={s.danger} type="button" disabled={busy} onClick={revokeAll}>
-                  {t("account.revokeAll")}
-                </button>
-              </div>
-            </div>
+            <Cluster>
+              <Button variant="danger" type="button" disabled={busy} onClick={revokeAll}>
+                {t("account.revokeAll")}
+              </Button>
+            </Cluster>
           </Panel>
-        </div>
+        </Stack>
       )}
     </>
   );

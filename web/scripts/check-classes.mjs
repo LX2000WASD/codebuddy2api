@@ -25,7 +25,8 @@ import { compileString } from "sass";
 const webRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 /** `import s from "./x.module.scss"` — also `import * as s` and `../` forms. */
-const MODULE_IMPORT = /import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\s+["']([^"']+\.module\.scss)["']/g;
+const MODULE_IMPORT =
+  /import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\s+["']([^"']+\.module\.scss)["']/g;
 
 function parseArgs(argv) {
   const options = { json: false, unused: false, src: join(webRoot, "src") };
@@ -198,7 +199,9 @@ if (options.json) {
 }
 
 for (const entry of dynamic)
-  console.log("· 动态类名（运行时才确定，不判错）：" + entry.file + ":" + entry.line + "  " + entry.snippet);
+  console.log(
+    "· 动态类名（运行时才确定，不判错）：" + entry.file + ":" + entry.line + "  " + entry.snippet,
+  );
 if (options.unused) {
   const unused = [];
   for (const [file, defined] of definitions)
@@ -211,7 +214,15 @@ if (options.unused) {
 if (missing.length) {
   console.error("✗ 类名检查失败：" + missing.length + " 处缺失");
   for (const entry of missing)
-    console.error("  " + entry.file + ":" + entry.line + "  ." + entry.name + (entry.reason ? "（" + entry.reason + "）" : ""));
+    console.error(
+      "  " +
+        entry.file +
+        ":" +
+        entry.line +
+        "  ." +
+        entry.name +
+        (entry.reason ? "（" + entry.reason + "）" : ""),
+    );
   process.exit(1);
 }
 console.log("✓ 类名检查通过（" + stylesheets.length + " 个模块）");

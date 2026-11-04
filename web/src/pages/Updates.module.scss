@@ -1,0 +1,256 @@
+@use "../design/breakpoints.scss" as bp;
+
+/* The updates page: the build warning, the four tiles, the update panel and the release
+ * browser.
+ *
+ * Nothing here is a second bordered box inside a Panel: the confirmation block and the code
+ * block are sunken surfaces, which is the level budget ui/Panel.module.scss documents. */
+
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+  border: var(--hairline) solid var(--warning-border);
+  border-radius: var(--radius-block);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+}
+
+/* Four tiles, pinned to 4 / 2 columns: the auto-fitting grid left the fourth tile alone on
+   a second row at 1024 (the orphan shape of P2-3), and two columns still fit a 390 viewport. */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+@include bp.lg-down {
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.bannerText {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ── Release browser ──────────────────────────────────────────────────────────
+ * The version column is a fixed narrow sidebar and the notes take the rest; below the
+ * large breakpoint the two stack, so a 390px viewport never splits a note column in half.
+ * The width is a layout constant of this section (the same role --split-aside plays for
+ * ui/Split), declared once instead of being repeated in the media query. */
+.releases {
+  --release-list-w: 260px;
+  display: grid;
+  grid-template-columns: minmax(0, var(--release-list-w)) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+  min-width: 0;
+}
+
+@include bp.lg-down {
+  .releases {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.releaseList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* The selected release is the link's own background and border. A separate highlight block
+   over the list is the mechanism this rewrite removed (contract §3.3). */
+.releaseItem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-muted);
+  background: none;
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-control);
+  text-decoration: none;
+}
+
+.releaseItem:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.releaseItem[aria-current="page"] {
+  color: var(--text);
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+}
+
+.releaseTag {
+  min-width: 0;
+  color: inherit;
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+
+.releaseDate {
+  min-width: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.notesHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.notesHeading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.notesTitle {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-15);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+
+.notesDate {
+  color: var(--text-subtle);
+  font-size: var(--fs-11);
+  line-height: var(--lh-base);
+}
+
+/* ── Update panel ─────────────────────────────────────────────────────────────*/
+.lead {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+/* The confirmation is a sunken block, not a third bordered box: Panel already owns the
+   border, and the level budget stops at two rectangles per section. */
+.confirmBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-block);
+}
+
+.confirmText {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--fs-12);
+  line-height: var(--lh-base);
+}
+
+.confirmText strong {
+  color: var(--text);
+  font-weight: var(--fw-strong);
+  overflow-wrap: anywhere;
+}
+
+.confirmText p {
+  margin: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* The build warning repeated at the point of decision, where it changes what the button
+   means. */
+.confirmText p[data-warn="true"] {
+  color: var(--warning-fg);
+}
+
+.code {
+  margin: 0;
+  padding: var(--space-3);
+  overflow-x: auto;
+  color: var(--text-muted);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-block);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  line-height: var(--lh-relaxed);
+}
+
+/* ── Links that wear a control face ───────────────────────────────────────────
+ * Both are navigations that leave the dashboard, so they stay <a> elements with their href
+ * and take the button geometry from these two rules instead of becoming <button>s. */
+.linkButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--control-h-md);
+  padding: 0 var(--space-3);
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  text-align: center;
+  text-decoration: none;
+  transition: border-color var(--duration-micro) var(--ease-standard);
+}
+
+.linkButton:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.iconLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: var(--control-h-md);
+  height: var(--control-h-md);
+  color: var(--text-muted);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-full);
+}
+
+.iconLink:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}

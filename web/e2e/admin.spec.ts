@@ -353,9 +353,11 @@ test("log tabs, cursor, details and guarded destructive clear", async ({ page })
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "下一页" }).click();
   await expect(page.getByText("第 2 页", { exact: true })).toBeVisible();
-  await page.getByRole("tab", { name: "运行事件" }).click();
+  // The log kind switch is a segmented control (aria-pressed buttons), not a tablist:
+  // it filters rows in place instead of swapping panels.
+  await page.getByRole("button", { name: "运行事件" }).click();
   await expect(page.getByText("mock.operation")).toBeVisible();
-  await page.getByRole("tab", { name: "管理操作" }).click();
+  await page.getByRole("button", { name: "管理操作" }).click();
   await page.getByRole("button", { name: "清理日志" }).click();
   await choose(page.getByLabel("清理范围"), "all");
   await expect(page.getByRole("button", { name: "确认不可撤销的清理" })).toBeDisabled();

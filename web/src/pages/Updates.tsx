@@ -1,23 +1,25 @@
 import { useEffect, useState } from "react";
-import { NavLink, useParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { api, errorMessage, list, number, object, text, useResource } from "../api";
 import { useT } from "../i18n";
+import { MirrorCard, MirrorDrawer } from "../MirrorDrawer";
+import { notify } from "../toast";
 import {
   Badge,
+  Button,
+  Cluster,
   DrawerPresence,
   Empty,
   ErrorNotice,
   Icon,
-  PageTitle,
+  Markdown,
+  Page,
   Panel,
-  RefreshIcon,
   ResourceState,
-} from "../components";
-import { Markdown } from "../markdown";
-import { MirrorCard, MirrorDrawer } from "../MirrorDrawer";
+  Stat,
+} from "../ui";
 import { UpdateProgress, type UpdateJob } from "../UpdateProgress";
-import { notify } from "../toast";
-import s from "../ui.module.scss";
+import s from "./Updates.module.scss";
 
 type Release = {
   tag: string;
@@ -44,6 +46,7 @@ type UpdateState = {
   mirrors: string[];
   mirrorCustom: string;
   mirrorLocked: boolean;
+  githubToken: boolean;
   build: Build | null;
 };
 // Where the running code came from: a git checkout against its tag, or an image's channel.
@@ -104,6 +107,7 @@ function normalize(value: unknown): UpdateState {
       : [],
     mirrorCustom: typeof d.mirror_custom === "string" ? d.mirror_custom : "",
     mirrorLocked: d.mirror_locked === true,
+    githubToken: d.github_token === true,
     build: d.build && typeof d.build === "object" ? build(object(d.build)) : null,
   };
 }
@@ -175,29 +179,32 @@ function InstallAction({
   if (!confirming)
     return (
       <div>
-        <button className={upgrade ? s.primary : ""} onClick={() => setConfirming(true)}>
-          <Icon name={upgrade ? "up" : "down"} />
+        <Button
+          variant={upgrade ? "primary" : "default"}
+          icon={<Icon name={upgrade ? "up" : "down"} size="sm" />}
+          onClick={() => setConfirming(true)}
+        >
           {label}
-        </button>
+        </Button>
       </div>
     );
   return (
-    <div className={s.cleanupBox}>
-      <div>
+    <div className={s.confirmBox}>
+      <div className={s.confirmText}>
         <strong>{label}</strong>
         <p>{t(upgrade ? "updates.confirm" : "updates.confirmRollback", { tag: release.tag })}</p>
         {(deployment === "git" || deployment === "docker") && (
           <p>{t(`updates.note.${deployment}`)}</p>
         )}
-        {warning && <p className={s.textWarning}>{warning}</p>}
+        {warning && <p data-warn="true">{warning}</p>}
         <ErrorNotice message={error} />
       </div>
-      <span className={s.confirmActions}>
-        <button disabled={busy} onClick={() => setConfirming(false)}>
+      <Cluster gap="2">
+        <Button disabled={busy} onClick={() => setConfirming(false)}>
           {t("updates.cancel")}
-        </button>
-        <button
-          className={s.primary}
+        </Button>
+        <Button
+          variant="primary"
           disabled={busy}
           onClick={() => {
             setBusy(true);
@@ -212,8 +219,8 @@ function InstallAction({
           }}
         >
           {t("updates.confirmInstall")}
-        </button>
-      </span>
+        </Button>
+      </Cluster>
     </div>
   );
 }
@@ -222,7 +229,7 @@ function Guidance({ deployment }: { deployment: string }) {
   const t = useT();
   if (deployment === "docker")
     return (
-      <pre className={s.codeBlock}>
+      <pre className={s.code}>
         {`${t("updates.guide.docker")}
 docker compose pull
 docker compose up -d --no-build
@@ -233,7 +240,7 @@ ${t("updates.guide.dockerAuto")}
     );
   if (deployment === "git")
     return (
-      <pre className={s.codeBlock}>
+      <pre className={s.code}>
         {`${t("updates.guide.git")}
 git pull --ff-only
 uv sync --locked --no-build
@@ -319,66 +326,53 @@ export function Updates() {
       />
     );
   return (
-    <>
-      <PageTitle title={t("updates.title")} description={t("updates.desc")} />
+    <Page title={t("updates.title")} description={t("updates.desc")}>
       <ResourceState {...resource} />
       {buildWarning && (
-        <div className={s.warning} role="status">
-          <Icon name="alert" />
-          <span>{buildWarning}</span>
+        <div className={s.banner} role="status">
+          <Icon name="alert" size="sm" />
+          <span className={s.bannerText}>{buildWarning}</span>
         </div>
       )}
       <ErrorNotice message={d?.error ?? null} />
       {d && (
         <>
-          <div className={s.kpiGrid}>
-            <article className={s.kpiCard}>
-              <div>
-                <span>{t("updates.current")}</span>
-                <button
-                  type="button"
-                  className={s.pill}
-                  aria-label={t("updates.check")}
-                  disabled={checking}
-                  onClick={check}
-                >
-                  <RefreshIcon spinning={checking} />
-                  <span className={s.pillLabel}>
-                    {checking ? t("updates.checking") : t("updates.check")}
-                  </span>
-                </button>
-              </div>
-              <strong>v{d.current}</strong>
-              <small>{t(`updates.deploy.${d.deployment}`)}</small>
-            </article>
-            <article className={s.kpiCard}>
-              <div>
-                <span>{t("updates.latest")}</span>
-                <span>
-                  <Icon name="up" />
-                </span>
-              </div>
-              <strong>{d.latest ? `v${d.latest}` : "—"}</strong>
-              <small>
-                {d.updateAvailable
+          <div className={s.stats}>
+            <Stat
+              label={t("updates.current")}
+              value={`v${d.current}`}
+              hint={t(`updates.deploy.${d.deployment}`)}
+              icon="shield"
+            >
+              <Button
+                size="sm"
+                aria-label={t("updates.check")}
+                disabled={checking}
+                icon={<Icon name="refresh" size="sm" spin={checking} />}
+                onClick={check}
+              >
+                {checking ? t("updates.checking") : t("updates.check")}
+              </Button>
+            </Stat>
+            <Stat
+              label={t("updates.latest")}
+              value={d.latest ? `v${d.latest}` : "—"}
+              hint={
+                d.updateAvailable
                   ? t("updates.available")
                   : d.latest
                     ? t("updates.upToDate")
-                    : t("updates.unknown")}
-              </small>
-            </article>
-            <article className={s.kpiCard}>
-              <div>
-                <span>{t("updates.checkedAt")}</span>
-                <span>
-                  <Icon name="refresh" />
-                </span>
-              </div>
-              <strong className={s.kpiText}>
-                {d.checkedAt ? date(d.checkedAt) : t("updates.never")}
-              </strong>
-              <small>{t("updates.autoCheck")}</small>
-            </article>
+                    : t("updates.unknown")
+              }
+              icon="up"
+              tone={d.updateAvailable ? "good" : "neutral"}
+            />
+            <Stat
+              label={t("updates.checkedAt")}
+              value={d.checkedAt ? date(d.checkedAt) : t("updates.never")}
+              hint={t("updates.autoCheck")}
+              icon="clock"
+            />
             <MirrorCard mirror={d.mirror} onOpen={() => setMirrorOpen(true)} />
           </div>
           <DrawerPresence>
@@ -388,116 +382,116 @@ export function Updates() {
                 mirrors={d.mirrors}
                 custom={d.mirrorCustom}
                 locked={d.mirrorLocked}
+                githubToken={d.githubToken}
                 onSaved={reload}
                 onClose={() => setMirrorOpen(false)}
               />
             )}
           </DrawerPresence>
-          <div className={s.stack}>
-            <Panel
-              title={t("updates.panel")}
-              action={
-                d.repository && (
-                  <a
-                    className={`${s.linkButton} ${s.roundButton}`}
-                    href={d.repository}
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label={t("updates.repository")}
-                    title={d.repository}
-                  >
-                    <Icon name="github" />
-                  </a>
+          <Panel
+            title={t("updates.panel")}
+            action={
+              d.repository ? (
+                <a
+                  className={s.iconLink}
+                  href={d.repository}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={t("updates.repository")}
+                  title={d.repository}
+                >
+                  <Icon name="github" size="sm" />
+                </a>
+              ) : undefined
+            }
+          >
+            <UpdateProgress job={d.job} />
+            {d.selfUpdate ? (
+              d.updateAvailable && canInstall(latest) ? (
+                install(latest)
+              ) : (
+                !busy && (
+                  <p className={s.lead}>
+                    {d.latest ? t("updates.upToDate") : t("updates.unknown")}
+                  </p>
                 )
-              }
-            >
-              <div className={s.panelBody}>
-                <UpdateProgress job={d.job} />
-                {d.selfUpdate ? (
-                  d.updateAvailable && canInstall(latest) ? (
-                    install(latest)
-                  ) : (
-                    !busy && (
-                      <p className={s.storageLead}>
-                        {d.latest ? t("updates.upToDate") : t("updates.unknown")}
-                      </p>
-                    )
-                  )
-                ) : (
-                  <>
-                    <p className={s.storageLead}>{d.blockReason}</p>
-                    <Guidance deployment={d.deployment} />
-                  </>
-                )}
-              </div>
-            </Panel>
-            <Panel title={t("updates.releases")} hint={t("updates.releasesHint")}>
-              {d.releases.length ? (
-                <div className={s.releaseLayout}>
-                  <nav className={s.releaseList} aria-label={t("updates.releases")}>
-                    {d.releases.map((release) => (
-                      <NavLink
+              )
+            ) : (
+              <>
+                <p className={s.lead}>{d.blockReason}</p>
+                <Guidance deployment={d.deployment} />
+              </>
+            )}
+          </Panel>
+          <Panel title={t("updates.releases")} hint={t("updates.releasesHint")}>
+            {d.releases.length ? (
+              <div className={s.releases}>
+                <nav className={s.releaseList} aria-label={t("updates.releases")}>
+                  {d.releases.map((release) => {
+                    // Which release the notes are showing: the route's tag, or the newest
+                    // one while the address bar has no tag. aria-current follows that state,
+                    // so the selected version is announced, not only painted.
+                    const active = tag ? tag === release.tag : release === latest;
+                    return (
+                      <Link
                         key={release.tag}
                         to={`/dashboard/updates/${release.tag}`}
-                        className={({ isActive }) =>
-                          `${s.releaseItem} ${isActive || (!tag && release === latest) ? s.active : ""}`
-                        }
+                        className={s.releaseItem}
+                        aria-current={active ? "page" : undefined}
                       >
-                        <strong>{release.tag}</strong>
-                        <span>{date(release.publishedAt)}</span>
+                        <strong className={s.releaseTag}>{release.tag}</strong>
+                        <span className={s.releaseDate}>{date(release.publishedAt)}</span>
                         {release === latest && (
                           <Badge tone="good">{t("updates.badge.latest")}</Badge>
                         )}
                         {release.version === d.current && (
                           <Badge>{t("updates.badge.current")}</Badge>
                         )}
-                      </NavLink>
-                    ))}
-                  </nav>
-                  <article className={s.releaseNotes}>
-                    {selected ? (
-                      <>
-                        <div className={s.releaseHead}>
-                          <div>
-                            <h2>{selected.name}</h2>
-                            <small>{date(selected.publishedAt)}</small>
-                          </div>
-                          {selected.url && (
-                            <a
-                              className={`${s.linkButton} ${s.pill}`}
-                              href={selected.url}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              <Icon name="github" />
-                              {t("updates.openGithub")}
-                            </a>
-                          )}
+                      </Link>
+                    );
+                  })}
+                </nav>
+                <article className={s.notes}>
+                  {selected ? (
+                    <>
+                      <div className={s.notesHead}>
+                        <div className={s.notesHeading}>
+                          <h2 className={s.notesTitle}>{selected.name}</h2>
+                          <small className={s.notesDate}>{date(selected.publishedAt)}</small>
                         </div>
-                        {/* The latest upgrade already has its button in the update panel. */}
-                        {canInstall(selected) &&
-                          !(d.updateAvailable && selected === latest) &&
-                          install(selected)}
-                        {selected.notes.trim() ? (
-                          <Markdown source={selected.notes} />
-                        ) : (
-                          <Empty title={t("updates.noNotes")} />
+                        {selected.url && (
+                          <a
+                            className={s.linkButton}
+                            href={selected.url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <Icon name="github" size="sm" />
+                            {t("updates.openGithub")}
+                          </a>
                         )}
-                      </>
-                    ) : (
-                      <Empty title={t("updates.notFound")} />
-                    )}
-                  </article>
-                </div>
-              ) : (
-                <div className={s.panelBody}>
-                  <Empty title={t("updates.emptyReleases")} />
-                </div>
-              )}
-            </Panel>
-          </div>
+                      </div>
+                      {/* The latest upgrade already has its button in the update panel. */}
+                      {canInstall(selected) &&
+                        !(d.updateAvailable && selected === latest) &&
+                        install(selected)}
+                      {selected.notes.trim() ? (
+                        <Markdown source={selected.notes} />
+                      ) : (
+                        <Empty title={t("updates.noNotes")} />
+                      )}
+                    </>
+                  ) : (
+                    <Empty title={t("updates.notFound")} />
+                  )}
+                </article>
+              </div>
+            ) : (
+              <Empty title={t("updates.emptyReleases")} />
+            )}
+          </Panel>
         </>
       )}
-    </>
+    </Page>
   );
 }

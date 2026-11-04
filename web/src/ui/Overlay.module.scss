@@ -214,11 +214,13 @@
   }
 }
 
+/* Reduced motion must win over the variant rules above. Those selectors carry four
+   compound parts (.overlay + [data-variant] + [data-phase] + .surface), so a shorter
+   selector here loses the cascade no matter where it sits — the ease-out sheet kept
+   animating with the preference on. Matching the specificity and coming later wins. */
 @media (prefers-reduced-motion: reduce) {
-  .overlay[data-phase="open"] .surface,
-  .overlay[data-phase="exiting"] .surface,
-  .overlay[data-phase="open"]::backdrop,
-  .overlay[data-phase="exiting"]::backdrop {
+  .overlay[data-variant][data-phase] .surface,
+  .overlay[data-variant][data-phase]::backdrop {
     animation: none;
   }
 }

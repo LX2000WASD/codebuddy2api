@@ -114,13 +114,17 @@ for (const width of [1440, 375]) {
     });
     await page.goto("/dashboard/models");
     await expect(page.getByText("能力预检：开启")).toBeVisible();
-    // Below 900px the capability column is hidden by the breakpoint (narrow screens
-    // hide secondary columns instead of scrolling sideways). Both halves are asserted:
-    // the default hides it, and the column menu brings it back — which is what the
-    // old unconditional assertion used to take for granted.
+    // Below 900px the catalog is a card list, not a column table: every column is shown
+    // as a dt/dd pair, so the capability value is present without touching the column
+    // menu (which only exists for the wide layout).
     const capability = page.getByText("图片因路由而异");
     const columnMenu = page.getByRole("button", { name: "列可见性" });
     if (width < 900) {
+      await expect(page.locator("table")).toHaveCount(0);
+    } else {
+      await columnMenu.click();
+      await page.getByRole("checkbox", { name: "模型能力" }).uncheck();
+      await page.keyboard.press("Escape");
       await expect(capability).toBeHidden();
       await columnMenu.click();
       await page.getByRole("checkbox", { name: "模型能力" }).check();

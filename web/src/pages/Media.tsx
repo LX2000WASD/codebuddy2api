@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   api,
   errorMessage,
@@ -9,23 +9,29 @@ import {
   useResource,
   type RecordValue,
 } from "../api";
+import { useT } from "../i18n";
+import { notify } from "../toast";
 import {
   Badge,
+  Button,
+  Cluster,
   Drawer,
   Empty,
   ErrorNotice,
-  Fields,
+  Field,
+  Grid,
   Icon,
-  PageTitle,
-  RefreshIcon,
+  Input,
+  Page,
   ResourceState,
-  SegmentThumb,
-} from "../components";
-import { bytes } from "../values";
-import { notify } from "../toast";
-import { Select } from "../fields";
-import { useT } from "../i18n";
-import s from "../ui.module.scss";
+  Select,
+  Stat,
+  Table,
+  Toolbar,
+  type TableColumn,
+} from "../ui";
+import { bytes, Fields } from "../values";
+import s from "./Media.module.scss";
 
 const TTL_PRESETS = [24, 72, 168, 720];
 
@@ -122,6 +128,15 @@ function pageNormalize(value: unknown) {
   };
 }
 
+/** An id that never fits its column: shortened, with the full value in the tooltip. */
+function shortId(value: string, limit = 18): string {
+  return value.length > limit ? `${value.slice(0, limit)}…` : value;
+}
+
+function taskTime(value: unknown): string {
+  return typeof value === "number" ? new Date(value * 1000).toLocaleString("zh-CN") : text(value);
+}
+
 function AssetPreview({
   item,
   configured,
@@ -157,34 +172,40 @@ function AssetPreview({
     return (
       <Drawer
         title={t("media.deleteConfirm")}
+        closeLabel={t("common.closeDrawer")}
         onClose={() => setConfirming(false)}
         dismissDisabled={busy}
       >
         <ErrorNotice message={error} />
-        <p>{t("media.deleteHint")}</p>
+        <p className={s.note}>{t("media.deleteHint")}</p>
         <p className={s.mono}>{assetId}</p>
-        <div className={s.actions}>
-          <button type="button" disabled={busy} onClick={() => setConfirming(false)}>
+        <Cluster gap="2">
+          <Button disabled={busy} onClick={() => setConfirming(false)}>
             {t("common.cancel")}
-          </button>
-          <button type="button" className={s.danger} disabled={busy} onClick={remove}>
+          </Button>
+          <Button variant="danger" disabled={busy} onClick={remove}>
             {busy ? t("media.deleting") : t("media.deleteConfirm")}
-          </button>
-        </div>
+          </Button>
+        </Cluster>
       </Drawer>
     );
   }
   return (
-    <Drawer title={t("media.preview")} onClose={onClose} dismissDisabled={busy}>
+    <Drawer
+      title={t("media.preview")}
+      closeLabel={t("common.closeDrawer")}
+      onClose={onClose}
+      dismissDisabled={busy}
+    >
       <ErrorNotice message={error} />
-      <div className={s.mediaPreviewWrap}>
+      <div className={s.preview}>
         {isVideo ? (
-          <video className={s.mediaPreview} controls preload="metadata" src={content}>
+          <video className={s.previewMedia} controls preload="metadata" src={content}>
             <track kind="captions" />
           </video>
         ) : (
           <img
-            className={s.mediaPreview}
+            className={s.previewMedia}
             src={content}
             alt={text(item.model) || assetId}
             decoding="async"
@@ -203,10 +224,9 @@ function AssetPreview({
           expires_at: number(item.expires_at),
         }}
       />
-      <div className={s.actions}>
+      <Cluster gap="2">
         {configured && link && (
-          <button
-            type="button"
+          <Button
             onClick={() => {
               void navigator.clipboard
                 .writeText(link)
@@ -217,22 +237,21 @@ function AssetPreview({
             }}
           >
             {t("media.copyLink")}
-          </button>
+          </Button>
         )}
-        <a className={`${s.linkButton} ${s.pill}`} href={`${content}?download=1`} download>
+        <a className={s.linkButton} href={`${content}?download=1`} download>
           {t("media.download")}
         </a>
-        <button
-          type="button"
-          className={s.danger}
+        <Button
+          variant="danger"
           onClick={() => {
             setError(null);
             setConfirming(true);
           }}
         >
           {t("media.delete")}
-        </button>
-      </div>
+        </Button>
+      </Cluster>
       {!configured && <p className={s.note}>{t("media.noLinkNote")}</p>}
     </Drawer>
   );
@@ -301,33 +320,34 @@ function MediaSettingsDrawer({ onClose, onSaved }: { onClose: () => void; onSave
       .catch((err: unknown) => setError(errorMessage(err)))
       .finally(() => setBusy(false));
   };
-  const lockedNote = (key: string) =>
+  const locked = (key: string) =>
     form?.locked.has(key) ? <p className={s.note}>{t("media.settings.locked")}</p> : null;
   return (
-    <Drawer title={t("media.settings.title")} onClose={onClose} dismissDisabled={busy}>
+    <Drawer
+      title={t("media.settings.title")}
+      closeLabel={t("common.closeDrawer")}
+      onClose={onClose}
+      dismissDisabled={busy}
+    >
       <ErrorNotice message={error} />
       {form && (
         <form
+          className={s.form}
           onSubmit={(event) => {
             event.preventDefault();
             save();
           }}
         >
-          <label className={s.field}>
-            {t("media.settings.baseUrl")}
-            <input
+          <Field label={t("media.settings.baseUrl")} error={invalid ? t(invalid) : null}>
+            <Input
               value={form.base}
+              mono
               placeholder={t("media.settings.baseUrlPlaceholder")}
-              aria-describedby={invalid ? "media-base-error" : undefined}
               disabled={busy || form.locked.has("media_public_base_url")}
+              invalid={invalid !== null}
               onChange={(event) => setForm({ ...form, base: event.target.value })}
             />
-          </label>
-          {invalid && (
-            <p className={s.errorText} id="media-base-error" role="alert">
-              {t(invalid)}
-            </p>
-          )}
+          </Field>
           <p className={s.note}>{t("media.settings.baseUrlHelp")}</p>
           {!invalid && form.base.trim() && (
             <p className={`${s.note} ${s.mono}`}>
@@ -336,10 +356,9 @@ function MediaSettingsDrawer({ onClose, onSaved }: { onClose: () => void; onSave
               })}
             </p>
           )}
-          {lockedNote("media_public_base_url")}
-          <label className={s.field}>
-            {t("media.settings.limit")}
-            <input
+          {locked("media_public_base_url")}
+          <Field label={t("media.settings.limit")}>
+            <Input
               type="number"
               min={64}
               max={1048576}
@@ -347,11 +366,11 @@ function MediaSettingsDrawer({ onClose, onSaved }: { onClose: () => void; onSave
               disabled={busy || form.locked.has("media_max_total_mb")}
               onChange={(event) => setForm({ ...form, limit: Number(event.target.value) })}
             />
-          </label>
-          {lockedNote("media_max_total_mb")}
-          <label className={s.field}>
-            {t("media.settings.ttl")}
+          </Field>
+          {locked("media_max_total_mb")}
+          <Field label={t("media.settings.ttl")}>
             <Select
+              label={t("media.settings.ttl")}
               value={form.ttl}
               disabled={busy || form.locked.has("media_ttl_hours")}
               onChange={(value) => setForm({ ...form, ttl: Number(value) })}
@@ -362,12 +381,12 @@ function MediaSettingsDrawer({ onClose, onSaved }: { onClose: () => void; onSave
                 </option>
               ))}
             </Select>
-          </label>
-          {lockedNote("media_ttl_hours")}
+          </Field>
+          {locked("media_ttl_hours")}
           <p className={s.note}>{t("media.settings.note")}</p>
-          <button className={s.primary} disabled={busy || invalid !== null}>
+          <Button type="submit" variant="primary" disabled={busy || invalid !== null}>
             {t("media.settings.save")}
-          </button>
+          </Button>
         </form>
       )}
     </Drawer>
@@ -400,6 +419,37 @@ export function Media() {
     if (tab === "tasks") tasks.reload();
   };
 
+  // The two panels this bar switches between. Tabs, not a segmented control: the buttons
+  // change *which* panel is shown, which is what role="tab" means — and the selection is
+  // painted by the tab itself, so no block is ever drawn over a label (P1-1).
+  const tabs = [
+    { value: "library" as const, label: t("media.tab.library") },
+    { value: "tasks" as const, label: t("media.tab.tasks") },
+  ];
+  const tabsRef = useRef<Array<HTMLButtonElement | null>>([]);
+  const selectTab = (value: "library" | "tasks") => {
+    setTab(value);
+    setAssetCursors([]);
+    setTaskCursors([]);
+  };
+  // Roving focus inside the tablist: one tab is in the tab order and the arrows move
+  // between them, the convention every tablist in this console follows.
+  const onTabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const last = tabs.length - 1;
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? last
+          : (index + (event.key === "ArrowRight" ? 1 : last)) % tabs.length;
+    const target = tabs[next];
+    if (!target) return;
+    selectTab(target.value);
+    tabsRef.current[next]?.focus();
+  };
+
   const openAsset = (item: RecordValue) => setPreview(item);
   const openAssetById = (id: string) => {
     void api
@@ -410,170 +460,280 @@ export function Media() {
       );
   };
 
-  return (
-    <>
-      <PageTitle
-        title={t("media.title")}
-        description={t("media.desc")}
-        actions={
+  const usedFraction = data?.limit_bytes
+    ? Math.min(1, data.usage.total_bytes / data.limit_bytes)
+    : 0;
+  const usageTone = usedFraction >= 1 ? "bad" : usedFraction >= 0.85 ? "warn" : "neutral";
+
+  const taskColumns: TableColumn<RecordValue>[] = [
+    {
+      id: "time",
+      header: t("logs.col.time"),
+      cell: (row) => taskTime(row.created),
+      title: (row) => taskTime(row.created),
+    },
+    {
+      id: "task",
+      header: t("media.tasks.taskId"),
+      className: s.idCell,
+      cell: (row) => shortId(text(row.task_id)),
+      title: (row) => text(row.task_id),
+    },
+    {
+      id: "model",
+      header: t("media.tasks.model"),
+      cell: (row) => text(row.public_model || row.model),
+    },
+    {
+      id: "account",
+      header: t("media.tasks.account"),
+      cell: (row) => (
+        <>
+          {text(row.profile)} <small className={s.mono}>{text(row.account_key).slice(0, 12)}</small>
+        </>
+      ),
+      title: (row) => text(row.account_key),
+    },
+    {
+      id: "status",
+      header: t("logs.col.status"),
+      cell: (row) => {
+        const status = text(row.status);
+        const active = status === "queued" || status === "in_progress";
+        return (
           <>
-            <Badge tone={configured ? "good" : "warn"}>
-              {configured ? t("media.baseConfigured") : t("media.baseMissing")}
-            </Badge>
-            <button onClick={reloadAll}>
-              <RefreshIcon spinning={summary.refreshing} />
-              {t("media.refresh")}
-            </button>
-            <button className={s.pill} onClick={() => setSettingsOpen(true)}>
-              {t("media.settings")}
-            </button>
+            <Badge tone={taskStatusTone(status)}>
+              {t(
+                status === "queued"
+                  ? "media.status.queued"
+                  : status === "in_progress"
+                    ? "media.status.in_progress"
+                    : status === "completed"
+                      ? "media.status.completed"
+                      : "media.status.failed",
+              )}
+            </Badge>{" "}
+            {active && row.error ? <Badge tone="warn">{t("media.tasks.retrying")}</Badge> : null}{" "}
+            {row.error ? <small className={s.muted}>{shortId(text(row.error), 40)}</small> : null}
           </>
-        }
-      />
+        );
+      },
+      title: (row) => (row.error ? text(row.error) : undefined),
+    },
+    {
+      id: "credit",
+      header: t("media.tasks.credit"),
+      cell: (row) => (number(row.credit) === null ? "—" : number(row.credit)),
+    },
+    {
+      // Both row actions live in the pinned column: a separate "资源" column in the middle
+      // of a wide table is exactly what scrolled the only entry point off screen (P1-2).
+      id: "actions",
+      header: t("logs.col.actions"),
+      actions: true,
+      cell: (row) => {
+        const status = text(row.status);
+        const active = status === "queued" || status === "in_progress";
+        if (!row.media_id && !active) return <span className={s.muted}>—</span>;
+        return (
+          <Cluster gap="1">
+            {row.media_id ? (
+              <Button size="sm" onClick={() => openAssetById(text(row.media_id))}>
+                {t("media.tasks.view")}
+              </Button>
+            ) : null}
+            {active ? (
+              <Button
+                size="sm"
+                onClick={() => {
+                  void api
+                    .post(`/media/tasks/${encodeURIComponent(text(row.task_id))}/refresh`)
+                    .then(() => {
+                      tasks.reload();
+                      summary.reload();
+                    })
+                    .catch((err: unknown) =>
+                      notify({
+                        key: `media-task-${text(row.task_id)}`,
+                        tone: "bad",
+                        title: errorMessage(err),
+                      }),
+                    );
+                }}
+              >
+                {t("media.tasks.refresh")}
+              </Button>
+            ) : null}
+          </Cluster>
+        );
+      },
+    },
+  ];
+
+  return (
+    <Page
+      title={t("media.title")}
+      description={t("media.desc")}
+      actions={
+        <>
+          <Badge tone={configured ? "good" : "warn"}>
+            {configured ? t("media.baseConfigured") : t("media.baseMissing")}
+          </Badge>
+          <Button
+            icon={<Icon name="refresh" size="sm" spin={summary.refreshing} />}
+            onClick={reloadAll}
+          >
+            {t("media.refresh")}
+          </Button>
+          <Button onClick={() => setSettingsOpen(true)}>{t("media.settings")}</Button>
+        </>
+      }
+    >
       {data && !configured && (
-        <div className={s.warning} role="alert">
-          <Icon name="alert" />
-          <p>{data.locked ? t("media.bannerLocked") : t("media.banner")}</p>
+        <div className={s.banner} role="alert">
+          <Icon name="alert" size="sm" />
+          <p className={s.bannerText}>
+            {data.locked ? t("media.bannerLocked") : t("media.banner")}
+          </p>
           {!data.locked && (
-            <button onClick={() => setSettingsOpen(true)}>{t("media.bannerAction")}</button>
+            <Button size="sm" onClick={() => setSettingsOpen(true)}>
+              {t("media.bannerAction")}
+            </Button>
           )}
         </div>
       )}
       {data && (
-        <div className={s.kpiGrid}>
-          <div className={s.kpiCard}>
-            <small>{t("media.kpi.usage")}</small>
-            <strong>
-              {bytes(data.usage.total_bytes)} / {bytes(data.limit_bytes)}
-            </strong>
-            <div
-              className={`${s.usageMeter} ${data.usage.total_bytes >= data.limit_bytes ? s.full : data.usage.total_bytes >= data.limit_bytes * 0.85 ? s.warn : ""}`}
-            >
-              <span
-                style={{
-                  width: `${Math.min(100, data.limit_bytes ? (data.usage.total_bytes / data.limit_bytes) * 100 : 0)}%`,
-                }}
-              />
-            </div>
-          </div>
-          <div className={s.kpiCard}>
-            <small>{t("media.kpi.images")}</small>
-            <strong>
-              {data.usage.images.count} · {bytes(data.usage.images.bytes)}
-            </strong>
-            <div>
-              <span className={s.pill}>{t("media.retention", { hours: data.ttl_hours })}</span>
-            </div>
-          </div>
-          <div className={s.kpiCard}>
-            <small>{t("media.kpi.videos")}</small>
-            <strong>
-              {data.usage.videos.count} · {bytes(data.usage.videos.bytes)}
-            </strong>
-          </div>
-          <div className={s.kpiCard}>
-            <small>{t("media.kpi.tasks")}</small>
-            <strong>
-              {t("media.kpi.tasksValue", { active: data.tasks.active, failed: data.tasks.failed })}
-            </strong>
-          </div>
+        <div className={s.stats}>
+          <Stat
+            label={t("media.kpi.usage")}
+            value={`${bytes(data.usage.total_bytes)} / ${bytes(data.limit_bytes)}`}
+            tone={usageTone}
+          >
+            <span className={s.meter} data-tone={usageTone}>
+              <span className={s.meterFill} style={{ width: `${usedFraction * 100}%` }} />
+            </span>
+          </Stat>
+          <Stat
+            label={t("media.kpi.images")}
+            value={`${data.usage.images.count} · ${bytes(data.usage.images.bytes)}`}
+            hint={t("media.retention", { hours: data.ttl_hours })}
+          />
+          <Stat
+            label={t("media.kpi.videos")}
+            value={`${data.usage.videos.count} · ${bytes(data.usage.videos.bytes)}`}
+          />
+          <Stat
+            label={t("media.kpi.tasks")}
+            value={t("media.kpi.tasksValue", {
+              active: data.tasks.active,
+              failed: data.tasks.failed,
+            })}
+            tone={data.tasks.failed > 0 ? "warn" : "neutral"}
+          />
         </div>
       )}
+
       <div className={s.tabs} role="tablist" aria-label={t("media.title")}>
-        <SegmentThumb />
-        {(
-          [
-            ["library", t("media.tab.library")],
-            ["tasks", t("media.tab.tasks")],
-          ] as const
-        ).map(([value, label]) => (
+        {tabs.map((entry, index) => (
           <button
-            key={value}
-            role="tab"
-            aria-selected={tab === value}
-            className={tab === value ? s.selectedTab : ""}
-            onClick={() => {
-              setTab(value);
-              setAssetCursors([]);
-              setTaskCursors([]);
+            key={entry.value}
+            ref={(node) => {
+              tabsRef.current[index] = node;
             }}
+            type="button"
+            role="tab"
+            id={`media-tab-${entry.value}`}
+            aria-selected={tab === entry.value}
+            tabIndex={tab === entry.value ? 0 : -1}
+            className={s.tab}
+            onClick={() => selectTab(entry.value)}
+            onKeyDown={(event) => onTabKey(event, index)}
           >
-            {label}
+            {entry.label}
           </button>
         ))}
       </div>
 
       {tab === "library" && (
         <>
-          <div className={s.filters}>
-            <Select
-              aria-label={t("media.filter.kind")}
-              value={kind}
-              onChange={(value) => {
-                setKind(value);
-                setAssetCursors([]);
-              }}
-            >
-              <option value="">{t("media.filter.all")}</option>
-              <option value="image">{t("media.filter.images")}</option>
-              <option value="video">{t("media.filter.videos")}</option>
-            </Select>
-          </div>
+          <Toolbar gap="2">
+            <span className={s.filter}>
+              <Select
+                aria-label={t("media.filter.kind")}
+                value={kind}
+                onChange={(value) => {
+                  setKind(value);
+                  setAssetCursors([]);
+                }}
+              >
+                <option value="">{t("media.filter.all")}</option>
+                <option value="image">{t("media.filter.images")}</option>
+                <option value="video">{t("media.filter.videos")}</option>
+              </Select>
+            </span>
+          </Toolbar>
           <ResourceState {...assets} />
           {assets.data &&
             (assets.data.items.length ? (
-              <div className={s.mediaGrid}>
+              <Grid min="sm">
                 {assets.data.items.map((item) => {
                   const remaining = remainingLabel(item.expires_at, t);
                   const isVideo = item.kind === "video";
+                  const model = text(item.model);
                   return (
                     <button
                       key={text(item.id)}
-                      className={s.mediaCard}
+                      type="button"
+                      className={s.card}
                       onClick={() => openAsset(item)}
-                      title={text(item.model)}
+                      title={model}
                     >
-                      <span className={`${s.mediaThumb} ${isVideo ? s.isVideo : ""}`}>
+                      <span className={s.thumb}>
                         {isVideo ? (
                           <Icon name="play" />
                         ) : (
                           <img
                             src={`/admin/media/assets/${encodeURIComponent(text(item.id))}/content`}
-                            alt={`${t(isVideo ? "media.kind.video" : "media.kind.image")} ${text(item.model)} ${remaining.text}`}
+                            alt={`${t(isVideo ? "media.kind.video" : "media.kind.image")} ${model} ${remaining.text}`}
                             loading="lazy"
                             decoding="async"
                           />
                         )}
                       </span>
-                      <span className={s.mediaMeta}>
-                        <strong title={text(item.model)}>{text(item.model)}</strong>
-                        <small>
-                          <Badge tone={isVideo ? "neutral" : "neutral"}>
-                            {t(isVideo ? "media.kind.video" : "media.kind.image")}
-                          </Badge>{" "}
+                      <span className={s.meta}>
+                        <strong className={s.model} title={model}>
+                          {model}
+                        </strong>
+                        <small className={s.metaLine}>
+                          <Badge>{t(isVideo ? "media.kind.video" : "media.kind.image")}</Badge>
                           {bytes(number(item.size) ?? 0)}
                         </small>
-                        <small className={remaining.warn ? s.warnText : ""}>
+                        <small
+                          className={s.metaLine}
+                          data-warn={remaining.warn ? "true" : undefined}
+                        >
                           {t("media.remaining", { time: remaining.text })}
                         </small>
                       </span>
                     </button>
                   );
                 })}
-              </div>
+              </Grid>
             ) : (
               <Empty title={t("media.empty.library")}>{t("media.empty.libraryHint")}</Empty>
             ))}
           <div className={s.pagination}>
-            <span>第 {assetCursors.length + 1} 页</span>
-            <div className={s.actions}>
-              <button
+            <span className={s.pageLabel}>第 {assetCursors.length + 1} 页</span>
+            <Cluster gap="2">
+              <Button
+                size="sm"
                 disabled={!assetCursors.length || assets.loading}
                 onClick={() => setAssetCursors((old) => old.slice(0, -1))}
               >
                 {t("logs.prevPage")}
-              </button>
-              <button
+              </Button>
+              <Button
+                size="sm"
                 disabled={!assets.data?.has_more || assets.loading}
                 onClick={() => {
                   if (assets.data?.next_cursor)
@@ -581,147 +741,55 @@ export function Media() {
                 }}
               >
                 {t("logs.nextPage")}
-              </button>
-            </div>
+              </Button>
+            </Cluster>
           </div>
         </>
       )}
 
       {tab === "tasks" && (
         <>
-          <div className={s.filters}>
-            <Select
-              aria-label={t("media.tab.tasks")}
-              value={taskStatus}
-              onChange={(value) => {
-                setTaskStatus(value);
-                setTaskCursors([]);
-              }}
-            >
-              <option value="">{t("media.filter.all")}</option>
-              <option value="active">{t("media.filter.active")}</option>
-              <option value="completed">{t("media.filter.completed")}</option>
-              <option value="failed">{t("media.filter.failed")}</option>
-            </Select>
-          </div>
+          <Toolbar gap="2">
+            <span className={s.filter}>
+              <Select
+                aria-label={t("media.tab.tasks")}
+                value={taskStatus}
+                onChange={(value) => {
+                  setTaskStatus(value);
+                  setTaskCursors([]);
+                }}
+              >
+                <option value="">{t("media.filter.all")}</option>
+                <option value="active">{t("media.filter.active")}</option>
+                <option value="completed">{t("media.filter.completed")}</option>
+                <option value="failed">{t("media.filter.failed")}</option>
+              </Select>
+            </span>
+          </Toolbar>
           <ResourceState {...tasks} />
           {tasks.data &&
             (tasks.data.items.length ? (
-              <div className={s.tableWrap}>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>{t("logs.col.time")}</th>
-                      <th>{t("media.tasks.taskId")}</th>
-                      <th>{t("media.tasks.model")}</th>
-                      <th>{t("media.tasks.account")}</th>
-                      <th>{t("logs.col.status")}</th>
-                      <th>{t("media.tasks.credit")}</th>
-                      <th>{t("media.tasks.asset")}</th>
-                      <th>{t("logs.col.actions")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tasks.data.items.map((item) => {
-                      const status = text(item.status);
-                      const active = status === "queued" || status === "in_progress";
-                      return (
-                        <tr key={text(item.task_id)}>
-                          <td>
-                            {typeof item.created === "number"
-                              ? new Date(item.created * 1000).toLocaleString("zh-CN")
-                              : text(item.created)}
-                          </td>
-                          <td className={s.mono} title={text(item.task_id)}>
-                            {text(item.task_id).length > 18
-                              ? `${text(item.task_id).slice(0, 18)}…`
-                              : text(item.task_id)}
-                          </td>
-                          <td>{text(item.public_model || item.model)}</td>
-                          <td title={text(item.account_key)}>
-                            {text(item.profile)}
-                            <small className={s.mono}>{text(item.account_key).slice(0, 12)}</small>
-                          </td>
-                          <td>
-                            <Badge tone={taskStatusTone(status)}>
-                              {t(
-                                status === "queued"
-                                  ? "media.status.queued"
-                                  : status === "in_progress"
-                                    ? "media.status.in_progress"
-                                    : status === "completed"
-                                      ? "media.status.completed"
-                                      : "media.status.failed",
-                              )}
-                            </Badge>
-                            {active && item.error ? (
-                              <>
-                                {" "}
-                                <Badge tone="warn">{t("media.tasks.retrying")}</Badge>
-                              </>
-                            ) : null}
-                            {item.error ? (
-                              <small title={text(item.error)}>
-                                {text(item.error).length > 40
-                                  ? `${text(item.error).slice(0, 40)}…`
-                                  : text(item.error)}
-                              </small>
-                            ) : null}
-                          </td>
-                          <td>{number(item.credit) === null ? "—" : number(item.credit)}</td>
-                          <td>
-                            {item.media_id ? (
-                              <button onClick={() => openAssetById(text(item.media_id))}>
-                                {t("media.tasks.view")}
-                              </button>
-                            ) : (
-                              <span className={s.muted}>—</span>
-                            )}
-                          </td>
-                          <td>
-                            {active && (
-                              <button
-                                onClick={() => {
-                                  void api
-                                    .post(
-                                      `/media/tasks/${encodeURIComponent(text(item.task_id))}/refresh`,
-                                    )
-                                    .then(() => {
-                                      tasks.reload();
-                                      summary.reload();
-                                    })
-                                    .catch((err: unknown) =>
-                                      notify({
-                                        key: `media-task-${text(item.task_id)}`,
-                                        tone: "bad",
-                                        title: errorMessage(err),
-                                      }),
-                                    );
-                                }}
-                              >
-                                {t("media.tasks.refresh")}
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <Table
+                columns={taskColumns}
+                rows={tasks.data.items}
+                rowKey={(row) => text(row.task_id)}
+                label={t("media.tab.tasks")}
+              />
             ) : (
               <Empty title={t("media.empty.tasks")} />
             ))}
           <div className={s.pagination}>
-            <span>第 {taskCursors.length + 1} 页</span>
-            <div className={s.actions}>
-              <button
+            <span className={s.pageLabel}>第 {taskCursors.length + 1} 页</span>
+            <Cluster gap="2">
+              <Button
+                size="sm"
                 disabled={!taskCursors.length || tasks.loading}
                 onClick={() => setTaskCursors((old) => old.slice(0, -1))}
               >
                 {t("logs.prevPage")}
-              </button>
-              <button
+              </Button>
+              <Button
+                size="sm"
                 disabled={!tasks.data?.has_more || tasks.loading}
                 onClick={() => {
                   if (tasks.data?.next_cursor)
@@ -729,8 +797,8 @@ export function Media() {
                 }}
               >
                 {t("logs.nextPage")}
-              </button>
-            </div>
+              </Button>
+            </Cluster>
           </div>
         </>
       )}
@@ -755,6 +823,6 @@ export function Media() {
           }}
         />
       )}
-    </>
+    </Page>
   );
 }

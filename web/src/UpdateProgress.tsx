@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, object } from "./api";
-import { ErrorNotice } from "./components";
 import { useT } from "./i18n";
-import s from "./ui.module.scss";
+import { ErrorNotice } from "./ui";
+import s from "./UpdateProgress.module.scss";
 
 export type UpdateJob = {
   status: string;
@@ -96,13 +96,15 @@ export function UpdateProgress({ job }: { job: UpdateJob }) {
       : t("updates.stepActive", { step: t(`updates.step.${UPDATE_STEPS[index]}`), tag });
   const received = job.received ?? 0;
   return (
-    <section className={s.updateProgress} aria-live="polite">
-      <div className={s.progressHead}>
-        <strong role="status">{title}</strong>
-        {!indeterminate && <span>{percent}%</span>}
+    <section className={s.progress} aria-live="polite">
+      <div className={s.head}>
+        <strong className={s.title} role="status">
+          {title}
+        </strong>
+        {!indeterminate && <span className={s.percent}>{percent}%</span>}
       </div>
       <div
-        className={s.progressTrack}
+        className={s.track}
         role="progressbar"
         aria-label={title}
         aria-valuemin={0}
@@ -110,12 +112,14 @@ export function UpdateProgress({ job }: { job: UpdateJob }) {
         aria-valuenow={indeterminate ? undefined : percent}
       >
         <span
-          className={`${s.progressFill} ${indeterminate ? s.progressIndeterminate : ""} ${ready ? s.progressDone : ""}`}
+          className={s.fill}
+          data-indeterminate={indeterminate ? "true" : undefined}
+          data-done={ready ? "true" : undefined}
           style={indeterminate ? undefined : { width: `${percent}%` }}
         />
       </div>
       {downloading && (
-        <small className={s.storageSubtle}>
+        <small className={s.subtle}>
           {job.total
             ? t("updates.downloaded", {
                 received: megabytes(received),
@@ -124,22 +128,20 @@ export function UpdateProgress({ job }: { job: UpdateJob }) {
             : t("updates.downloadedUnknown", { received: megabytes(received) })}
         </small>
       )}
-      <ol className={s.stepList}>
+      <ol className={s.steps}>
         {UPDATE_STEPS.map((step, position) => {
           const state =
-            ready || position < index ? s.stepDone : position === index ? s.stepCurrent : "";
+            ready || position < index ? "done" : position === index ? "current" : "todo";
           return (
-            <li key={step} className={state}>
-              <span aria-hidden="true" />
+            <li key={step} className={s.step} data-state={state}>
+              <span className={s.marker} aria-hidden="true" />
               {t(`updates.step.${step}`)}
             </li>
           );
         })}
       </ol>
       {job.backup && (
-        <small className={s.storageSubtle}>
-          {t("updates.backupCreated", { file: job.backup })}
-        </small>
+        <small className={s.subtle}>{t("updates.backupCreated", { file: job.backup })}</small>
       )}
       <ErrorNotice message={phase === "timeout" ? t("updates.restartTimeout") : null} />
     </section>
